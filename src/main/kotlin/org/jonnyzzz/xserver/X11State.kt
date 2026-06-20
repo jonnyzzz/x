@@ -13,6 +13,7 @@ internal class X11State(
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
     private var nextAtomId = 69
+    private var focusWindowId: Int = X11Ids.RootWindow
 
     val extensions = listOf<XExtension>()
 
@@ -53,6 +54,7 @@ internal class X11State(
     fun removeWindow(id: Int) {
         windows.remove(id)
         windows.values.removeIf { it.parentId == id }
+        if (focusWindowId == id) focusWindowId = X11Ids.RootWindow
     }
 
     @Synchronized
@@ -60,6 +62,64 @@ internal class X11State(
 
     @Synchronized
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
+
+    @Synchronized
+    fun mapWindow(id: Int): XWindow? {
+        val window = windows[id] ?: return null
+        window.mapped = true
+        focusWindowId = id
+        return window
+    }
+
+    @Synchronized
+    fun unmapWindow(id: Int) {
+        windows[id]?.mapped = false
+        if (focusWindowId == id) focusWindowId = X11Ids.RootWindow
+    }
+
+    @Synchronized
+    fun configureWindow(
+        id: Int,
+        x: Int? = null,
+        y: Int? = null,
+        width: Int? = null,
+        height: Int? = null,
+        borderWidth: Int? = null,
+    ): XWindow? {
+        val window = windows[id] ?: return null
+        x?.let { window.x = it }
+        y?.let { window.y = it }
+        width?.let { window.width = it }
+        height?.let { window.height = it }
+        borderWidth?.let { window.borderWidth = it }
+        return window
+    }
+
+    @Synchronized
+    fun snapshot(): XScreenSnapshot {
+        val windowSnapshots = windows.values.mapIndexed { index, window ->
+            XWindowSnapshot(
+                id = window.id,
+                parentId = window.parentId,
+                x = window.x,
+                y = window.y,
+                width = window.width,
+                height = window.height,
+                borderWidth = window.borderWidth,
+                mapped = window.mapped,
+                focused = window.id == focusWindowId,
+                stackingIndex = index,
+                label = window.label(),
+            )
+        }
+        return XScreenSnapshot(
+            width = width,
+            height = height,
+            focusWindowId = focusWindowId,
+            windows = windowSnapshots,
+            overlaps = overlaps(windowSnapshots),
+        )
+    }
 
     @Synchronized
     fun drawable(id: Int): XDrawable? =
@@ -116,7 +176,7 @@ internal class X11State(
     fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name }
 
     companion object {
-        private val PredefinedAtoms = listOf(
+    private val PredefinedAtoms = listOf(
             "PRIMARY",
             "SECONDARY",
             "ARC",
@@ -187,6 +247,44 @@ internal class X11State(
             "WM_TRANSIENT_FOR",
         )
     }
+
+    private fun XWindow.label(): String {
+        val wmName = atomIds["WM_NAME"] ?: return id.toHex()
+        val string = atomIds["STRING"] ?: return id.toHex()
+        val property = properties[wmName]
+        if (property?.type == string && property.format == 8 && property.data.isNotEmpty()) {
+            return property.data.decodeToString()
+        }
+        return if (id == X11Ids.RootWindow) "root" else id.toHex()
+    }
+
+    private fun overlaps(windows: List<XWindowSnapshot>): List<XWindowOverlap> {
+        val mapped = windows.filter { it.mapped && it.id != X11Ids.RootWindow }
+        val result = mutableListOf<XWindowOverlap>()
+        for (lowerIndex in mapped.indices) {
+            for (upperIndex in lowerIndex + 1 until mapped.size) {
+                val lower = mapped[lowerIndex]
+                val upper = mapped[upperIndex]
+                val left = maxOf(lower.x, upper.x)
+                val top = maxOf(lower.y, upper.y)
+                val right = minOf(lower.x + lower.width, upper.x + upper.width)
+                val bottom = minOf(lower.y + lower.height, upper.y + upper.height)
+                if (right > left && bottom > top) {
+                    result += XWindowOverlap(
+                        lowerWindowId = lower.id,
+                        upperWindowId = upper.id,
+                        x = left,
+                        y = top,
+                        width = right - left,
+                        height = bottom - top,
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
 }
 
 internal data class XWindow(
@@ -229,3 +327,40 @@ internal data class XExtension(
     val firstEvent: Int,
     val firstError: Int,
 )
+
+internal data class XScreenSnapshot(
+    val width: Int,
+    val height: Int,
+    val focusWindowId: Int,
+    val windows: List<XWindowSnapshot>,
+    val overlaps: List<XWindowOverlap>,
+)
+
+internal data class XWindowSnapshot(
+    val id: Int,
+    val parentId: Int,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val borderWidth: Int,
+    val mapped: Boolean,
+    val focused: Boolean,
+    val stackingIndex: Int,
+    val label: String,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
+}
+
+internal data class XWindowOverlap(
+    val lowerWindowId: Int,
+    val upperWindowId: Int,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+) {
+    val lowerWindowIdHex: String get() = "0x${lowerWindowId.toUInt().toString(16)}"
+    val upperWindowIdHex: String get() = "0x${upperWindowId.toUInt().toString(16)}"
+}

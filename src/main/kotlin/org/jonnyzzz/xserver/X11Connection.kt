@@ -3,21 +3,17 @@ package org.jonnyzzz.xserver
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.Socket
 
 internal class X11Connection(
-    private val socket: Socket,
+    private val input: InputStream,
+    private val output: OutputStream,
     private val state: X11State,
 ) {
     private lateinit var byteOrder: ByteOrder
-    private lateinit var input: InputStream
-    private lateinit var output: OutputStream
     private var sequence = 0
     private val trace = java.lang.Boolean.getBoolean("x.trace")
 
     fun run() {
-        input = socket.getInputStream()
-        output = socket.getOutputStream()
         val setupPrefix = input.readExactly(12)
         byteOrder = ByteOrder.fromSetupByte(setupPrefix[0].toInt() and 0xff)
         val major = byteOrder.u16(setupPrefix, 2)
@@ -153,20 +149,19 @@ internal class X11Connection(
 
     private fun mapWindow(body: ByteArray) {
         if (body.size < 4) return
-        val window = state.window(byteOrder.u32(body, 0)) ?: return
-        window.mapped = true
+        val window = state.mapWindow(byteOrder.u32(body, 0)) ?: return
         sendMapNotify(window)
         sendExpose(window)
     }
 
     private fun unmapWindow(body: ByteArray) {
-        if (body.size >= 4) state.window(byteOrder.u32(body, 0))?.mapped = false
+        if (body.size >= 4) state.unmapWindow(byteOrder.u32(body, 0))
     }
 
     private fun mapSubwindows(body: ByteArray) {
         if (body.size < 4) return
         for (child in state.childrenOf(byteOrder.u32(body, 0))) {
-            child.mapped = true
+            state.mapWindow(child.id)
             sendMapNotify(child)
             sendExpose(child)
         }
@@ -175,7 +170,7 @@ internal class X11Connection(
     private fun unmapSubwindows(body: ByteArray) {
         if (body.size < 4) return
         for (child in state.childrenOf(byteOrder.u32(body, 0))) {
-            child.mapped = false
+            state.unmapWindow(child.id)
         }
     }
 
@@ -189,11 +184,12 @@ internal class X11Connection(
             offset += 4
             return value
         }
-        if ((mask and 0x0001) != 0) window.x = next()
-        if ((mask and 0x0002) != 0) window.y = next()
-        if ((mask and 0x0004) != 0) window.width = next()
-        if ((mask and 0x0008) != 0) window.height = next()
-        if ((mask and 0x0010) != 0) window.borderWidth = next()
+        val x = if ((mask and 0x0001) != 0) next() else null
+        val y = if ((mask and 0x0002) != 0) next() else null
+        val width = if ((mask and 0x0004) != 0) next() else null
+        val height = if ((mask and 0x0008) != 0) next() else null
+        val borderWidth = if ((mask and 0x0010) != 0) next() else null
+        state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth)
     }
 
     private fun getWindowAttributes(body: ByteArray) {
@@ -352,7 +348,7 @@ internal class X11Connection(
 
     private fun getInputFocus() {
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, X11Ids.RootWindow)
+        byteOrder.put32(reply, 8, state.snapshot().focusWindowId)
         write(reply)
     }
 

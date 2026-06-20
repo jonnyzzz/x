@@ -76,6 +76,60 @@ class XvfbContainerTest {
         }
     }
 
+    @Test
+    fun `window manager smoke exposes independent windows and overlap over http`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val port = 6209
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+
+        XServer(ServerOptions(host = "0.0.0.0", port = port, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+
+            GenericContainer(DockerImageName.parse("debian:stable-slim"))
+                .withCommand("sleep", "300")
+                .use { container ->
+                    container.start()
+                    assertEquals(
+                        0,
+                        container.execInContainer(
+                            "sh",
+                            "-lc",
+                            "apt-get update && apt-get install -y --no-install-recommends curl netcat-openbsd twm x11-apps x11-utils",
+                        ).exitCode,
+                    )
+                    assertClientSucceeds(container, "nc -vz host.docker.internal $port")
+
+                    val display = port - 6000
+                    val result = container.execInContainer(
+                        "sh",
+                        "-lc",
+                        """
+                        set -eu
+                        export DISPLAY=host.docker.internal:$display
+                        twm >/tmp/twm.log 2>&1 &
+                        sleep 1
+                        timeout 6s xlogo -geometry 180x120+40+40 >/tmp/xlogo.log 2>&1 &
+                        timeout 6s xclock -geometry 180x120+110+90 >/tmp/xclock.log 2>&1 &
+                        sleep 2
+                        curl -fsS http://host.docker.internal:$port/text.txt > /tmp/screen.txt
+                        curl -fsS http://host.docker.internal:$port/screen.svg > /tmp/screen.svg
+                        cat /tmp/screen.txt
+                        printf '\n--- SVG ---\n'
+                        cat /tmp/screen.svg
+                        """.trimIndent(),
+                    )
+                    assertEquals(0, result.exitCode, result.stderr + result.stdout)
+                    assertTrue(result.stdout.contains("Focus:"), result.stdout)
+                    assertTrue(result.stdout.contains("Overlap and focus:"), result.stdout)
+                    assertTrue(result.stdout.contains("overlaps"), result.stdout)
+                    assertTrue(result.stdout.contains("data-window-id="), result.stdout)
+                }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun assertClientSucceeds(
         container: GenericContainer<*>,
         port: Int,

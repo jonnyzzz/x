@@ -23,7 +23,7 @@
 - Atoms/properties. Started.
 - Windows and map/unmap/configure/query requests. Started.
 - Event masks and structure/property/expose events. Started with basic map/expose.
-- Hierarchy snapshots for AI observation. Pending.
+- Hierarchy snapshots for AI observation. Started via HTTP SVG/text/state endpoints.
 
 ## Milestone 3: Framebuffer And Drawing
 
@@ -33,6 +33,13 @@
 - Deterministic pixel snapshots and frame diffs.
 
 Current drawing behavior accepts many core drawing and text opcodes as no-ops so simple apps can stay alive. Replace those no-ops with framebuffer mutations in this milestone.
+
+## Milestone 3a: HTTP Observation
+
+- Same-port HTTP routing alongside X11 setup. Done.
+- SVG screen view derived from X server state. Done.
+- Textual explanation of windows, focus, stacking, and overlaps. Done.
+- JSON snapshot for agents/tools. Started.
 
 ## Milestone 4: Compatibility Matrix
 

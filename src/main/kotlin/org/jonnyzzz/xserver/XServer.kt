@@ -2,6 +2,7 @@ package org.jonnyzzz.xserver
 
 import java.io.Closeable
 import java.io.EOFException
+import java.io.BufferedInputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -43,7 +44,17 @@ class XServer(private val options: ServerOptions) : Closeable {
     private fun handleClient(socket: Socket) {
         try {
             socket.use {
-                X11Connection(socket, state).run()
+                val input = BufferedInputStream(socket.getInputStream())
+                val output = socket.getOutputStream()
+                input.mark(4)
+                val prefix = ByteArray(4)
+                val read = input.read(prefix)
+                input.reset()
+                if (read >= 3 && prefix.isHttpMethodPrefix()) {
+                    HttpScreenConnection(input, output, state).run()
+                } else {
+                    X11Connection(input, output, state).run()
+                }
             }
         } catch (_: SocketException) {
             // Clients may close immediately after reading the setup reply.
@@ -58,4 +69,10 @@ class XServer(private val options: ServerOptions) : Closeable {
         clients.shutdownNow()
         clients.awaitTermination(2, TimeUnit.SECONDS)
     }
+
+    private fun ByteArray.isHttpMethodPrefix(): Boolean =
+        startsWith("GET") || startsWith("HEAD") || startsWith("POST")
+
+    private fun ByteArray.startsWith(value: String): Boolean =
+        value.indices.all { index -> this[index] == value[index].code.toByte() }
 }

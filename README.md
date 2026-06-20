@@ -22,8 +22,20 @@ It can run the first Docker smoke matrix against real X clients:
 - `xclock`
 - `xeyes`
 - `xcalc`
+- `twm` with overlapping app windows
+- IntelliJ IDEA Community from GitHub releases in an opt-in heavyweight smoke
 
 The graphical apps are currently "runs without protocol failure" smoke tests. Rendering is not complete yet; many drawing requests are accepted as no-ops until the framebuffer milestone.
+
+The same TCP port also serves HTTP for agent observation:
+
+- `/` returns an HTML page with an embedded SVG screen view.
+- `/screen.svg` returns only the SVG screen view.
+- `/text` returns an HTML text report.
+- `/text.txt` returns the plain text report.
+- `/state.json` returns a compact JSON snapshot.
+
+The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, and overlap rectangles.
 
 The test suite starts with:
 
@@ -39,13 +51,19 @@ The test suite starts with:
 
 Docker integration tests require Docker to be available to the current user.
 
+The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
+
+```bash
+./gradlew test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
+```
+
 Run the prototype server:
 
 ```bash
 ./gradlew run --args='--host 0.0.0.0 --port 6000'
 ```
 
-Then point simple X clients at it with `DISPLAY=host:0`. Most clients will fail after setup until the dispatcher and core requests are implemented.
+Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:6000/` to inspect the maintained server model as SVG/text.
 
 ## Roadmap
 

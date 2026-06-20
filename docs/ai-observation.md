@@ -4,7 +4,13 @@ The X server should become useful "eyes" for AI agents without compromising X11 
 
 ## Initial API Shape
 
-Keep the first API internal to Kotlin. Add HTTP/WebSocket only after the state model is stable.
+The first API is available over the same TCP port as the X11 server by sniffing HTTP requests before X11 setup:
+
+- `/` returns an HTML page with embedded SVG.
+- `/screen.svg` returns the SVG screen.
+- `/text` returns an HTML text report.
+- `/text.txt` returns a plain text report.
+- `/state.json` returns a compact machine-readable snapshot.
 
 ### Snapshot
 
@@ -21,6 +27,8 @@ Keep the first API internal to Kotlin. Add HTTP/WebSocket only after the state m
 - parent/child window tree,
 - geometry and border width,
 - mapped/viewable state,
+- focus and stacking order,
+- overlap rectangles between mapped non-root windows,
 - event masks,
 - selected properties,
 - drawable/resource ids.
