@@ -9,7 +9,7 @@ import kotlin.test.assertEquals
 class HttpRenderingTest {
     @Test
     fun `same socket serves svg and textual snapshots from x11 state`() {
-        XServer(ServerOptions(port = 0, width = 320, height = 240)).use { server ->
+        XServer(ServerOptions(port = 0, width = 3840, height = 2160, dpi = 100)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             createMappedWindow(server.localPort, 0x0020_0001, "one", x = 20, y = 30, width = 120, height = 90)
             createMappedWindow(server.localPort, 0x0020_0002, "two", x = 80, y = 70, width = 140, height = 100)
@@ -21,6 +21,8 @@ class HttpRenderingTest {
             assertContains(html.body, "one")
             assertContains(html.body, "two")
             assertContains(html.body, "<footer>${RenderCredit.Text}</footer>")
+            assertContains(html.body, "3840 x 2160")
+            assertContains(html.body, "<dt>DPI</dt><dd>100</dd>")
 
             val svg = httpGet(server.localPort, "/screen.svg")
             assertContains(svg.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
@@ -32,6 +34,8 @@ class HttpRenderingTest {
             val text = httpGet(server.localPort, "/text.txt")
             assertContains(text.headers, "${RenderCredit.HeaderName}: ${RenderCredit.Text}")
             assertContains(text.body, "Focus: 0x200002")
+            assertContains(text.body, "Screen: 3840 x 2160")
+            assertContains(text.body, "DPI: 100")
             assertContains(text.body, "0x200002 overlaps 0x200001")
             assertContains(text.body, RenderCredit.Text)
 

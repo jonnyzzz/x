@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class XServer(private val options: ServerOptions) : Closeable {
-    private val state = X11State(width = options.width, height = options.height)
+    private val state = X11State(width = options.width, height = options.height, dpi = options.dpi)
     private val serverSocket = ServerSocket(
         options.port,
         50,

@@ -34,6 +34,8 @@ internal object SvgScreenRenderer {
               <h1>X server state</h1>
               <dl>
                 <dt>Screen</dt><dd>${snapshot.width} x ${snapshot.height}</dd>
+                <dt>DPI</dt><dd>${snapshot.dpi}</dd>
+                <dt>Physical</dt><dd>${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm</dd>
                 <dt>Windows</dt><dd>${snapshot.windows.size}</dd>
                 <dt>Mapped</dt><dd>${snapshot.windows.count { it.mapped }}</dd>
               </dl>
@@ -68,7 +70,7 @@ internal object SvgScreenRenderer {
 
     fun json(snapshot: XScreenSnapshot): String =
         buildString {
-            append("""{"width":${snapshot.width},"height":${snapshot.height},"windows":[""")
+            append("""{"width":${snapshot.width},"height":${snapshot.height},"dpi":${snapshot.dpi},"widthMillimeters":${snapshot.widthMillimeters},"heightMillimeters":${snapshot.heightMillimeters},"windows":[""")
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')

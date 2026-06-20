@@ -85,6 +85,8 @@ internal object SetupReply {
         clientMinor: Int,
         width: Int,
         height: Int,
+        widthMillimeters: Int,
+        heightMillimeters: Int,
     ): ByteArray {
         val vendor = "jonnyzzz/x".encodeToByteArray()
         val vendorPaddedLength = paddedLength(vendor.size)
@@ -131,8 +133,8 @@ internal object SetupReply {
         byteOrder.put32(reply, offset + 16, 0)
         byteOrder.put16(reply, offset + 20, width)
         byteOrder.put16(reply, offset + 22, height)
-        byteOrder.put16(reply, offset + 24, 270)
-        byteOrder.put16(reply, offset + 26, 203)
+        byteOrder.put16(reply, offset + 24, widthMillimeters)
+        byteOrder.put16(reply, offset + 26, heightMillimeters)
         byteOrder.put16(reply, offset + 28, 1)
         byteOrder.put16(reply, offset + 30, 1)
         byteOrder.put32(reply, offset + 32, RootVisualId)

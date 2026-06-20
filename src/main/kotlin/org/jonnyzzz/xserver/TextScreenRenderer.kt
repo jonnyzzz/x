@@ -32,6 +32,8 @@ internal object TextScreenRenderer {
     fun plain(snapshot: XScreenSnapshot): String =
         buildString {
             appendLine("Screen: ${snapshot.width} x ${snapshot.height}")
+            appendLine("DPI: ${snapshot.dpi}")
+            appendLine("Physical size: ${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
             appendLine("Windows: ${snapshot.windows.size}")
             appendLine("Mapped windows: ${snapshot.windows.count { it.mapped }}")
             appendLine("Focus: ${snapshot.windows.firstOrNull { it.focused }?.idHex ?: "none"}")

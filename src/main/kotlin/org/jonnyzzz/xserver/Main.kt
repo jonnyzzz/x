@@ -13,6 +13,7 @@ data class ServerOptions(
     val port: Int = 6000,
     val width: Int = 1024,
     val height: Int = 768,
+    val dpi: Int = 96,
 ) {
     companion object {
         fun parse(args: Array<String>): ServerOptions {
@@ -20,6 +21,7 @@ data class ServerOptions(
             var port = 6000
             var width = 1024
             var height = 768
+            var dpi = 96
 
             var index = 0
             while (index < args.size) {
@@ -28,12 +30,17 @@ data class ServerOptions(
                     "--port" -> port = args.valueAfter(index++, arg).toInt()
                     "--width" -> width = args.valueAfter(index++, arg).toInt()
                     "--height" -> height = args.valueAfter(index++, arg).toInt()
+                    "--dpi" -> dpi = args.valueAfter(index++, arg).toInt()
                     else -> error("Unknown argument: $arg")
                 }
                 index++
             }
 
-            return ServerOptions(host, port, width, height)
+            require(width > 0) { "width must be positive" }
+            require(height > 0) { "height must be positive" }
+            require(dpi > 0) { "dpi must be positive" }
+
+            return ServerOptions(host, port, width, height, dpi)
         }
 
         private fun Array<String>.valueAfter(index: Int, option: String): String =

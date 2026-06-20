@@ -1,9 +1,14 @@
 package org.jonnyzzz.xserver
 
+import kotlin.math.roundToInt
+
 internal class X11State(
     val width: Int,
     val height: Int,
+    val dpi: Int = 96,
 ) {
+    val widthMillimeters: Int = pixelsToMillimeters(width, dpi)
+    val heightMillimeters: Int = pixelsToMillimeters(height, dpi)
     private val windows = linkedMapOf<Int, XWindow>()
     private val pixmaps = linkedMapOf<Int, XPixmap>()
     private val gcs = linkedSetOf<Int>()
@@ -115,6 +120,9 @@ internal class X11State(
         return XScreenSnapshot(
             width = width,
             height = height,
+            dpi = dpi,
+            widthMillimeters = widthMillimeters,
+            heightMillimeters = heightMillimeters,
             focusWindowId = focusWindowId,
             windows = windowSnapshots,
             overlaps = overlaps(windowSnapshots),
@@ -176,7 +184,10 @@ internal class X11State(
     fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name }
 
     companion object {
-    private val PredefinedAtoms = listOf(
+        private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
+            ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
+
+        private val PredefinedAtoms = listOf(
             "PRIMARY",
             "SECONDARY",
             "ARC",
@@ -331,6 +342,9 @@ internal data class XExtension(
 internal data class XScreenSnapshot(
     val width: Int,
     val height: Int,
+    val dpi: Int,
+    val widthMillimeters: Int,
+    val heightMillimeters: Int,
     val focusWindowId: Int,
     val windows: List<XWindowSnapshot>,
     val overlaps: List<XWindowOverlap>,

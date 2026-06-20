@@ -32,6 +32,8 @@ internal class X11Connection(
             clientMinor = minor,
             width = state.width,
             height = state.height,
+            widthMillimeters = state.widthMillimeters,
+            heightMillimeters = state.heightMillimeters,
         )
         output.write(reply)
         output.flush()

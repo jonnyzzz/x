@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 class X11HandshakeTest {
     @Test
     fun `returns setup success for little endian client`() {
-        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+        XServer(ServerOptions(port = 0, width = 3840, height = 2160, dpi = 100)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.getOutputStream().write(
@@ -37,6 +37,10 @@ class X11HandshakeTest {
                 assertTrue(additionalUnits > 0)
                 val rest = socket.getInputStream().readExactly(additionalUnits * 4)
                 assertEquals("jonnyzzz/x", rest.decodeVendor())
+                assertEquals(3840, u16le(rest, 72))
+                assertEquals(2160, u16le(rest, 74))
+                assertEquals(975, u16le(rest, 76))
+                assertEquals(549, u16le(rest, 78))
             }
             server.close()
             serverThread.join(1_000)
