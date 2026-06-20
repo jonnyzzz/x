@@ -21,6 +21,8 @@ class HttpRenderingTest {
             assertContains(html.body, "<svg")
             assertContains(html.body, "one")
             assertContains(html.body, "two")
+            assertContains(html.body, """class="window-map"""")
+            assertContains(html.body, """class="window-contents"""")
             assertContains(html.body, "<footer>${RenderCredit.Text}</footer>")
             assertContains(html.body, "3840 x 2160")
             assertContains(html.body, "<dt>DPI</dt><dd>100</dd>")

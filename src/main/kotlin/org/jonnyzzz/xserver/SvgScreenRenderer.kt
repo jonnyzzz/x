@@ -14,7 +14,8 @@ internal object SvgScreenRenderer {
             }
             element("body") {
                 element("main") {
-                    element("section", "class" to "screen") {
+                    element("section", "class" to "window-map") {
+                        element("h1") { text("Windows map") }
                         svgElement(
                             "svg",
                             "viewBox" to "0 0 ${snapshot.width} ${snapshot.height}",
@@ -24,21 +25,11 @@ internal object SvgScreenRenderer {
                             renderSvgContent(this, snapshot)
                         }
                     }
-                    element("aside") {
-                        element("h1") { text("X server state") }
-                        element("dl") {
-                            definition("Screen", "${snapshot.width} x ${snapshot.height}")
-                            definition("DPI", snapshot.dpi.toString())
-                            definition("Physical", "${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
-                            definition("Windows", snapshot.windows.size.toString())
-                            definition("Mapped", snapshot.windows.count { it.mapped }.toString())
-                        }
-                        renderWindowList(this, snapshot)
-                    }
-                    element("section", "class" to "previews") {
-                        element("h2") { text("Windows") }
+                    element("section", "class" to "window-contents") {
+                        element("h1") { text("Window contents") }
                         renderWindowPreviews(this, snapshot)
                     }
+                    renderStatePanel(this, snapshot)
                     element("footer") { text(RenderCredit.Text) }
                 }
             }
@@ -69,21 +60,28 @@ internal object SvgScreenRenderer {
     private fun screenCss(snapshot: XScreenSnapshot): String =
         """
         html, body { margin: 0; min-height: 100%; background: #15171c; color: #e7e9ee; font-family: system-ui, sans-serif; }
-        main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 100vh; }
-        .screen { display: grid; place-items: center; padding: 24px; }
-        svg { width: min(100%, ${snapshot.width}px); height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; }
-        aside { border-left: 1px solid #303642; padding: 18px; background: #111318; overflow: auto; }
+        main { display: grid; grid-template-columns: minmax(360px, 42vw) minmax(420px, 1fr); align-items: start; min-height: 100vh; }
+        .window-map { padding: 18px; position: sticky; top: 0; }
+        .window-map svg { width: 100%; height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; }
+        .window-contents { border-left: 1px solid #303642; padding: 18px; background: #15171c; }
+        .state { grid-column: 1 / -1; border-top: 1px solid #303642; padding: 18px; background: #111318; }
+        .state-columns { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 20px; }
         h1, h2 { font-size: 16px; margin: 0 0 12px; }
         dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 18px; font-size: 13px; }
         dt { color: #aab2c0; }
         dd { margin: 0; overflow-wrap: anywhere; }
         code { color: #d4dcff; }
-        .previews { grid-column: 1 / -1; padding: 0 24px 24px; }
-        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+        .preview-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
         .preview { border: 1px solid #303642; background: #111318; padding: 10px; }
         .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
-        .preview svg { width: 100%; background: #f8fafc; }
+        .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; }
         footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
+        @media (max-width: 960px) {
+          main { display: block; }
+          .window-map { position: static; }
+          .window-contents { border-left: 0; border-top: 1px solid #303642; }
+          .state-columns { grid-template-columns: 1fr; }
+        }
         """.trimIndent()
 
     private fun XmlDom.definition(term: String, description: String) {
@@ -185,6 +183,23 @@ internal object SvgScreenRenderer {
                     }
                     renderWindowSvg(this, snapshot, window)
                 }
+            }
+        }
+    }
+
+    private fun renderStatePanel(builder: XmlDom, snapshot: XScreenSnapshot) {
+        builder.element("aside", "class" to "state") {
+            element("h1") { text("X server state") }
+            element("div", "class" to "state-columns") {
+                element("dl") {
+                    definition("Screen", "${snapshot.width} x ${snapshot.height}")
+                    definition("DPI", snapshot.dpi.toString())
+                    definition("Physical", "${snapshot.widthMillimeters} x ${snapshot.heightMillimeters} mm")
+                    definition("Windows", snapshot.windows.size.toString())
+                    definition("Mapped", snapshot.windows.count { it.mapped }.toString())
+                    definition("Drawings", snapshot.drawings.size.toString())
+                }
+                renderWindowList(this, snapshot)
             }
         }
     }
