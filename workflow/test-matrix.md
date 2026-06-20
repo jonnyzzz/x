@@ -16,16 +16,19 @@ Run each client against Xvfb first, then against the Kotlin server.
 
 | Client | Purpose | First Expected Kotlin Result |
 | --- | --- | --- |
-| `xdpyinfo` | Setup, screens, visuals, extensions | Later milestone |
-| `xprop` | Atoms and properties | Later milestone |
-| `xwininfo` | Window tree and geometry | Later milestone |
+| `xdpyinfo` | Setup, screens, visuals, extensions | Passing |
+| `xprop -root` | Atoms and properties | Passing |
+| `xwininfo -root` | Window tree and geometry | Passing |
 | `xset q` | Basic server state queries | Later milestone |
-| `xlogo` | Window, expose, drawing | Later milestone |
-| `xclock` | Drawing, timer updates, events | Later milestone |
-| `xeyes` | Pointer motion and drawing | Later milestone |
+| `xlogo` | Window, expose, drawing | Stays running |
+| `xclock` | Drawing, timer updates, events | Stays running |
+| `xeyes` | Pointer motion and drawing | Stays running |
+| `xcalc` | Widgets, cursors, fonts, text drawing | Stays running |
 | `xterm` | Text, keyboard, properties | Later milestone |
 | JBR Swing sample | Java GUI client behavior | Toolkit milestone |
 | IntelliJ smoke | Real-world target | Final early acceptance |
+
+`Stays running` means the app remains connected under `timeout` and does not exit early with an X protocol error. It does not imply correct pixels yet.
 
 ## Differential Output
 

@@ -10,6 +10,24 @@ internal enum class ByteOrder {
             MsbFirst -> ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
         }
 
+    fun i16(bytes: ByteArray, offset: Int): Int {
+        val value = u16(bytes, offset)
+        return if ((value and 0x8000) == 0) value else value - 0x10000
+    }
+
+    fun u32(bytes: ByteArray, offset: Int): Int =
+        when (this) {
+            LsbFirst -> (bytes[offset].toInt() and 0xff) or
+                ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+                ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+                ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+            MsbFirst -> ((bytes[offset].toInt() and 0xff) shl 24) or
+                ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+                ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+                (bytes[offset + 3].toInt() and 0xff)
+        }
+
     fun put16(bytes: ByteArray, offset: Int, value: Int) {
         when (this) {
             LsbFirst -> {
@@ -55,11 +73,11 @@ internal object SetupReply {
     private const val ResourceIdBase = 0x0020_0000
     private const val ResourceIdMask = 0x001f_ffff
     private const val MotionBufferSize = 256
-    private const val RootWindowId = 0x0000_0026
-    private const val DefaultColormapId = 0x0000_0027
+    private const val RootWindowId = X11Ids.RootWindow
+    private const val DefaultColormapId = X11Ids.DefaultColormap
     private const val WhitePixel = 0x00ff_ffff
     private const val BlackPixel = 0x0000_0000
-    private const val RootVisualId = 0x0000_0028
+    private const val RootVisualId = X11Ids.RootVisual
 
     fun success(
         byteOrder: ByteOrder,
@@ -95,7 +113,7 @@ internal object SetupReply {
         reply[32] = 32
         reply[33] = 32
         reply[34] = 8
-        reply[35] = 0
+        reply[35] = 255.toByte()
         vendor.copyInto(reply, 40)
 
         var offset = 40 + vendorPaddedLength
@@ -120,8 +138,8 @@ internal object SetupReply {
         byteOrder.put32(reply, offset + 32, RootVisualId)
         reply[offset + 36] = 0
         reply[offset + 37] = 0
-        reply[offset + 38] = depthsLength.toByte()
-        reply[offset + 39] = 0
+        reply[offset + 38] = 24
+        reply[offset + 39] = depthsLength.toByte()
         offset += 40
 
         reply[offset] = 24
@@ -140,4 +158,10 @@ internal object SetupReply {
     }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
+}
+
+internal object X11Ids {
+    const val RootWindow = 0x0000_0026
+    const val DefaultColormap = 0x0000_0027
+    const val RootVisual = 0x0000_0028
 }

@@ -20,7 +20,7 @@ The current prototype implements the setup success path with one root window and
 
 ## Request Dispatcher
 
-The next implementation layer should add a request loop with:
+The implementation now includes an early request loop. Continue hardening it with:
 
 - 16-bit sequence numbers per client,
 - request length validation before side effects,
@@ -52,7 +52,7 @@ Initial drawing operations:
 - filled rectangles,
 - simple points and lines as clients require them.
 
-Defer core text rendering until a client in the matrix requires it. Text/font behavior is legacy-heavy and should be implemented behind a small deterministic font facade.
+The server currently accepts many drawing and text requests as no-ops so smoke apps can run. Replace these no-ops with deterministic framebuffer mutations as the renderer lands. Text/font behavior is legacy-heavy and should be implemented behind a small deterministic font facade.
 
 ## Extension Strategy
 

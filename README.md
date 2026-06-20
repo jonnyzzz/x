@@ -11,12 +11,25 @@ This repository intentionally targets X11 first. Wayland, Projector-style remote
 
 ## Current Status
 
-The first server implementation accepts an X11 TCP connection, parses the setup request, validates byte order and authorization lengths, and returns a deterministic setup reply with one screen and one root window. It is not yet a general-purpose X server.
+The current server accepts X11 TCP connections, returns a deterministic one-screen setup reply, and implements a small core request subset for atoms/properties, root/window queries, simple window lifecycle, colors, cursors, fonts, and no-op drawing requests.
+
+It can run the first Docker smoke matrix against real X clients:
+
+- `xdpyinfo`
+- `xwininfo -root`
+- `xprop -root`
+- `xlogo`
+- `xclock`
+- `xeyes`
+- `xcalc`
+
+The graphical apps are currently "runs without protocol failure" smoke tests. Rendering is not complete yet; many drawing requests are accepted as no-ops until the framebuffer milestone.
 
 The test suite starts with:
 
 - raw socket protocol tests for the setup handshake,
-- a Testcontainers/Xvfb smoke test that proves the Docker compatibility harness can run real X clients.
+- a Testcontainers/Xvfb smoke test that proves the Docker compatibility harness can run real X clients,
+- a Testcontainers smoke test that runs real X11 tools and simple apps against the Kotlin server.
 
 ## Development
 

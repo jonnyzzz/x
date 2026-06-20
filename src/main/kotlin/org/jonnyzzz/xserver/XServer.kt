@@ -1,6 +1,7 @@
 package org.jonnyzzz.xserver
 
 import java.io.Closeable
+import java.io.EOFException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -11,6 +12,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class XServer(private val options: ServerOptions) : Closeable {
+    private val state = X11State(width = options.width, height = options.height)
     private val serverSocket = ServerSocket(
         options.port,
         50,
@@ -41,9 +43,11 @@ class XServer(private val options: ServerOptions) : Closeable {
     private fun handleClient(socket: Socket) {
         try {
             socket.use {
-                X11Connection(socket, options.width, options.height).run()
+                X11Connection(socket, state).run()
             }
         } catch (_: SocketException) {
+            // Clients may close immediately after reading the setup reply.
+        } catch (_: EOFException) {
             // Clients may close immediately after reading the setup reply.
         }
     }

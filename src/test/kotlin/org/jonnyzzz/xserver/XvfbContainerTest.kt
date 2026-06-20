@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.utility.DockerImageName
+import java.net.ServerSocket
+import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -36,4 +38,80 @@ class XvfbContainerTest {
                 assertTrue(result.stdout.contains("dimensions:    640x480 pixels"), result.stdout)
             }
     }
+
+    @Test
+    fun `docker x11 tools can query kotlin server`() {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val port = 6207
+        assumeTrue(isPortAvailable(port), "Port $port is not available")
+
+        XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+
+            GenericContainer(DockerImageName.parse("debian:stable-slim"))
+                .withCommand("sleep", "300")
+                .use { container ->
+                    container.start()
+                    assertEquals(
+                        0,
+                        container.execInContainer(
+                            "sh",
+                            "-lc",
+                            "apt-get update && apt-get install -y --no-install-recommends netcat-openbsd x11-apps x11-utils",
+                        ).exitCode,
+                    )
+                    assertClientSucceeds(container, "nc -vz host.docker.internal $port")
+
+                    assertClientSucceeds(container, port, "xdpyinfo")
+                    assertClientSucceeds(container, port, "xwininfo -root")
+                    assertClientSucceeds(container, port, "xprop -root")
+                    assertClientKeepsRunning(container, port, "xlogo")
+                    assertClientKeepsRunning(container, port, "xclock")
+                    assertClientKeepsRunning(container, port, "xeyes")
+                    assertClientKeepsRunning(container, port, "xcalc")
+                }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    private fun assertClientSucceeds(
+        container: GenericContainer<*>,
+        port: Int,
+        command: String,
+    ) {
+        val display = port - 6000
+        val result = container.execInContainer(
+            "sh",
+            "-lc",
+            "DISPLAY=host.docker.internal:$display $command",
+        )
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
+    private fun assertClientKeepsRunning(
+        container: GenericContainer<*>,
+        port: Int,
+        command: String,
+    ) {
+        val display = port - 6000
+        val result = container.execInContainer(
+            "sh",
+            "-lc",
+            "DISPLAY=host.docker.internal:$display timeout 2s $command",
+        )
+        assertEquals(124, result.exitCode, result.stderr + result.stdout)
+    }
+
+    private fun assertClientSucceeds(
+        container: GenericContainer<*>,
+        command: String,
+    ) {
+        val result = container.execInContainer("sh", "-lc", command)
+        assertEquals(0, result.exitCode, result.stderr + result.stdout)
+    }
+
+    private fun isPortAvailable(port: Int): Boolean =
+        runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
 }

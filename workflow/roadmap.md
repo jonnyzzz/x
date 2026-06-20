@@ -10,20 +10,20 @@
 
 ## Milestone 1: Protocol Skeleton
 
-- Request loop and opcode table.
-- Sequence numbers and exact error packets.
-- Request length validation.
-- Unsupported core request behavior.
-- Protocol trace hooks.
+- Request loop and opcode table. Done for the first core subset.
+- Sequence numbers and basic error packets. Started.
+- Request length validation. Started.
+- Unsupported core request behavior. Started.
+- Protocol trace hooks. Started with `-Dx.trace=true`.
 
 ## Milestone 2: Minimal Server Model
 
-- One screen and root window.
-- Client-scoped resource table.
-- Atoms/properties.
-- Windows and map/unmap/configure/query requests.
-- Event masks and structure/property/expose events.
-- Hierarchy snapshots for AI observation.
+- One screen and root window. Done.
+- Shared early resource table for windows, pixmaps, GCs, fonts, cursors, and colormaps. Started.
+- Atoms/properties. Started.
+- Windows and map/unmap/configure/query requests. Started.
+- Event masks and structure/property/expose events. Started with basic map/expose.
+- Hierarchy snapshots for AI observation. Pending.
 
 ## Milestone 3: Framebuffer And Drawing
 
@@ -31,6 +31,8 @@
 - Pixmaps and graphics contexts.
 - `PutImage`, `GetImage`, `ClearArea`, `CopyArea`.
 - Deterministic pixel snapshots and frame diffs.
+
+Current drawing behavior accepts many core drawing and text opcodes as no-ops so simple apps can stay alive. Replace those no-ops with framebuffer mutations in this milestone.
 
 ## Milestone 4: Compatibility Matrix
 
