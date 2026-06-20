@@ -62,7 +62,7 @@ Docker integration tests require Docker to be available to the current user. Bui
 
 There are two local images:
 
-- `jonnyzzz-x/x11-client:latest` is the demo/client image. It is Ubuntu-based and includes X11 tools, `twm`, and the native libraries required by JetBrains Runtime/IntelliJ. It does not include Xvfb.
+- `jonnyzzz-x/x11-client:latest` is the demo/client image. It is Ubuntu-based and includes Git, X11 tools, `twm`, and the native libraries required by JetBrains Runtime/IntelliJ. It does not include Xvfb.
 - `jonnyzzz-x/x11-reference:latest` extends the client image with Xvfb for reference-only comparison tests.
 
 Build only the reusable X11 client image before running heavyweight GUI demos:
@@ -72,7 +72,10 @@ Build only the reusable X11 client image before running heavyweight GUI demos:
 ```
 
 The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
-downloads it on first use inside the container.
+downloads it on first use inside the container. The Docker helper also seeds the
+IntelliJ first-run agreement state, registers the bundled JetBrains Runtime as a
+JDK, disables first-run onboarding, and enables project trust for the isolated
+container by default so the mounted repository opens directly.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
@@ -100,8 +103,9 @@ docker run -d --name x-demo-server \
   mcp-steroid-base:latest \
   /app/bin/x --host 0.0.0.0 --port 6000 --width 3840 --height 2160 --dpi 100
 docker run -d --name x-demo-idea \
+  -v "$PWD:/workspace/jonnyzzz-x" \
   jonnyzzz-x/x11-client:latest \
-  sh -lc 'touch /tmp/idea-run.log; DISPLAY=host.docker.internal:0 run-intellij >>/tmp/idea-run.log 2>&1 & tail -f /tmp/idea-run.log'
+  sh -lc 'touch /tmp/idea-run.log; DISPLAY=host.docker.internal:0 IDEA_PROJECT=/workspace/jonnyzzz-x run-intellij >>/tmp/idea-run.log 2>&1 & tail -f /tmp/idea-run.log'
 ```
 
 Open `http://127.0.0.1:16000/` for the HTML page with the SVG window map, large per-window previews, and state summary. Use `http://127.0.0.1:16000/text.txt` for a plain-text snapshot.
@@ -116,7 +120,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/click \
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..5`.
 
-Current IntelliJ demo limitation: dialogs rendered through Java2D/AWT are visible and clickable. The server now exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, and FBConfigs), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet, so JCEF/Chromium surfaces remain the next compatibility target. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
+Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible, but some IntelliJ surfaces can still render as white because modern JetBrains UI paths probe GLX/Skia/JCEF. The server now exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet, so GLX-backed IntelliJ content remains the next compatibility target. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 

@@ -74,10 +74,35 @@ internal class X11State(
     }
 
     @Synchronized
-    fun removeWindow(id: Int) {
-        windows.remove(id)
-        windows.values.removeIf { it.parentId == id }
-        if (focusWindowId == id) focusWindowId = X11Ids.RootWindow
+    fun removeWindow(id: Int): Set<Int> {
+        val removed = windowSubtreeIds(id)
+        if (removed.isEmpty()) return emptySet()
+        for (windowId in removed) {
+            windows.remove(windowId)
+        }
+        removeEventSelections(removed)
+        if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
+        return removed
+    }
+
+    @Synchronized
+    fun removeClientResources(resourceIds: Set<Int>) {
+        if (resourceIds.isEmpty()) return
+        val removedWindows = linkedSetOf<Int>()
+        for (id in resourceIds) {
+            if (id != X11Ids.RootWindow && windows.containsKey(id)) {
+                removedWindows += removeWindow(id)
+            }
+        }
+        val ids = resourceIds - removedWindows
+        for (id in ids) {
+            pixmaps.remove(id)
+            gcs.remove(id)
+            fonts.remove(id)
+            cursors.remove(id)
+            if (id != X11Ids.DefaultColormap) colormaps.remove(id)
+            glxContexts.remove(id)
+        }
     }
 
     @Synchronized
@@ -400,6 +425,7 @@ internal class X11State(
         fonts.remove(id)
         cursors.remove(id)
         colormaps.remove(id)
+        glxContexts.remove(id)
     }
 
     @Synchronized
@@ -507,6 +533,29 @@ internal class X11State(
             return property.data.decodeToString()
         }
         return if (id == X11Ids.RootWindow) "root" else id.toHex()
+    }
+
+    private fun windowSubtreeIds(rootId: Int): Set<Int> {
+        if (rootId == X11Ids.RootWindow || !windows.containsKey(rootId)) return emptySet()
+        val removed = linkedSetOf(rootId)
+        var changed: Boolean
+        do {
+            changed = false
+            for (window in windows.values) {
+                if (window.parentId in removed && removed.add(window.id)) {
+                    changed = true
+                }
+            }
+        } while (changed)
+        return removed
+    }
+
+    private fun removeEventSelections(windowIds: Set<Int>) {
+        for (selections in eventSinks.values) {
+            for (windowId in windowIds) {
+                selections.remove(windowId)
+            }
+        }
     }
 
     private fun absolutePosition(window: XWindow): Pair<Int, Int> {

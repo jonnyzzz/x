@@ -13,6 +13,7 @@ internal class X11Connection(
     private var sequence = 0
     private val trace = java.lang.Boolean.getBoolean("x.trace")
     private val writeLock = Any()
+    private val ownedResources = linkedSetOf<Int>()
 
     fun run() {
         try {
@@ -58,6 +59,7 @@ internal class X11Connection(
             }
         } finally {
             state.unregisterEventSink(this)
+            state.removeClientResources(ownedResources)
         }
     }
 
@@ -235,6 +237,7 @@ internal class X11Connection(
                 direct = body[16].toInt() != 0,
             ),
         )
+        own(context)
     }
 
     private fun glxCreateNewContext(body: ByteArray) {
@@ -252,6 +255,7 @@ internal class X11Connection(
                 direct = body[20].toInt() != 0,
             ),
         )
+        own(context)
     }
 
     private fun glxCreateContextAttribs(body: ByteArray) {
@@ -268,10 +272,15 @@ internal class X11Connection(
                 direct = body[16].toInt() != 0,
             ),
         )
+        own(context)
     }
 
     private fun glxDestroyContext(body: ByteArray) {
-        if (body.size >= 4) state.removeGlxContext(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            val context = byteOrder.u32(body, 0)
+            state.removeGlxContext(context)
+            ownedResources.remove(context)
+        }
     }
 
     private fun glxMakeCurrent(body: ByteArray, isContextCurrent: Boolean) {
@@ -337,6 +346,7 @@ internal class X11Connection(
             backgroundPixel = createWindowBackground(body),
         )
         state.putWindow(window)
+        own(id)
         createWindowEventMask(body)?.let { state.selectEvents(this, id, it) }
     }
 
@@ -347,7 +357,9 @@ internal class X11Connection(
     }
 
     private fun destroyWindow(body: ByteArray) {
-        if (body.size >= 4) state.removeWindow(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            ownedResources.removeAll(state.removeWindow(byteOrder.u32(body, 0)))
+        }
     }
 
     private fun reparentWindow(body: ByteArray) {
@@ -570,11 +582,19 @@ internal class X11Connection(
     }
 
     private fun openFont(body: ByteArray) {
-        if (body.size >= 4) state.putFont(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            val id = byteOrder.u32(body, 0)
+            state.putFont(id)
+            own(id)
+        }
     }
 
     private fun closeResource(body: ByteArray) {
-        if (body.size >= 4) state.removeResource(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            val id = byteOrder.u32(body, 0)
+            state.removeResource(id)
+            ownedResources.remove(id)
+        }
     }
 
     private fun queryFont(body: ByteArray) {
@@ -608,20 +628,23 @@ internal class X11Connection(
 
     private fun createPixmap(depth: Int, body: ByteArray) {
         if (body.size < 12) return
+        val id = byteOrder.u32(body, 0)
         state.putPixmap(
             XPixmap(
-                id = byteOrder.u32(body, 0),
+                id = id,
                 width = byteOrder.u16(body, 8),
                 height = byteOrder.u16(body, 10),
                 depth = depth,
             ),
         )
+        own(id)
     }
 
     private fun createGc(body: ByteArray) {
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
         state.putGc(XGraphicsContext(id))
+        own(id)
         applyGcValues(id, byteOrder.u32(body, 8), body, 12)
     }
 
@@ -851,7 +874,11 @@ internal class X11Connection(
     }
 
     private fun createColormap(body: ByteArray) {
-        if (body.size >= 4) state.putColormap(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            val id = byteOrder.u32(body, 0)
+            state.putColormap(id)
+            own(id)
+        }
     }
 
     private fun listInstalledColormaps() {
@@ -906,7 +933,11 @@ internal class X11Connection(
     }
 
     private fun createCursor(body: ByteArray) {
-        if (body.size >= 4) state.putCursor(byteOrder.u32(body, 0))
+        if (body.size >= 4) {
+            val id = byteOrder.u32(body, 0)
+            state.putCursor(id)
+            own(id)
+        }
     }
 
     private fun queryBestSize(body: ByteArray) {
@@ -1195,6 +1226,10 @@ internal class X11Connection(
     }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
+
+    private fun own(id: Int) {
+        ownedResources += id
+    }
 }
 
 private fun java.io.InputStream.readExactly(size: Int): ByteArray {

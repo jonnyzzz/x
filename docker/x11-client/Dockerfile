@@ -8,6 +8,7 @@ RUN apt-get update \
         curl \
         fontconfig \
         fonts-dejavu \
+        git \
         gzip \
         libasound2t64 \
         libatk-bridge2.0-0 \
