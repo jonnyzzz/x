@@ -16,7 +16,12 @@ internal object TextScreenRenderer {
                 element("main") {
                     element("h1") { text("X screen text report") }
                     element("pre") { text(plain(snapshot)) }
-                    element("footer") { text(RenderCredit.Text) }
+                    element("footer") {
+                        text("by ")
+                        element("a", "href" to "https://github.com/jonnyzzz/x") { text("@jonnyzzz") }
+                        text(" ")
+                        element("a", "href" to "https://linkedin.com/in/jonnyzzz") { text("https://linkedin.com/in/jonnyzzz") }
+                    }
                 }
             }
         }
@@ -59,6 +64,27 @@ internal object TextScreenRenderer {
                     append(" at ")
                     append(overlap.x).append(',').append(overlap.y)
                     append(' ').append(overlap.width).append('x').append(overlap.height)
+                    appendLine()
+                }
+            }
+            appendLine()
+            appendLine("Input operations:")
+            if (snapshot.inputOperations.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (operation in snapshot.inputOperations.takeLast(20).asReversed()) {
+                    append("- #")
+                    append(operation.id)
+                    append(' ')
+                    append(operation.kind)
+                    append(' ')
+                    append(operation.button)
+                    append(" at ")
+                    append(operation.x).append(',').append(operation.y)
+                    append(" target=")
+                    append(operation.targetWindowIdHex ?: "none")
+                    append(" delivered=")
+                    append(operation.deliveredEvents)
                     appendLine()
                 }
             }

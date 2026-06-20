@@ -29,6 +29,8 @@ class XServer(private val options: ServerOptions) : Closeable {
     val localPort: Int
         get() = serverSocket.localPort
 
+    val input: XInputController = XInputController(state)
+
     fun serveForever() {
         while (!closed) {
             val socket = try {
@@ -51,7 +53,7 @@ class XServer(private val options: ServerOptions) : Closeable {
                 val read = input.read(prefix)
                 input.reset()
                 if (read >= 3 && prefix.isHttpMethodPrefix()) {
-                    HttpScreenConnection(input, output, state).run()
+                    HttpScreenConnection(input, output, state, this.input).run()
                 } else {
                     X11Connection(input, output, state).run()
                 }

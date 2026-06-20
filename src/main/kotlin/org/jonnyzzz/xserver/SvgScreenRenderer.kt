@@ -11,6 +11,7 @@ internal object SvgScreenRenderer {
                 element("meta", "http-equiv" to "refresh", "content" to "1")
                 element("title") { text("X screen") }
                 element("style") { text(screenCss(snapshot)) }
+                element("script") { text(inputScript()) }
             }
             element("body") {
                 element("main") {
@@ -18,6 +19,10 @@ internal object SvgScreenRenderer {
                         element("h1") { text("Windows map") }
                         svgElement(
                             "svg",
+                            "class" to "screen-map-svg",
+                            "data-input-surface" to "true",
+                            "data-origin-x" to 0,
+                            "data-origin-y" to 0,
                             "viewBox" to "0 0 ${snapshot.width} ${snapshot.height}",
                             "role" to "img",
                             "aria-label" to "X screen",
@@ -30,7 +35,7 @@ internal object SvgScreenRenderer {
                         renderWindowPreviews(this, snapshot)
                     }
                     renderStatePanel(this, snapshot)
-                    element("footer") { text(RenderCredit.Text) }
+                    renderFooter(this)
                 }
             }
         }
@@ -54,15 +59,24 @@ internal object SvgScreenRenderer {
                 append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped}""")
                 append('}')
             }
-            append("""],"drawings":${snapshot.drawings.size}}""")
+            append("""],"drawings":${snapshot.drawings.size},"inputOperations":[""")
+            snapshot.inputOperations.forEachIndexed { index, operation ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""id":${operation.id},"kind":"${escapeJson(operation.kind)}","x":${operation.x},"y":${operation.y},"button":"${escapeJson(operation.button)}","targetWindow":""")
+                operation.targetWindowIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","deliveredEvents":${operation.deliveredEvents}""")
+                append('}')
+            }
+            append("""]}""")
         }
 
     private fun screenCss(snapshot: XScreenSnapshot): String =
         """
         html, body { margin: 0; min-height: 100%; background: #15171c; color: #e7e9ee; font-family: system-ui, sans-serif; }
-        main { display: grid; grid-template-columns: minmax(360px, 42vw) minmax(420px, 1fr); align-items: start; min-height: 100vh; }
+        main { display: grid; grid-template-columns: minmax(180px, 21vw) minmax(640px, 1fr); align-items: start; min-height: 100vh; }
         .window-map { padding: 18px; position: sticky; top: 0; }
-        .window-map svg { width: 100%; height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; }
+        .window-map svg { width: 100%; height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; cursor: crosshair; }
         .window-contents { border-left: 1px solid #303642; padding: 18px; background: #15171c; }
         .state { grid-column: 1 / -1; border-top: 1px solid #303642; padding: 18px; background: #111318; }
         .state-columns { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 20px; }
@@ -70,11 +84,13 @@ internal object SvgScreenRenderer {
         dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0 0 18px; font-size: 13px; }
         dt { color: #aab2c0; }
         dd { margin: 0; overflow-wrap: anywhere; }
+        .input-log { margin: 0; padding-left: 20px; color: #c8d0df; font: 12px/1.45 monospace; }
         code { color: #d4dcff; }
         .preview-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
         .preview { border: 1px solid #303642; background: #111318; padding: 10px; }
         .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
-        .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; }
+        .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; shape-rendering: crispEdges; cursor: crosshair; }
+        .preview image { image-rendering: auto; }
         footer { grid-column: 1 / -1; padding: 10px 18px; border-top: 1px solid #303642; color: #aab2c0; font-size: 12px; }
         @media (max-width: 960px) {
           main { display: block; }
@@ -84,9 +100,41 @@ internal object SvgScreenRenderer {
         }
         """.trimIndent()
 
+    private fun inputScript(): String =
+        """
+        document.addEventListener('DOMContentLoaded', () => {
+          document.querySelectorAll('svg[data-input-surface="true"]').forEach((svg) => {
+            svg.addEventListener('click', (event) => {
+              const point = svg.createSVGPoint();
+              point.x = event.clientX;
+              point.y = event.clientY;
+              const ctm = svg.getScreenCTM();
+              if (!ctm) return;
+              const local = point.matrixTransform(ctm.inverse());
+              const x = Math.round(local.x + Number(svg.dataset.originX || 0));
+              const y = Math.round(local.y + Number(svg.dataset.originY || 0));
+              fetch('/input/click', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ x, y, button: 'left' }).toString(),
+              }).catch(() => {});
+            });
+          });
+        });
+        """.trimIndent()
+
     private fun XmlDom.definition(term: String, description: String) {
         element("dt") { text(term) }
         element("dd") { text(description) }
+    }
+
+    private fun renderFooter(builder: XmlDom) {
+        builder.element("footer") {
+            text("by ")
+            element("a", "href" to "https://github.com/jonnyzzz/x") { text("@jonnyzzz") }
+            text(" ")
+            element("a", "href" to "https://linkedin.com/in/jonnyzzz") { text("https://linkedin.com/in/jonnyzzz") }
+        }
     }
 
     private fun renderSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
@@ -172,14 +220,22 @@ internal object SvgScreenRenderer {
                 it.mapped &&
                     it.parentId == X11Ids.RootWindow &&
                     it.id != X11Ids.RootWindow &&
-                    it.visibleWidth >= 64 &&
-                    it.visibleHeight >= 64
+                    it.width >= 64 &&
+                    it.height >= 64
             }
+            .sortedWith(compareByDescending<XWindowSnapshot> { it.focused }.thenBy { it.stackingIndex })
         builder.element("div", "class" to "preview-grid") {
             for (window in topWindows) {
                 element("article", "class" to "preview") {
                     element("header") {
-                        text("${window.label} ${window.visibleWidth}x${window.visibleHeight}")
+                        element("strong") { text(window.displayTitle()) }
+                        text(" ")
+                        element("span") { text(window.idHex) }
+                        text(" ")
+                        text("${window.width}x${window.height}")
+                        if (window.focused) text(" focused")
+                        val overlapCount = snapshot.overlaps.count { it.lowerWindowId == window.id || it.upperWindowId == window.id }
+                        if (overlapCount > 0) text(" overlaps=$overlapCount")
                     }
                     renderWindowSvg(this, snapshot, window)
                 }
@@ -201,16 +257,30 @@ internal object SvgScreenRenderer {
                 }
                 renderWindowList(this, snapshot)
             }
+            if (snapshot.inputOperations.isNotEmpty()) {
+                element("h2") { text("Input operations") }
+                element("ol", "class" to "input-log") {
+                    snapshot.inputOperations.takeLast(20).asReversed().forEach { operation ->
+                        element("li") {
+                            text("#${operation.id} ${operation.kind} ${operation.button} at ${operation.x},${operation.y} target=${operation.targetWindowIdHex ?: "none"} delivered=${operation.deliveredEvents}")
+                        }
+                    }
+                }
+            }
         }
     }
 
     private fun renderWindowSvg(builder: XmlDom, snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot) {
         val subtree = subtreeWindows(snapshot, rootWindow)
-            .filter { it.mapped && it.visibleWidth > 0 && it.visibleHeight > 0 }
+            .filter { it.mapped && it.width > 0 && it.height > 0 }
         val clipPrefix = "preview-${rootWindow.idHex.drop(2)}"
         builder.svgElement(
             "svg",
-            "viewBox" to "0 0 ${rootWindow.visibleWidth} ${rootWindow.visibleHeight}",
+            "class" to "window-preview-svg",
+            "data-input-surface" to "true",
+            "data-origin-x" to rootWindow.x,
+            "data-origin-y" to rootWindow.y,
+            "viewBox" to "0 0 ${rootWindow.width} ${rootWindow.height}",
             "role" to "img",
             "aria-label" to rootWindow.label,
         ) {
@@ -220,40 +290,38 @@ internal object SvgScreenRenderer {
                     svgElement("clipPath", "id" to clipId(clipPrefix, window), "clipPathUnits" to "userSpaceOnUse") {
                         svgElement(
                             "rect",
-                            "x" to window.visibleX - rootWindow.visibleX,
-                            "y" to window.visibleY - rootWindow.visibleY,
-                            "width" to window.visibleWidth,
-                            "height" to window.visibleHeight,
+                            "x" to window.x - rootWindow.x,
+                            "y" to window.y - rootWindow.y,
+                            "width" to window.width,
+                            "height" to window.height,
                         )
                     }
                 }
             }
-            svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.visibleWidth, "height" to rootWindow.visibleHeight, "fill" to pixelColor(rootWindow.backgroundPixel))
-            subtree.forEachIndexed { index, window ->
-                val color = palette[index % palette.size]
+            svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.width, "height" to rootWindow.height, "fill" to pixelColor(rootWindow.backgroundPixel))
+            subtree.forEach { window ->
                 svgElement(
                     "rect",
-                    "x" to window.visibleX - rootWindow.visibleX,
-                    "y" to window.visibleY - rootWindow.visibleY,
-                    "width" to window.visibleWidth,
-                    "height" to window.visibleHeight,
+                    "class" to "window-background",
+                    "x" to window.x - rootWindow.x,
+                    "y" to window.y - rootWindow.y,
+                    "width" to window.width,
+                    "height" to window.height,
                     "fill" to pixelColor(window.backgroundPixel),
-                    "stroke" to color,
-                    "stroke-width" to 2,
                 )
             }
             renderDrawings(
                 this,
                 snapshot,
                 clipPrefix = clipPrefix,
-                originX = rootWindow.visibleX,
-                originY = rootWindow.visibleY,
+                originX = rootWindow.x,
+                originY = rootWindow.y,
                 drawableIds = subtree.map { it.id }.toSet(),
             )
             svgElement(
                 "text",
-                "x" to rootWindow.visibleWidth - 6,
-                "y" to rootWindow.visibleHeight - 6,
+                "x" to rootWindow.width - 6,
+                "y" to rootWindow.height - 6,
                 "fill" to "#5b6472",
                 "text-anchor" to "end",
                 "font-size" to 10,
@@ -386,8 +454,8 @@ internal object SvgScreenRenderer {
                 "image",
                 "x" to rectangle.x,
                 "y" to rectangle.y,
-                "width" to rectangle.width,
-                "height" to rectangle.height,
+                "width" to rectangle.width + 0.25,
+                "height" to rectangle.height + 0.25,
                 "href" to href,
                 "preserveAspectRatio" to "none",
             )
@@ -458,6 +526,12 @@ internal object SvgScreenRenderer {
 
     private fun clipId(prefix: String, window: XWindowSnapshot): String =
         "clip-$prefix-${window.idHex.drop(2)}"
+
+    private fun XWindowSnapshot.displayTitle(): String =
+        label.trim().ifEmpty { idHex }
+
+    private fun escapeJson(value: String): String =
+        value.replace("\\", "\\\\").replace("\"", "\\\"")
 
     private val palette = listOf(
         "#8bd5ca",

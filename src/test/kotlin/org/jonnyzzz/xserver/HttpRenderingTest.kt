@@ -23,7 +23,27 @@ class HttpRenderingTest {
             assertContains(html.body, "two")
             assertContains(html.body, """class="window-map"""")
             assertContains(html.body, """class="window-contents"""")
-            assertContains(html.body, "<footer>${RenderCredit.Text}</footer>")
+            assertContains(html.body, """grid-template-columns: minmax(180px, 21vw) minmax(640px, 1fr)""")
+            assertContains(html.body, """class="screen-map-svg"""")
+            assertContains(html.body, """class="window-preview-svg"""")
+            assertContains(html.body, """class="window-background"""")
+            assertContains(html.body, """data-input-surface="true"""")
+            assertContains(html.body, "fetch('/input/click'")
+            assertContains(html.body, """button: 'left'""")
+            assertContains(html.body, """data-origin-x="80"""")
+            assertContains(html.body, """data-origin-x="20"""")
+            assertContains(html.body, "<strong>two</strong>")
+            assertContains(html.body, "<span>0x200002</span>")
+            assertContains(html.body, "140x100 focused")
+            assertContains(html.body, "<strong>one</strong>")
+            assertContains(html.body, "<span>0x200001</span>")
+            assertContains(html.body, "120x90 overlaps=")
+            assertEquals(
+                true,
+                html.body.indexOf("<strong>two</strong>") < html.body.indexOf("<strong>one</strong>"),
+                "Focused window preview should be rendered before the overlapped non-focused window",
+            )
+            assertContains(html.body, """<footer>by <a href="https://github.com/jonnyzzz/x">@jonnyzzz</a> <a href="https://linkedin.com/in/jonnyzzz">https://linkedin.com/in/jonnyzzz</a></footer>""")
             assertContains(html.body, "3840 x 2160")
             assertContains(html.body, "<dt>DPI</dt><dd>100</dd>")
 
@@ -48,11 +68,99 @@ class HttpRenderingTest {
 
             val json = httpGet(server.localPort, "/state.json")
             assertContains(json.body, """"drawings":2""")
+            assertContains(json.body, """"inputOperations":[]""")
 
             val textHtml = httpGet(server.localPort, "/text")
             assertContains(textHtml.body, "<!--${RenderCredit.Text}-->")
-            assertContains(textHtml.body, "<footer>${RenderCredit.Text}</footer>")
+            assertContains(textHtml.body, """<footer>by <a href="https://github.com/jonnyzzz/x">@jonnyzzz</a> <a href="https://linkedin.com/in/jonnyzzz">https://linkedin.com/in/jonnyzzz</a></footer>""")
 
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `copy area from pixmap renders stored pixmap image into window preview`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 160, 120))
+                out.write(changePropertyRequest(0x0020_0001, "pixmap target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 2, height = 2))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0001))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(copyAreaRequest(0x0020_0100, 0x0020_0001, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+            }
+
+            val html = httpGet(server.localPort, "/")
+            assertContains(html.body, "pixmap target")
+            assertContains(html.body, """data-drawable-id="0x200001"""")
+            assertContains(html.body, """<image""")
+            assertContains(html.body, """href="data:image/png;base64,""")
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `unsupported copy area does not draw diagnostic rectangle artifacts`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 160, 120))
+                out.write(createWindowRequest(0x0020_0002, 30, 40, 160, 120))
+                out.write(changePropertyRequest(0x0020_0002, "copy target"))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0002))
+                out.write(copyAreaRequest(0x0020_0001, 0x0020_0002, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.write(mapWindowRequest(0x0020_0002))
+                out.flush()
+                Thread.sleep(100)
+            }
+
+            val html = httpGet(server.localPort, "/")
+            assertContains(html.body, "copy target")
+            assertEquals(
+                false,
+                html.body.contains("""data-drawable-id="0x200002"><rect x="50" y="60""""),
+                "Unsupported CopyArea must not render fake diagnostic rectangle outlines into app previews",
+            )
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `get property clamps overflowing offsets and lengths`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 160, 120))
+                out.write(changePropertyRequest(0x0020_0001, "short"))
+                out.write(getPropertyRequest(0x0020_0001, longOffset = 0x4000_0000, longLength = 0x7fff_ffff))
+                out.flush()
+
+                val reply = input.readExactly(32)
+                assertEquals(1, reply[0].toInt())
+                assertEquals(0, u16le(reply, 16))
+            }
             server.close()
             serverThread.join(1_000)
         }
@@ -128,6 +236,42 @@ class HttpRenderingTest {
         return bytes
     }
 
+    private fun setup(out: java.io.OutputStream, input: java.io.InputStream) {
+        out.write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        out.flush()
+        val prefix = input.readExactly(8)
+        assertEquals(1, prefix[0].toInt())
+        input.readExactly(u16le(prefix, 6) * 4)
+    }
+
+    private fun createPixmapRequest(id: Int, width: Int, height: Int): ByteArray {
+        val bytes = ByteArray(16)
+        bytes[0] = 53
+        bytes[1] = 24
+        put16le(bytes, 2, 4)
+        put32le(bytes, 4, id)
+        put32le(bytes, 8, X11Ids.RootWindow)
+        put16le(bytes, 12, width)
+        put16le(bytes, 14, height)
+        return bytes
+    }
+
+    private fun copyAreaRequest(source: Int, destination: Int, gc: Int): ByteArray {
+        val bytes = ByteArray(28)
+        bytes[0] = 62
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, source)
+        put32le(bytes, 8, destination)
+        put32le(bytes, 12, gc)
+        put16le(bytes, 16, 40)
+        put16le(bytes, 18, 30)
+        put16le(bytes, 20, 50)
+        put16le(bytes, 22, 60)
+        put16le(bytes, 24, 2)
+        put16le(bytes, 26, 2)
+        return bytes
+    }
+
     private fun polyLineRequest(drawable: Int, gc: Int): ByteArray {
         val bytes = ByteArray(24)
         bytes[0] = 65
@@ -174,6 +318,19 @@ class HttpRenderingTest {
         bytes[16] = 8
         put32le(bytes, 20, data.size)
         data.copyInto(bytes, 24)
+        return bytes
+    }
+
+    private fun getPropertyRequest(window: Int, longOffset: Int, longLength: Int): ByteArray {
+        val bytes = ByteArray(24)
+        bytes[0] = 20
+        bytes[1] = 0
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, window)
+        put32le(bytes, 8, 39)
+        put32le(bytes, 12, 31)
+        put32le(bytes, 16, longOffset)
+        put32le(bytes, 20, longLength)
         return bytes
     }
 

@@ -34,8 +34,10 @@ The same TCP port also serves HTTP for agent observation:
 - `/text` returns an HTML text report.
 - `/text.txt` returns the plain text report.
 - `/state.json` returns a compact JSON snapshot.
+- `/input/click` accepts pointer click requests and injects X11 `ButtonPress`/`ButtonRelease` events.
 
 The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, and overlap rectangles.
+The HTML/SVG view is also an input surface: clicking the window map or a large window preview posts to the same `/input/click` API that agents can call directly.
 
 ![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
 
@@ -103,6 +105,18 @@ docker run -d --name x-demo-idea \
 ```
 
 Open `http://127.0.0.1:16000/` for the HTML page with the SVG window map, large per-window previews, and state summary. Use `http://127.0.0.1:16000/text.txt` for a plain-text snapshot.
+
+Send input through the HTTP API:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:16000/input/click \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data 'x=1920&y=1080&button=left'
+```
+
+`button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..5`.
+
+Current IntelliJ demo limitation: dialogs rendered through Java2D/AWT are visible and clickable, but JCEF/Chromium surfaces report `GLX is not present` because the server does not implement the GLX extension yet. The HTTP state report logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 

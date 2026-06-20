@@ -12,58 +12,63 @@ internal class X11Connection(
     private val input: InputStream,
     private val output: OutputStream,
     private val state: X11State,
-) {
+) : XEventSink {
     private lateinit var byteOrder: ByteOrder
     private var sequence = 0
     private val trace = java.lang.Boolean.getBoolean("x.trace")
+    private val writeLock = Any()
 
     fun run() {
-        val setupPrefix = input.readExactly(12)
-        byteOrder = ByteOrder.fromSetupByte(setupPrefix[0].toInt() and 0xff)
-        val major = byteOrder.u16(setupPrefix, 2)
-        val minor = byteOrder.u16(setupPrefix, 4)
-        val authNameLength = byteOrder.u16(setupPrefix, 6)
-        val authDataLength = byteOrder.u16(setupPrefix, 8)
+        try {
+            val setupPrefix = input.readExactly(12)
+            byteOrder = ByteOrder.fromSetupByte(setupPrefix[0].toInt() and 0xff)
+            val major = byteOrder.u16(setupPrefix, 2)
+            val minor = byteOrder.u16(setupPrefix, 4)
+            val authNameLength = byteOrder.u16(setupPrefix, 6)
+            val authDataLength = byteOrder.u16(setupPrefix, 8)
 
-        val authNamePad = paddedLength(authNameLength)
-        val authDataPad = paddedLength(authDataLength)
-        if (authNamePad > 0) input.readExactly(authNamePad)
-        if (authDataPad > 0) input.readExactly(authDataPad)
+            val authNamePad = paddedLength(authNameLength)
+            val authDataPad = paddedLength(authDataLength)
+            if (authNamePad > 0) input.readExactly(authNamePad)
+            if (authDataPad > 0) input.readExactly(authDataPad)
 
-        val reply = SetupReply.success(
-            byteOrder = byteOrder,
-            clientMajor = major,
-            clientMinor = minor,
-            width = state.width,
-            height = state.height,
-            widthMillimeters = state.widthMillimeters,
-            heightMillimeters = state.heightMillimeters,
-        )
-        output.write(reply)
-        output.flush()
+            val reply = SetupReply.success(
+                byteOrder = byteOrder,
+                clientMajor = major,
+                clientMinor = minor,
+                width = state.width,
+                height = state.height,
+                widthMillimeters = state.widthMillimeters,
+                heightMillimeters = state.heightMillimeters,
+            )
+            write(reply)
+            state.registerEventSink(this)
 
-        while (true) {
-            val header = input.readOrNull(4) ?: return
-            val opcode = header[0].toInt() and 0xff
-            val minorOpcode = header[1].toInt() and 0xff
-            val units = byteOrder.u16(header, 2)
-            if (units == 0) {
-                writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = 0)
-                return
+            while (true) {
+                val header = input.readOrNull(4) ?: return
+                val opcode = header[0].toInt() and 0xff
+                val minorOpcode = header[1].toInt() and 0xff
+                val units = byteOrder.u16(header, 2)
+                if (units == 0) {
+                    writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = 0)
+                    return
+                }
+                val body = input.readExactly(units * 4 - 4)
+                sequence = (sequence + 1) and 0xffff
+                if (trace) {
+                    System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
+                }
+                dispatch(opcode, minorOpcode, body)
             }
-            val body = input.readExactly(units * 4 - 4)
-            sequence = (sequence + 1) and 0xffff
-            if (trace) {
-                System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
-            }
-            dispatch(opcode, minorOpcode, body)
+        } finally {
+            state.unregisterEventSink(this)
         }
     }
 
     private fun dispatch(opcode: Int, minorOpcode: Int, body: ByteArray) {
         when (opcode) {
             1 -> createWindow(body)
-            2 -> unitReplyless()
+            2 -> changeWindowAttributes(body)
             3 -> getWindowAttributes(body)
             4 -> destroyWindow(body)
             6 -> unitReplyless()
@@ -162,6 +167,13 @@ internal class X11Connection(
             backgroundPixel = createWindowBackground(body),
         )
         state.putWindow(window)
+        createWindowEventMask(body)?.let { state.selectEvents(this, id, it) }
+    }
+
+    private fun changeWindowAttributes(body: ByteArray) {
+        if (body.size < 8) return
+        val windowId = byteOrder.u32(body, 0)
+        windowEventMask(body, maskOffset = 4, valuesOffset = 8)?.let { state.selectEvents(this, windowId, it) }
     }
 
     private fun destroyWindow(body: ByteArray) {
@@ -316,8 +328,8 @@ internal class X11Connection(
         val window = state.window(byteOrder.u32(body, 0)) ?: return writeError(3, 20, badValue = byteOrder.u32(body, 0))
         val propertyId = byteOrder.u32(body, 4)
         val requestedType = byteOrder.u32(body, 8)
-        val longOffset = byteOrder.u32(body, 12) * 4
-        val longLength = byteOrder.u32(body, 16) * 4
+        val longOffset = byteOrder.u32(body, 12).toLong().coerceAtLeast(0L).saturatingTimes4()
+        val longLength = byteOrder.u32(body, 16).toLong().coerceAtLeast(0L).saturatingTimes4()
         val property = window.properties[propertyId]
         if (property == null || (requestedType != 0 && requestedType != property.type)) {
             val reply = reply(extra = 0, payloadUnits = 0)
@@ -326,8 +338,8 @@ internal class X11Connection(
             byteOrder.put32(reply, 16, 0)
             return write(reply)
         }
-        val available = property.data.drop(longOffset).toByteArray()
-        val value = available.take(longLength).toByteArray()
+        val available = property.data.drop(longOffset.coerceAtMost(property.data.size.toLong()).toInt()).toByteArray()
+        val value = available.take(longLength.coerceAtMost(available.size.toLong()).toInt()).toByteArray()
         val bytesAfter = (available.size - value.size).coerceAtLeast(0)
         val reply = reply(extra = property.format, payloadUnits = paddedLength(value.size) / 4)
         byteOrder.put32(reply, 8, property.type)
@@ -425,7 +437,7 @@ internal class X11Connection(
     }
 
     private fun createPixmap(depth: Int, body: ByteArray) {
-        if (body.size < 16) return
+        if (body.size < 12) return
         state.putPixmap(
             XPixmap(
                 id = byteOrder.u32(body, 0),
@@ -472,20 +484,31 @@ internal class X11Connection(
     private fun copyArea(body: ByteArray) {
         if (body.size < 24) return
         val gc = state.gc(byteOrder.u32(body, 8))
+        val sourceDrawable = byteOrder.u32(body, 0)
+        val destinationDrawable = byteOrder.u32(body, 4)
+        val sourceX = byteOrder.i16(body, 12)
+        val sourceY = byteOrder.i16(body, 14)
+        val destinationX = byteOrder.i16(body, 16)
+        val destinationY = byteOrder.i16(body, 18)
+        val width = byteOrder.u16(body, 20)
+        val height = byteOrder.u16(body, 22)
+        val image = state.pixmapImageAt(sourceDrawable, sourceX, sourceY, width, height)
+        if (image == null) return
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 4),
-                kind = XDrawingKind.Rectangle,
+                drawableId = destinationDrawable,
+                kind = XDrawingKind.PutImage,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
                 rectangles = listOf(
                     XRectangleCommand(
-                        x = byteOrder.i16(body, 16),
-                        y = byteOrder.i16(body, 18),
-                        width = byteOrder.u16(body, 20),
-                        height = byteOrder.u16(body, 22),
+                        x = destinationX,
+                        y = destinationY,
+                        width = width,
+                        height = height,
                     ),
                 ),
+                imageDataUri = image.imageDataUri,
             ),
         )
     }
@@ -570,22 +593,38 @@ internal class X11Connection(
     private fun putImage(format: Int, body: ByteArray) {
         if (body.size < 20) return
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
+        val x = byteOrder.i16(body, 12)
+        val y = byteOrder.i16(body, 14)
+        val imageDataUri = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
+        if (imageDataUri != null) {
+            state.putPixmapImage(
+                drawableId,
+                XPixmapImage(
+                    x = x,
+                    y = y,
+                    width = width,
+                    height = height,
+                    imageDataUri = imageDataUri,
+                ),
+            )
+        }
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.PutImage,
                 foreground = gc.foreground,
                 rectangles = listOf(
                     XRectangleCommand(
-                        x = byteOrder.i16(body, 12),
-                        y = byteOrder.i16(body, 14),
+                        x = x,
+                        y = y,
                         width = width,
                         height = height,
                     ),
                 ),
-                imageDataUri = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size)),
+                imageDataUri = imageDataUri,
             ),
         )
     }
@@ -794,6 +833,24 @@ internal class X11Connection(
         write(event)
     }
 
+    override fun sendPointerEvent(event: XPointerEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = event.type.code.toByte()
+        bytes[1] = event.button.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.time)
+        byteOrder.put32(bytes, 8, X11Ids.RootWindow)
+        byteOrder.put32(bytes, 12, event.eventWindowId)
+        byteOrder.put32(bytes, 16, event.childWindowId)
+        byteOrder.put16(bytes, 20, event.rootX)
+        byteOrder.put16(bytes, 22, event.rootY)
+        byteOrder.put16(bytes, 24, event.eventX)
+        byteOrder.put16(bytes, 26, event.eventY)
+        byteOrder.put16(bytes, 28, event.state)
+        bytes[30] = 1
+        write(bytes)
+    }
+
     private fun reply(extra: Int, payloadUnits: Int): ByteArray {
         val bytes = ByteArray(32 + payloadUnits * 4)
         bytes[0] = 1
@@ -804,8 +861,10 @@ internal class X11Connection(
     }
 
     private fun write(bytes: ByteArray) {
-        output.write(bytes)
-        output.flush()
+        synchronized(writeLock) {
+            output.write(bytes)
+            output.flush()
+        }
     }
 
     private fun writeError(error: Int, opcode: Int, minorOpcode: Int = 0, badValue: Int) {
@@ -834,6 +893,25 @@ internal class X11Connection(
         return background
     }
 
+    private fun createWindowEventMask(body: ByteArray): Int? {
+        if (body.size < 28) return null
+        return windowEventMask(body, maskOffset = 24, valuesOffset = 28)
+    }
+
+    private fun windowEventMask(body: ByteArray, maskOffset: Int, valuesOffset: Int): Int? {
+        if (body.size < valuesOffset || body.size < maskOffset + 4) return null
+        val mask = byteOrder.u32(body, maskOffset)
+        var offset = valuesOffset
+        for (bit in 0..14) {
+            if ((mask and (1 shl bit)) == 0) continue
+            if (offset + 4 > body.size) break
+            val value = byteOrder.u32(body, offset)
+            if (bit == 11) return value
+            offset += 4
+        }
+        return null
+    }
+
     private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int) {
         var offset = valuesOffset
         fun next(): Int? {
@@ -858,6 +936,9 @@ internal class X11Connection(
         }
         state.updateGc(id, foreground = foreground, background = background, lineWidth = lineWidth, fontId = fontId)
     }
+
+    private fun Long.saturatingTimes4(): Long =
+        if (this > Long.MAX_VALUE / 4) Long.MAX_VALUE else this * 4
 
     private fun points(body: ByteArray, startOffset: Int, coordMode: Int): List<XPoint> {
         val points = mutableListOf<XPoint>()

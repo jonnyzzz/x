@@ -17,8 +17,15 @@ internal class X11State(
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
+    private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
+    private var pointerX: Int = 0
+    private var pointerY: Int = 0
+    private var pointerState: Int = 0
+    private var inputTime: Int = 1
+    private var nextInputOperationId: Int = 1
+    private val inputOperations = mutableListOf<XInputOperation>()
 
     val extensions = listOf<XExtension>()
 
@@ -93,6 +100,100 @@ internal class X11State(
     }
 
     @Synchronized
+    fun registerEventSink(sink: XEventSink) {
+        eventSinks.putIfAbsent(sink, linkedMapOf())
+    }
+
+    @Synchronized
+    fun unregisterEventSink(sink: XEventSink) {
+        eventSinks.remove(sink)
+    }
+
+    @Synchronized
+    fun selectEvents(sink: XEventSink, windowId: Int, eventMask: Int) {
+        if (!windows.containsKey(windowId)) return
+        val selections = eventSinks.getOrPut(sink) { linkedMapOf() }
+        if (eventMask == 0) {
+            selections.remove(windowId)
+        } else {
+            selections[windowId] = eventMask
+        }
+    }
+
+    fun pointerButton(x: Int, y: Int, button: Int, pressed: Boolean): XPointerDispatch {
+        val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val targetId: Int?
+        synchronized(this) {
+            pointerX = x.coerceIn(0, width - 1)
+            pointerY = y.coerceIn(0, height - 1)
+            val previousState = pointerState
+            val type = if (pressed) XPointerEventType.ButtonPress else XPointerEventType.ButtonRelease
+            val mask = XEventMasks.forPointerType(type)
+            targetId = windowAt(pointerX, pointerY)?.id
+            val path = targetId?.let { windowPathToRoot(it) }.orEmpty()
+            val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
+            val childByAncestor = childByAncestor(path)
+            val time = inputTime++
+
+            for ((sink, selections) in eventSinks) {
+                for (window in path) {
+                    val selectedMask = selections[window.id] ?: continue
+                    if ((selectedMask and mask) == 0) continue
+                    val absolute = absoluteById.getValue(window.id)
+                    deliveries += sink to XPointerEvent(
+                        type = type,
+                        button = button,
+                        rootX = pointerX,
+                        rootY = pointerY,
+                        eventWindowId = window.id,
+                        childWindowId = childByAncestor[window.id] ?: 0,
+                        eventX = pointerX - absolute.first,
+                        eventY = pointerY - absolute.second,
+                        state = previousState,
+                        time = time,
+                    )
+                }
+            }
+
+            val buttonMask = buttonMask(button)
+            pointerState = if (pressed) {
+                pointerState or buttonMask
+            } else {
+                pointerState and buttonMask.inv()
+            }
+            if (targetId != null) focusWindowId = targetId
+        }
+
+        for ((sink, event) in deliveries) {
+            sink.sendPointerEvent(event)
+        }
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+    }
+
+    @Synchronized
+    fun recordInputOperation(
+        kind: String,
+        x: Int,
+        y: Int,
+        button: String,
+        targetWindowId: Int?,
+        deliveredEvents: Int,
+    ) {
+        inputOperations += XInputOperation(
+            id = nextInputOperationId++,
+            kind = kind,
+            x = x,
+            y = y,
+            button = button,
+            targetWindowId = targetWindowId,
+            deliveredEvents = deliveredEvents,
+        )
+        if (inputOperations.size > MaxInputOperations) {
+            inputOperations.removeAt(0)
+        }
+    }
+
+    @Synchronized
     fun configureWindow(
         id: Int,
         x: Int? = null,
@@ -146,6 +247,7 @@ internal class X11State(
             windows = windowSnapshots,
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
+            inputOperations = inputOperations.toList(),
         )
     }
 
@@ -158,6 +260,23 @@ internal class X11State(
     fun putPixmap(pixmap: XPixmap) {
         pixmaps[pixmap.id] = pixmap
     }
+
+    @Synchronized
+    fun putPixmapImage(pixmapId: Int, image: XPixmapImage) {
+        pixmaps[pixmapId]?.images?.add(image)
+    }
+
+    @Synchronized
+    fun pixmapImageAt(pixmapId: Int, x: Int, y: Int, width: Int, height: Int): XPixmapImage? =
+        pixmaps[pixmapId]?.images
+            ?.asReversed()
+            ?.firstOrNull { image ->
+                image.x == x &&
+                    image.y == y &&
+                    image.width == width &&
+                    image.height == height
+            }
+            ?: pixmaps[pixmapId]?.images?.lastOrNull()
 
     @Synchronized
     fun putGc(gc: XGraphicsContext) {
@@ -231,6 +350,7 @@ internal class X11State(
 
     companion object {
         private const val MaxDrawingCommands = 10_000
+        private const val MaxInputOperations = 200
 
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
             ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
@@ -386,6 +506,41 @@ internal class X11State(
 
     private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
 
+    private fun windowAt(x: Int, y: Int): XWindow? =
+        windows.values.toList()
+            .asReversed()
+            .firstOrNull { window ->
+                window.mapped &&
+                    visibleBounds(window, absolutePosition(window).first, absolutePosition(window).second)?.let { bounds ->
+                        x >= bounds.x &&
+                            y >= bounds.y &&
+                            x < bounds.x + bounds.width &&
+                            y < bounds.y + bounds.height
+                    } == true
+            }
+
+    private fun windowPathToRoot(windowId: Int): List<XWindow> {
+        val path = mutableListOf<XWindow>()
+        var current = windows[windowId]
+        val visited = mutableSetOf<Int>()
+        while (current != null && visited.add(current.id)) {
+            path += current
+            current = windows[current.parentId]
+        }
+        return path
+    }
+
+    private fun childByAncestor(pathFromTarget: List<XWindow>): Map<Int, Int> {
+        val result = linkedMapOf<Int, Int>()
+        for (index in 1 until pathFromTarget.size) {
+            result[pathFromTarget[index].id] = pathFromTarget[index - 1].id
+        }
+        return result
+    }
+
+    private fun buttonMask(button: Int): Int =
+        if (button in 1..5) 1 shl (7 + button) else 0
+
     private val drawings = mutableListOf<XDrawingCommand>()
 
     private data class XRectangle(
@@ -415,6 +570,16 @@ internal data class XPixmap(
     val width: Int,
     val height: Int,
     val depth: Int,
+) {
+    val images: MutableList<XPixmapImage> = mutableListOf()
+}
+
+internal data class XPixmapImage(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val imageDataUri: String,
 )
 
 internal data class XDrawable(
@@ -493,7 +658,20 @@ internal data class XScreenSnapshot(
     val windows: List<XWindowSnapshot>,
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
+    val inputOperations: List<XInputOperation>,
 )
+
+internal data class XInputOperation(
+    val id: Int,
+    val kind: String,
+    val x: Int,
+    val y: Int,
+    val button: String,
+    val targetWindowId: Int?,
+    val deliveredEvents: Int,
+) {
+    val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
+}
 
 internal data class XWindowSnapshot(
     val id: Int,
