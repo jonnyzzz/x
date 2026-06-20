@@ -167,6 +167,7 @@ internal object SvgScreenRenderer {
                         "stroke-width" to strokeWidth,
                     )
                 }
+                renderFramebuffers(this, visibleWindows, originX = 0, originY = 0, clipPrefix = "screen")
                 renderDrawings(this, snapshot, clipPrefix = "screen")
                 visibleWindows.forEachIndexed { index, window ->
                     val color = palette[index % palette.size]
@@ -310,6 +311,7 @@ internal object SvgScreenRenderer {
                     "fill" to pixelColor(window.backgroundPixel),
                 )
             }
+            renderFramebuffers(this, subtree, originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
             renderDrawings(
                 this,
                 snapshot,
@@ -376,6 +378,7 @@ internal object SvgScreenRenderer {
             if (drawableIds != null && drawing.drawableId !in drawableIds) continue
             val window = windows[drawing.drawableId] ?: continue
             if (!window.mapped || window.visibleWidth <= 0 || window.visibleHeight <= 0) continue
+            if (window.framebufferDataUri != null && drawing.kind in framebufferBackedDrawings) continue
             builder.svgElement(
                 "g",
                 "data-drawable-id" to window.idHex,
@@ -393,6 +396,7 @@ internal object SvgScreenRenderer {
                             renderImages(this, drawing)
                         }
                     }
+                    XDrawingKind.CopyArea -> renderImages(this, drawing)
                     XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
                     XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)
                     XDrawingKind.FillArc -> renderArcs(this, drawing, filled = true)
@@ -400,6 +404,34 @@ internal object SvgScreenRenderer {
                     XDrawingKind.Segment -> renderSegments(this, drawing)
                     XDrawingKind.Text -> renderText(this, drawing)
                 }
+            }
+        }
+    }
+
+    private fun renderFramebuffers(
+        builder: XmlDom,
+        windows: List<XWindowSnapshot>,
+        originX: Int,
+        originY: Int,
+        clipPrefix: String,
+    ) {
+        for (window in windows) {
+            val href = window.framebufferDataUri ?: continue
+            builder.svgElement(
+                "g",
+                "clip-path" to "url(#${clipId(clipPrefix, window)})",
+            ) {
+                svgElement(
+                    "image",
+                    "class" to "framebuffer-image",
+                    "data-window-id" to window.idHex,
+                    "x" to window.x - originX,
+                    "y" to window.y - originY,
+                    "width" to window.width,
+                    "height" to window.height,
+                    "href" to href,
+                    "preserveAspectRatio" to "none",
+                )
             }
         }
     }
@@ -454,8 +486,8 @@ internal object SvgScreenRenderer {
                 "image",
                 "x" to rectangle.x,
                 "y" to rectangle.y,
-                "width" to rectangle.width + 0.25,
-                "height" to rectangle.height + 0.25,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
                 "href" to href,
                 "preserveAspectRatio" to "none",
             )
@@ -540,5 +572,11 @@ internal object SvgScreenRenderer {
         "#eed49f",
         "#91d7e3",
         "#ed8796",
+    )
+    private val framebufferBackedDrawings = setOf(
+        XDrawingKind.Clear,
+        XDrawingKind.FillRectangle,
+        XDrawingKind.PutImage,
+        XDrawingKind.CopyArea,
     )
 }

@@ -3,10 +3,6 @@ package org.jonnyzzz.xserver
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
-import java.awt.image.BufferedImage
-import java.io.ByteArrayOutputStream
-import java.util.Base64
-import javax.imageio.ImageIO
 
 internal class X11Connection(
     private val input: InputStream,
@@ -464,19 +460,21 @@ internal class X11Connection(
         if (body.size < 12) return
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return
+        val x = byteOrder.i16(body, 4)
+        val y = byteOrder.i16(body, 6)
+        val rectangle = XRectangleCommand(
+            x = x,
+            y = y,
+            width = byteOrder.u16(body, 8).takeIf { it > 0 } ?: (window.width - x),
+            height = byteOrder.u16(body, 10).takeIf { it > 0 } ?: (window.height - y),
+        )
+        state.fillRectangles(windowId, window.backgroundPixel, listOf(rectangle))
         state.draw(
             XDrawingCommand(
                 drawableId = windowId,
                 kind = XDrawingKind.Clear,
                 foreground = window.backgroundPixel,
-                rectangles = listOf(
-                    XRectangleCommand(
-                        x = byteOrder.i16(body, 4),
-                        y = byteOrder.i16(body, 6),
-                        width = byteOrder.u16(body, 8).takeIf { it > 0 } ?: window.width,
-                        height = byteOrder.u16(body, 10).takeIf { it > 0 } ?: window.height,
-                    ),
-                ),
+                rectangles = listOf(rectangle),
             ),
         )
     }
@@ -492,12 +490,20 @@ internal class X11Connection(
         val destinationY = byteOrder.i16(body, 18)
         val width = byteOrder.u16(body, 20)
         val height = byteOrder.u16(body, 22)
-        val image = state.pixmapImageAt(sourceDrawable, sourceX, sourceY, width, height)
-        if (image == null) return
+        val image = state.copyArea(
+            sourceDrawableId = sourceDrawable,
+            destinationDrawableId = destinationDrawable,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return
         state.draw(
             XDrawingCommand(
                 drawableId = destinationDrawable,
-                kind = XDrawingKind.PutImage,
+                kind = XDrawingKind.CopyArea,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
                 rectangles = listOf(
@@ -508,7 +514,8 @@ internal class X11Connection(
                         height = height,
                     ),
                 ),
-                imageDataUri = image.imageDataUri,
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                sourceDrawableId = sourceDrawable,
             ),
         )
     }
@@ -564,13 +571,17 @@ internal class X11Connection(
     private fun polyRectangle(body: ByteArray, kind: XDrawingKind) {
         if (body.size < 16) return
         val gc = state.gc(byteOrder.u32(body, 4))
+        val rectangles = rectangles(body, 8)
+        if (kind == XDrawingKind.FillRectangle) {
+            state.fillRectangles(byteOrder.u32(body, 0), gc.foreground, rectangles)
+        }
         state.draw(
             XDrawingCommand(
                 drawableId = byteOrder.u32(body, 0),
                 kind = kind,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
-                rectangles = rectangles(body, 8),
+                rectangles = rectangles,
             ),
         )
     }
@@ -598,18 +609,10 @@ internal class X11Connection(
         val height = byteOrder.u16(body, 10)
         val x = byteOrder.i16(body, 12)
         val y = byteOrder.i16(body, 14)
-        val imageDataUri = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
-        if (imageDataUri != null) {
-            state.putPixmapImage(
-                drawableId,
-                XPixmapImage(
-                    x = x,
-                    y = y,
-                    width = width,
-                    height = height,
-                    imageDataUri = imageDataUri,
-                ),
-            )
+        val image = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
+        val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
+        if (image != null) {
+            state.putImage(drawableId, x, y, image)
         }
         state.draw(
             XDrawingCommand(
@@ -991,22 +994,20 @@ internal class X11Connection(
         height: Int,
         depth: Int,
         data: ByteArray,
-    ): String? {
+    ): XImagePixels? {
         if (format != 2 || width <= 0 || height <= 0 || depth !in setOf(24, 32)) return null
         val bytesPerPixel = 4
         val stride = paddedLength(width * bytesPerPixel)
         if (data.size < stride * height) return null
-        val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val pixels = IntArray(width * height)
         for (y in 0 until height) {
             val rowOffset = y * stride
             for (x in 0 until width) {
                 val pixel = byteOrder.u32(data, rowOffset + x * bytesPerPixel)
-                image.setRGB(x, y, 0xff00_0000.toInt() or (pixel and 0x00ff_ffff))
+                pixels[y * width + x] = XFramebuffer.argb(pixel)
             }
         }
-        val output = ByteArrayOutputStream()
-        ImageIO.write(image, "png", output)
-        return "data:image/png;base64," + Base64.getEncoder().encodeToString(output.toByteArray())
+        return XImagePixels(width, height, pixels)
     }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4

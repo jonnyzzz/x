@@ -208,6 +208,9 @@ internal class X11State(
         width?.let { window.width = it }
         height?.let { window.height = it }
         borderWidth?.let { window.borderWidth = it }
+        if (width != null || height != null) {
+            window.framebuffer.resize(window.width, window.height, window.backgroundPixel)
+        }
         return window
     }
 
@@ -235,6 +238,7 @@ internal class X11State(
                 visibleWidth = visible?.width ?: 0,
                 visibleHeight = visible?.height ?: 0,
                 backgroundPixel = window.backgroundPixel,
+                framebufferDataUri = window.framebuffer.toDataUri(),
             )
         }
         return XScreenSnapshot(
@@ -262,21 +266,44 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putPixmapImage(pixmapId: Int, image: XPixmapImage) {
-        pixmaps[pixmapId]?.images?.add(image)
+    fun putImage(drawableId: Int, x: Int, y: Int, image: XImagePixels): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.putImage(x, y, image)
     }
 
     @Synchronized
-    fun pixmapImageAt(pixmapId: Int, x: Int, y: Int, width: Int, height: Int): XPixmapImage? =
-        pixmaps[pixmapId]?.images
-            ?.asReversed()
-            ?.firstOrNull { image ->
-                image.x == x &&
-                    image.y == y &&
-                    image.width == width &&
-                    image.height == height
-            }
-            ?: pixmaps[pixmapId]?.images?.lastOrNull()
+    fun copyArea(
+        sourceDrawableId: Int,
+        destinationDrawableId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): XImagePixels? {
+        val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        return source.copyAreaTo(
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        )
+    }
+
+    @Synchronized
+    fun fillRectangles(drawableId: Int, pixel: Int, rectangles: List<XRectangleCommand>): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (rectangle in rectangles) {
+            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel) || painted
+        }
+        return painted
+    }
 
     @Synchronized
     fun putGc(gc: XGraphicsContext) {
@@ -563,6 +590,7 @@ internal data class XWindow(
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
+    val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )
 
 internal data class XPixmap(
@@ -570,16 +598,7 @@ internal data class XPixmap(
     val width: Int,
     val height: Int,
     val depth: Int,
-) {
-    val images: MutableList<XPixmapImage> = mutableListOf()
-}
-
-internal data class XPixmapImage(
-    val x: Int,
-    val y: Int,
-    val width: Int,
-    val height: Int,
-    val imageDataUri: String,
+    val framebuffer: XFramebuffer = XFramebuffer(width, height),
 )
 
 internal data class XDrawable(
@@ -609,6 +628,7 @@ internal enum class XDrawingKind {
     FillArc,
     Text,
     PutImage,
+    CopyArea,
 }
 
 internal data class XPoint(
@@ -626,6 +646,7 @@ internal data class XDrawingCommand(
     val rectangles: List<XRectangleCommand> = emptyList(),
     val text: String = "",
     val imageDataUri: String? = null,
+    val sourceDrawableId: Int? = null,
 )
 
 internal data class XRectangleCommand(
@@ -692,6 +713,7 @@ internal data class XWindowSnapshot(
     val visibleWidth: Int,
     val visibleHeight: Int,
     val backgroundPixel: Int,
+    val framebufferDataUri: String?,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"

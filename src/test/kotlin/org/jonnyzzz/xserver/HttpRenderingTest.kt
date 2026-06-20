@@ -54,6 +54,7 @@ class HttpRenderingTest {
             assertContains(svg.body, "0x200002")
             assertContains(svg.body, """data-drawable-id="0x200001"""")
             assertContains(svg.body, "<polyline")
+            assertContains(svg.body, """class="framebuffer-image"""")
             assertContains(svg.body, """href="data:image/png;base64,""")
             assertFalse(svg.body.contains("""width="65533""""))
             assertContains(svg.body, RenderCredit.Text)
@@ -90,7 +91,7 @@ class HttpRenderingTest {
 
                 out.write(createWindowRequest(0x0020_0001, 10, 20, 160, 120))
                 out.write(changePropertyRequest(0x0020_0001, "pixmap target"))
-                out.write(createPixmapRequest(0x0020_0100, width = 2, height = 2))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
                 out.write(createGcRequest(0x0020_1001, 0x0020_0001))
                 out.write(putImageRequest(0x0020_0100, 0x0020_1001))
                 out.write(copyAreaRequest(0x0020_0100, 0x0020_0001, 0x0020_1001))
@@ -101,9 +102,13 @@ class HttpRenderingTest {
 
             val html = httpGet(server.localPort, "/")
             assertContains(html.body, "pixmap target")
-            assertContains(html.body, """data-drawable-id="0x200001"""")
+            assertContains(html.body, """data-window-id="0x200001"""")
             assertContains(html.body, """<image""")
+            assertContains(html.body, """class="framebuffer-image"""")
+            assertContains(html.body, """width="160"""")
+            assertContains(html.body, """height="120"""")
             assertContains(html.body, """href="data:image/png;base64,""")
+            assertContains(httpGet(server.localPort, "/state.json").body, """"drawings":2""")
 
             server.close()
             serverThread.join(1_000)
