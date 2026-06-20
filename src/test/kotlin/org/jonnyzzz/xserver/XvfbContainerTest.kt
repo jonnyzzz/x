@@ -13,20 +13,12 @@ import kotlin.test.assertTrue
 class XvfbContainerTest {
     @Test
     fun `docker baseline can run xdpyinfo against xvfb`() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        assumeDockerAndImage(REFERENCE_IMAGE)
 
-        GenericContainer(DockerImageName.parse("debian:stable-slim"))
+        GenericContainer(DockerImageName.parse(REFERENCE_IMAGE).asCompatibleSubstituteFor("ubuntu"))
             .withCommand("sleep", "300")
             .use { container ->
                 container.start()
-                assertEquals(
-                    0,
-                    container.execInContainer(
-                        "sh",
-                        "-lc",
-                        "apt-get update && apt-get install -y --no-install-recommends xvfb x11-utils",
-                    ).exitCode,
-                )
                 val result = container.execInContainer(
                     "sh",
                     "-lc",
@@ -41,26 +33,17 @@ class XvfbContainerTest {
 
     @Test
     fun `docker x11 tools can query kotlin server`() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        assumeDockerAndImage(CLIENT_IMAGE)
         val port = 6207
         assumeTrue(isPortAvailable(port), "Port $port is not available")
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
 
-            GenericContainer(DockerImageName.parse("debian:stable-slim"))
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
                 .withCommand("sleep", "300")
                 .use { container ->
                     container.start()
-                    assertEquals(
-                        0,
-                        container.execInContainer(
-                            "sh",
-                            "-lc",
-                            "apt-get update && apt-get install -y --no-install-recommends netcat-openbsd x11-apps x11-utils",
-                        ).exitCode,
-                    )
-                    assertClientSucceeds(container, "nc -vz host.docker.internal $port")
 
                     assertClientSucceeds(container, port, "xdpyinfo")
                     assertClientSucceeds(container, port, "xwininfo -root")
@@ -78,26 +61,17 @@ class XvfbContainerTest {
 
     @Test
     fun `window manager smoke exposes independent windows and overlap over http`() {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        assumeDockerAndImage(CLIENT_IMAGE)
         val port = 6209
         assumeTrue(isPortAvailable(port), "Port $port is not available")
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 800, height = 600)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
 
-            GenericContainer(DockerImageName.parse("debian:stable-slim"))
+            GenericContainer(DockerImageName.parse(CLIENT_IMAGE).asCompatibleSubstituteFor("ubuntu"))
                 .withCommand("sleep", "300")
                 .use { container ->
                     container.start()
-                    assertEquals(
-                        0,
-                        container.execInContainer(
-                            "sh",
-                            "-lc",
-                            "apt-get update && apt-get install -y --no-install-recommends curl netcat-openbsd twm x11-apps x11-utils",
-                        ).exitCode,
-                    )
-                    assertClientSucceeds(container, "nc -vz host.docker.internal $port")
 
                     val display = port - 6000
                     val result = container.execInContainer(
@@ -158,14 +132,19 @@ class XvfbContainerTest {
         assertEquals(124, result.exitCode, result.stderr + result.stdout)
     }
 
-    private fun assertClientSucceeds(
-        container: GenericContainer<*>,
-        command: String,
-    ) {
-        val result = container.execInContainer("sh", "-lc", command)
-        assertEquals(0, result.exitCode, result.stderr + result.stdout)
-    }
-
     private fun isPortAvailable(port: Int): Boolean =
         runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
+
+    private fun assumeDockerAndImage(image: String) {
+        assumeTrue(DockerClientFactory.instance().isDockerAvailable, "Docker is not available")
+        val imageExists = runCatching {
+            DockerClientFactory.instance().client().inspectImageCmd(image).exec()
+        }.isSuccess
+        assumeTrue(imageExists, "Build $image first with ./gradlew dockerBuildX11Images")
+    }
+
+    private companion object {
+        const val CLIENT_IMAGE = "jonnyzzz-x/x11-client:latest"
+        const val REFERENCE_IMAGE = "jonnyzzz-x/x11-reference:latest"
+    }
 }

@@ -25,7 +25,7 @@ It can run the first Docker smoke matrix against real X clients:
 - `twm` with overlapping app windows
 - IntelliJ IDEA Community from GitHub releases in an opt-in heavyweight smoke
 
-The graphical apps are currently "runs without protocol failure" smoke tests. Rendering is not complete yet; many drawing requests are accepted as no-ops until the framebuffer milestone.
+The graphical apps are still compatibility smoke tests rather than full visual conformance tests. Rendering now includes the maintained window model and `PutImage` pixel data in SVG previews, but more X drawing semantics are still pending, especially pixmap-backed composition and broader GC operations.
 
 The same TCP port also serves HTTP for agent observation:
 
@@ -36,6 +36,8 @@ The same TCP port also serves HTTP for agent observation:
 - `/state.json` returns a compact JSON snapshot.
 
 The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, and overlap rectangles.
+
+![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
 
 The test suite starts with:
 
@@ -49,11 +51,31 @@ The test suite starts with:
 ./gradlew test
 ```
 
-Docker integration tests require Docker to be available to the current user.
+Docker integration tests require Docker to be available to the current user. Build the local test/demo images before running Docker-backed tests:
+
+```bash
+./gradlew dockerBuildX11Images
+./gradlew test
+```
+
+There are two local images:
+
+- `jonnyzzz-x/x11-client:latest` is the demo/client image. It is Ubuntu-based and includes X11 tools, `twm`, and the native libraries required by JetBrains Runtime/IntelliJ. It does not include Xvfb.
+- `jonnyzzz-x/x11-reference:latest` extends the client image with Xvfb for reference-only comparison tests.
+
+Build only the reusable X11 client image before running heavyweight GUI demos:
+
+```bash
+./gradlew dockerBuildX11Client
+```
+
+The IntelliJ release archive is intentionally not baked into the image; `run-intellij`
+downloads it on first use inside the container.
 
 The IntelliJ Community smoke is intentionally opt-in because it downloads a large GitHub release artifact:
 
 ```bash
+./gradlew dockerBuildX11Client
 ./gradlew test --tests org.jonnyzzz.xserver.IntellijCommunitySmokeTest -Dx.intellijSmoke=true
 ```
 
@@ -64,6 +86,29 @@ Run the prototype server:
 ```
 
 Then point simple X clients at it with `DISPLAY=host:0`, or open `http://host:6000/` to inspect the maintained server model as SVG/text.
+
+Run the 4K/100 DPI IntelliJ Docker demo:
+
+```bash
+./gradlew installDist dockerBuildX11Client
+docker rm -f x-demo-server x-demo-idea
+docker run -d --name x-demo-server \
+  -p 6000:6000 -p 16000:6000 \
+  -v "$PWD/build/install/x:/app:ro" \
+  mcp-steroid-base:latest \
+  /app/bin/x --host 0.0.0.0 --port 6000 --width 3840 --height 2160 --dpi 100
+docker run -d --name x-demo-idea \
+  jonnyzzz-x/x11-client:latest \
+  sh -lc 'touch /tmp/idea-run.log; DISPLAY=host.docker.internal:0 run-intellij >>/tmp/idea-run.log 2>&1 & tail -f /tmp/idea-run.log'
+```
+
+Open `http://127.0.0.1:16000/` for the HTML page with the SVG window map, large per-window previews, and state summary. Use `http://127.0.0.1:16000/text.txt` for a plain-text snapshot.
+
+Run simpler X11 demo clients against an already running server:
+
+```bash
+docker run --rm jonnyzzz-x/x11-client:latest run-x11-apps
+```
 
 ## Roadmap
 

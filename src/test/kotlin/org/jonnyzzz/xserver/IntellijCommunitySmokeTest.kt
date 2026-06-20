@@ -23,42 +23,29 @@ class IntellijCommunitySmokeTest {
         val url = System.getProperty("x.intellijUrl")
             ?: System.getenv("X_INTELLIJ_URL")
             ?: "https://github.com/JetBrains/intellij-community/releases/download/idea/2026.1.3/idea-2026.1.3.tar.gz"
+        val image = System.getProperty("x.intellijImage")
+            ?: System.getenv("X_INTELLIJ_IMAGE")
+            ?: "jonnyzzz-x/x11-client:latest"
+        assumeTrue(imageExists(image), "Build $image first with ./gradlew dockerBuildX11Client")
 
         XServer(ServerOptions(host = "0.0.0.0", port = port, width = 1280, height = 900)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            GenericContainer(DockerImageName.parse("debian:stable-slim"))
+            GenericContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("ubuntu"))
                 .withCommand("sleep", "900")
                 .use { container ->
                     container.start()
-                    assertEquals(
-                        0,
-                        container.execInContainer(
-                            "sh",
-                            "-lc",
-                            "apt-get update && apt-get install -y --no-install-recommends " +
-                                "ca-certificates curl tar gzip openjdk-21-jre " +
-                                "libxrender1 libxtst6 libxi6 libfreetype6 libfontconfig1 libxext6 libx11-6 libxrandr2 libxss1",
-                        ).exitCode,
-                    )
                     val display = port - 6000
                     val result = container.execInContainer(
                         "sh",
                         "-lc",
                         """
                         set -eu
-                        curl -L "$url" -o /tmp/idea.tar.gz
-                        mkdir -p /opt/idea /tmp/idea-config /tmp/idea-system /tmp/idea-log
-                        tar -xzf /tmp/idea.tar.gz -C /opt/idea --strip-components=1
-                        cat > /tmp/idea.properties <<'EOF'
-                        idea.config.path=/tmp/idea-config
-                        idea.system.path=/tmp/idea-system
-                        idea.log.path=/tmp/idea-log
-                        EOF
+                        command -v run-intellij
+                        mkdir -p /tmp/demo-project
                         set +e
-                        export JAVA_HOME="${'$'}(dirname "${'$'}(dirname "${'$'}(readlink -f "${'$'}(command -v java)")")")"
                         DISPLAY=host.docker.internal:$display \
-                        IDEA_PROPERTIES=/tmp/idea.properties \
-                        timeout 45s /opt/idea/bin/idea.sh nosplash
+                        IDEA_URL="$url" \
+                        timeout 45s run-intellij
                         code=${'$'}?
                         set -e
                         test ${'$'}code -eq 124
@@ -73,4 +60,9 @@ class IntellijCommunitySmokeTest {
 
     private fun isPortAvailable(port: Int): Boolean =
         runCatching { ServerSocket(port).use { true } }.getOrDefault(false)
+
+    private fun imageExists(image: String): Boolean =
+        runCatching {
+            DockerClientFactory.instance().client().inspectImageCmd(image).exec()
+        }.isSuccess
 }
