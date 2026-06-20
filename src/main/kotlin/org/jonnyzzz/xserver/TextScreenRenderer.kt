@@ -68,6 +68,25 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("GLX operations:")
+            if (snapshot.glxOperations.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (operation in snapshot.glxOperations.takeLast(20).asReversed()) {
+                    append("- #")
+                    append(operation.id)
+                    append(' ')
+                    append(operation.operation)
+                    append(" minor=")
+                    append(operation.minorOpcode)
+                    if (operation.detail.isNotBlank()) {
+                        append(" ")
+                        append(operation.detail)
+                    }
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Input operations:")
             if (snapshot.inputOperations.isEmpty()) {
                 appendLine("- None.")

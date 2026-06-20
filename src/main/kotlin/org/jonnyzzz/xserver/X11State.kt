@@ -26,8 +26,19 @@ internal class X11State(
     private var inputTime: Int = 1
     private var nextInputOperationId: Int = 1
     private val inputOperations = mutableListOf<XInputOperation>()
+    private val glxContexts = linkedMapOf<Int, XGlxContext>()
+    private var nextGlxOperationId: Int = 1
+    private val glxOperations = mutableListOf<XGlxOperation>()
 
-    val extensions = listOf<XExtension>()
+    val extensions = listOf(
+        XExtension(
+            name = "GLX",
+            majorOpcode = XGlx.MajorOpcode,
+            firstEvent = XGlx.FirstEvent,
+            firstError = XGlx.FirstError,
+            aliases = setOf("SGI-GLX"),
+        ),
+    )
 
     init {
         putWindow(
@@ -252,7 +263,38 @@ internal class X11State(
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
+            glxOperations = glxOperations.toList(),
         )
+    }
+
+    @Synchronized
+    fun putGlxContext(context: XGlxContext) {
+        glxContexts[context.id] = context
+    }
+
+    @Synchronized
+    fun removeGlxContext(id: Int) {
+        glxContexts.remove(id)
+    }
+
+    @Synchronized
+    fun glxContext(id: Int): XGlxContext? = glxContexts[id]
+
+    @Synchronized
+    fun recordGlxOperation(
+        minorOpcode: Int,
+        operation: String,
+        detail: String = "",
+    ) {
+        glxOperations += XGlxOperation(
+            id = nextGlxOperationId++,
+            minorOpcode = minorOpcode,
+            operation = operation,
+            detail = detail,
+        )
+        if (glxOperations.size > MaxGlxOperations) {
+            glxOperations.removeAt(0)
+        }
     }
 
     @Synchronized
@@ -373,11 +415,14 @@ internal class X11State(
     @Synchronized
     fun atomName(id: Int): String? = atomNames[id]
 
-    fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name }
+    fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name || name in it.aliases }
+
+    fun extensionByMajorOpcode(majorOpcode: Int): XExtension? = extensions.firstOrNull { it.majorOpcode == majorOpcode }
 
     companion object {
         private const val MaxDrawingCommands = 10_000
         private const val MaxInputOperations = 200
+        private const val MaxGlxOperations = 200
 
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
             ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
@@ -667,6 +712,7 @@ internal data class XExtension(
     val majorOpcode: Int,
     val firstEvent: Int,
     val firstError: Int,
+    val aliases: Set<String> = emptySet(),
 )
 
 internal data class XScreenSnapshot(
@@ -680,6 +726,7 @@ internal data class XScreenSnapshot(
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
+    val glxOperations: List<XGlxOperation>,
 )
 
 internal data class XInputOperation(
@@ -693,6 +740,21 @@ internal data class XInputOperation(
 ) {
     val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
 }
+
+internal data class XGlxContext(
+    val id: Int,
+    val fbConfigId: Int,
+    val screen: Int,
+    val renderType: Int,
+    val direct: Boolean,
+)
+
+internal data class XGlxOperation(
+    val id: Int,
+    val minorOpcode: Int,
+    val operation: String,
+    val detail: String,
+)
 
 internal data class XWindowSnapshot(
     val id: Int,

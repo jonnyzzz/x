@@ -62,6 +62,12 @@ internal class X11Connection(
     }
 
     private fun dispatch(opcode: Int, minorOpcode: Int, body: ByteArray) {
+        state.extensionByMajorOpcode(opcode)?.let { extension ->
+            if (extension.name == "GLX") {
+                glx(minorOpcode, body, opcode)
+                return
+            }
+        }
         when (opcode) {
             1 -> createWindow(body)
             2 -> changeWindowAttributes(body)
@@ -145,6 +151,174 @@ internal class X11Connection(
             119 -> getModifierMapping()
             127 -> unitReplyless()
             else -> writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = opcode)
+        }
+    }
+
+    private fun glx(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        val operation = XGlx.operationName(minorOpcode)
+        val detail = glxDetail(minorOpcode, body)
+        state.recordGlxOperation(minorOpcode, operation, detail)
+        System.err.println("glx seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
+
+        when (minorOpcode) {
+            XGlx.QueryVersion -> glxQueryVersion()
+            3 -> glxCreateContext(body)
+            4 -> glxDestroyContext(body)
+            5 -> glxMakeCurrent(body, isContextCurrent = false)
+            XGlx.IsDirect -> glxIsDirect(body)
+            8, 9, 11 -> Unit
+            1, 2 -> Unit
+            XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
+            XGlx.QueryExtensionsString -> glxStringReply(XGlx.serverString(XGlx.ExtensionsName))
+            XGlx.QueryServerString -> glxQueryServerString(body)
+            XGlx.ClientInfo -> Unit
+            XGlx.GetFBConfigs -> glxGetFbConfigs(body)
+            XGlx.CreateNewContext -> glxCreateNewContext(body)
+            XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
+            XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
+            else -> writeError(error = 1, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = minorOpcode)
+        }
+    }
+
+    private fun glxQueryVersion() {
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, XGlx.MajorVersion)
+        byteOrder.put32(reply, 12, XGlx.MinorVersion)
+        write(reply)
+    }
+
+    private fun glxGetVisualConfigs(body: ByteArray) {
+        if (!glxScreenIsValid(body, offset = 0)) return
+        val config = XGlx.visualConfig()
+        val reply = reply(extra = 0, payloadUnits = config.size)
+        byteOrder.put32(reply, 8, 1)
+        byteOrder.put32(reply, 12, XGlx.VisualConfigValues)
+        putIntArray(reply, 32, config)
+        write(reply)
+    }
+
+    private fun glxGetFbConfigs(body: ByteArray) {
+        if (!glxScreenIsValid(body, offset = 0)) return
+        val config = XGlx.fbConfig()
+        val reply = reply(extra = 0, payloadUnits = config.size)
+        byteOrder.put32(reply, 8, 1)
+        byteOrder.put32(reply, 12, XGlx.FbConfigAttributePairs)
+        putIntArray(reply, 32, config)
+        write(reply)
+    }
+
+    private fun glxQueryServerString(body: ByteArray) {
+        if (!glxScreenIsValid(body, offset = 0)) return
+        val name = if (body.size >= 8) byteOrder.u32(body, 4) else 0
+        glxStringReply(XGlx.serverString(name))
+    }
+
+    private fun glxStringReply(value: String) {
+        val bytes = value.encodeToByteArray()
+        val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
+        byteOrder.put32(reply, 12, bytes.size)
+        bytes.copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun glxCreateContext(body: ByteArray) {
+        if (body.size < 20) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = 0)
+        val context = byteOrder.u32(body, 0)
+        val visual = byteOrder.u32(body, 4)
+        val screen = byteOrder.u32(body, 8)
+        state.putGlxContext(
+            XGlxContext(
+                id = context,
+                fbConfigId = visual,
+                screen = screen,
+                renderType = XGlx.RgbaType,
+                direct = body[16].toInt() != 0,
+            ),
+        )
+    }
+
+    private fun glxCreateNewContext(body: ByteArray) {
+        if (body.size < 24) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = 0)
+        val context = byteOrder.u32(body, 0)
+        val fbConfig = byteOrder.u32(body, 4)
+        val screen = byteOrder.u32(body, 8)
+        val renderType = byteOrder.u32(body, 12)
+        state.putGlxContext(
+            XGlxContext(
+                id = context,
+                fbConfigId = fbConfig,
+                screen = screen,
+                renderType = renderType,
+                direct = body[20].toInt() != 0,
+            ),
+        )
+    }
+
+    private fun glxCreateContextAttribs(body: ByteArray) {
+        if (body.size < 24) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
+        val context = byteOrder.u32(body, 0)
+        val fbConfig = byteOrder.u32(body, 4)
+        val screen = byteOrder.u32(body, 8)
+        state.putGlxContext(
+            XGlxContext(
+                id = context,
+                fbConfigId = fbConfig,
+                screen = screen,
+                renderType = XGlx.RgbaType,
+                direct = body[16].toInt() != 0,
+            ),
+        )
+    }
+
+    private fun glxDestroyContext(body: ByteArray) {
+        if (body.size >= 4) state.removeGlxContext(byteOrder.u32(body, 0))
+    }
+
+    private fun glxMakeCurrent(body: ByteArray, isContextCurrent: Boolean) {
+        val contextOffset = if (isContextCurrent) 12 else 4
+        if (body.size < contextOffset + 4) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else 5, badValue = 0)
+        }
+        val context = byteOrder.u32(body, contextOffset)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, if (context == 0 || state.glxContext(context) != null) context else 0)
+        write(reply)
+    }
+
+    private fun glxIsDirect(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.IsDirect, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        reply[8] = 0
+        write(reply)
+    }
+
+    private fun glxScreenIsValid(body: ByteArray, offset: Int): Boolean {
+        val screen = if (body.size >= offset + 4) byteOrder.u32(body, offset) else 0
+        if (screen == 0) return true
+        writeError(error = 2, opcode = XGlx.MajorOpcode, badValue = screen)
+        return false
+    }
+
+    private fun glxDetail(minorOpcode: Int, body: ByteArray): String {
+        fun hex(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toHex() else "n/a"
+        fun u32(offset: Int): String = if (body.size >= offset + 4) byteOrder.u32(body, offset).toString() else "n/a"
+        return when (minorOpcode) {
+            XGlx.QueryVersion -> "client=${u32(0)}.${u32(4)}"
+            3 -> "context=${hex(0)} visual=${hex(4)} screen=${u32(8)} direct=${body.getOrNull(16)?.toInt() == 1}"
+            4 -> "context=${hex(0)}"
+            5 -> "drawable=${hex(0)} context=${hex(4)} oldTag=${hex(8)}"
+            XGlx.IsDirect -> "context=${hex(0)}"
+            XGlx.GetVisualConfigs -> "screen=${u32(0)}"
+            XGlx.QueryExtensionsString -> "screen=${u32(0)}"
+            XGlx.QueryServerString -> "screen=${u32(0)} name=${u32(4)}"
+            XGlx.ClientInfo -> "client=${u32(0)}.${u32(4)} bytes=${u32(8)}"
+            XGlx.GetFBConfigs -> "screen=${u32(0)}"
+            XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
+            XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
+            XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
+            1, 2 -> "contextTag=${hex(0)}"
+            8, 9, 11 -> "drawable/context=${hex(0)}"
+            else -> ""
         }
     }
 
@@ -870,6 +1044,14 @@ internal class X11Connection(
         }
     }
 
+    private fun putIntArray(bytes: ByteArray, offset: Int, values: IntArray) {
+        var target = offset
+        for (value in values) {
+            byteOrder.put32(bytes, target, value)
+            target += 4
+        }
+    }
+
     private fun writeError(error: Int, opcode: Int, minorOpcode: Int = 0, badValue: Int) {
         val bytes = ByteArray(32)
         bytes[0] = 0
@@ -880,6 +1062,8 @@ internal class X11Connection(
         bytes[10] = opcode.toByte()
         write(bytes)
     }
+
+    private fun Int.toHex(): String = "0x${toUInt().toString(16)}"
 
     private fun createWindowBackground(body: ByteArray): Int {
         if (body.size < 28) return 0x00ff_ffff

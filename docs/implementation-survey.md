@@ -10,6 +10,8 @@ The canonical modern X11 server family. It is the best reference for edge-case s
 
 The closest baseline for this project. Xvfb is an X server with a virtual framebuffer and no physical display requirement. Use it as the first oracle for Docker integration tests and differential behavior.
 
+For GLX, Xvfb is not a small independent implementation to mirror. The Xorg `hw/vfb` startup path wires the virtual framebuffer server into the shared Xorg GLX vendor stack with `xorgGlxCreateVendor()`. The protocol entry points then live in the common GLX dispatcher (`glxext.c`) and command handlers (`glxcmds.c`), while real context/rendering behavior depends on the native GL/Mesa/backend machinery. For this Kotlin server, the practical first step is therefore a transparent GLX protocol probe: expose the extension, answer version/string/config discovery, model context lifecycle requests, and log/render no-op GLX commands until we know exactly what clients such as IntelliJ/JCEF require.
+
 ## 3. Xephyr
 
 A nested X server useful for studying expose/update flow, screen modeling, and interactions between a contained server and a host display. Useful after the core model exists.

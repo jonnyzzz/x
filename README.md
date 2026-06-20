@@ -116,7 +116,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/click \
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..5`.
 
-Current IntelliJ demo limitation: dialogs rendered through Java2D/AWT are visible and clickable, but JCEF/Chromium surfaces report `GLX is not present` because the server does not implement the GLX extension yet. The HTTP state report logs every input operation so click-through attempts can be replayed and refined.
+Current IntelliJ demo limitation: dialogs rendered through Java2D/AWT are visible and clickable. The server now exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, and FBConfigs), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet, so JCEF/Chromium surfaces remain the next compatibility target. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 
 Run simpler X11 demo clients against an already running server:
 
