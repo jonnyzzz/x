@@ -110,6 +110,11 @@ docker run -d --name x-demo-idea \
 
 Open `http://127.0.0.1:16000/` for the HTML page with the SVG window map, large per-window previews, and state summary. Use `http://127.0.0.1:16000/text.txt` for a plain-text snapshot.
 
+For focused IntelliJ/JBR/JCEF diagnostics, add `-e IDEA_X11_DEBUG=true` to the
+`x-demo-idea` container. That enables XRender pipeline logging, XToolkit traces,
+IntelliJ debug/trace categories, and verbose JCEF/Chromium logs under
+`/tmp/idea-log`. See [Debugging IntelliJ on the JVM X Server](docs/debugging-intellij-x11.md).
+
 Send input through the HTTP API:
 
 ```bash

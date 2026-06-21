@@ -14,6 +14,10 @@ set -eu
 : "${IDEA_EUA_VERSION:=1.0}"
 : "${IDEA_REGISTER_JBR_SDK:=true}"
 : "${IDEA_DISABLE_ONBOARDING:=true}"
+: "${IDEA_X11_DEBUG:=false}"
+: "${IDEA_X11_DEBUG_CATEGORIES:=#sun.awt.X11,#sun.awt.X11.XToolkit,#sun.awt.X11.XComponentPeer,#sun.awt.X11.XFramePeer,#sun.awt.X11.XDecoratedPeer,#sun.awt.X11.XErrorHandlerUtil,#sun.awt.X11.XNETProtocol,#sun.awt.X11.XWINProtocol,#sun.awt.X11.xembed,#com.intellij.ui.jcef,#com.intellij.platform.compose,#com.intellij.ide.ui,#com.intellij.openapi.wm.impl.FocusManagerImpl}"
+: "${IDEA_X11_TRACE_CATEGORIES:=#java.awt.KeyboardFocusManager,#sun.awt.X11.event.XToolkit,#sun.awt.X11.focus.XComponentPeer,#sun.awt.X11.focus.XDecoratedPeer}"
+: "${IDEA_X11_SEPARATE_LOG_CATEGORIES:=#com.intellij.ui.jcef,#sun.awt.X11,#java.awt.KeyboardFocusManager}"
 
 if [ -z "$IDEA_TRUST_ALL_PROJECTS" ]; then
   IDEA_TRUST_ALL_PROJECTS="$IDEA_TRUST_PROJECT"
@@ -198,17 +202,43 @@ fi
 
 export DISPLAY
 export IDEA_PROPERTIES=/tmp/idea.properties
-if [ -z "${IDEA_VM_OPTIONS:-}" ] && [ "$IDEA_CONFIRM_CONSENTS" = "false" ]; then
-  cat > /tmp/idea-extra.vmoptions <<EOF
--Djb.consents.confirmation.enabled=false
-EOF
-  if [ "$IDEA_TRUST_ALL_PROJECTS" = "true" ]; then
-    cat >> /tmp/idea-extra.vmoptions <<EOF
--Didea.trust.all.projects=true
-EOF
+
+idea_extra_vmoptions=/tmp/idea-extra.vmoptions
+idea_extra_initialized=false
+append_idea_vm_option() {
+  if [ "$idea_extra_initialized" = "false" ]; then
+    : > "$idea_extra_vmoptions"
+    if [ -n "${IDEA_VM_OPTIONS:-}" ] && [ -f "$IDEA_VM_OPTIONS" ]; then
+      cat "$IDEA_VM_OPTIONS" >> "$idea_extra_vmoptions"
+      printf '\n' >> "$idea_extra_vmoptions"
+    fi
+    idea_extra_initialized=true
   fi
-  export IDEA_VM_OPTIONS=/tmp/idea-extra.vmoptions
+  printf '%s\n' "$1" >> "$idea_extra_vmoptions"
+  export IDEA_VM_OPTIONS="$idea_extra_vmoptions"
+}
+
+if [ "$IDEA_CONFIRM_CONSENTS" = "false" ]; then
+  append_idea_vm_option "-Djb.consents.confirmation.enabled=false"
+  if [ "$IDEA_TRUST_ALL_PROJECTS" = "true" ]; then
+    append_idea_vm_option "-Didea.trust.all.projects=true"
+  fi
 fi
+
+if [ "$IDEA_X11_DEBUG" = "true" ]; then
+  mkdir -p "$IDEA_LOG"
+  append_idea_vm_option "-Dsun.java2d.xrender=True"
+  append_idea_vm_option "-Dsun.java2d.opengl=false"
+  append_idea_vm_option "-Dsun.awt.x11.trace=log,timestamp,stats,out:$IDEA_LOG/xawt-trace.log,td=1"
+  append_idea_vm_option "-Didea.log.debug.categories=$IDEA_X11_DEBUG_CATEGORIES"
+  append_idea_vm_option "-Didea.log.trace.categories=$IDEA_X11_TRACE_CATEGORIES"
+  append_idea_vm_option "-Didea.log.separate.file.categories=$IDEA_X11_SEPARATE_LOG_CATEGORIES"
+  append_idea_vm_option "-Dide.browser.jcef.log.level=verbose"
+  append_idea_vm_option "-Dide.browser.jcef.log.path=$IDEA_LOG/jcef.log"
+  append_idea_vm_option "-Dide.browser.jcef.log_chromium.path=$IDEA_LOG/jcef_chromium.log"
+  append_idea_vm_option "-Dide.browser.jcef.log.extended=true"
+fi
+
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
   export XDG_RUNTIME_DIR=/tmp/runtime-root
   mkdir -p "$XDG_RUNTIME_DIR"
