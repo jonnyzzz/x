@@ -68,6 +68,51 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("Request counts:")
+            if (snapshot.requestCounts.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (request in snapshot.requestCounts.sortedByDescending { it.count }.take(20)) {
+                    append("- ")
+                    append(request.name)
+                    append(": ")
+                    append(request.count)
+                    appendLine()
+                }
+            }
+            appendLine()
+            appendLine("Extension queries:")
+            if (snapshot.extensionQueries.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (query in snapshot.extensionQueries.takeLast(20).asReversed()) {
+                    append("- #")
+                    append(query.id)
+                    append(' ')
+                    append(query.name)
+                    append(" supported=")
+                    append(query.supported)
+                    appendLine()
+                }
+            }
+            appendLine()
+            appendLine("Unsupported requests:")
+            if (snapshot.unsupportedRequests.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (request in snapshot.unsupportedRequests.takeLast(20).asReversed()) {
+                    append("- #")
+                    append(request.id)
+                    append(' ')
+                    append(request.name)
+                    append(" opcode=")
+                    append(request.opcode)
+                    append(" minor=")
+                    append(request.minorOpcode)
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("GLX operations:")
             if (snapshot.glxOperations.isEmpty()) {
                 appendLine("- None.")

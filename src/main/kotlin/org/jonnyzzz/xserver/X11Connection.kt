@@ -46,15 +46,22 @@ internal class X11Connection(
                 val opcode = header[0].toInt() and 0xff
                 val minorOpcode = header[1].toInt() and 0xff
                 val units = byteOrder.u16(header, 2)
-                if (units == 0) {
-                    writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = 0)
-                    return
+                val body = if (units == 0) {
+                    val extendedLengthBytes = input.readExactly(4)
+                    val extendedUnits = byteOrder.u32(extendedLengthBytes, 0)
+                    if (extendedUnits < 2) {
+                        writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = extendedUnits)
+                        return
+                    }
+                    input.readExactly(extendedUnits * 4 - 8)
+                } else {
+                    input.readExactly(units * 4 - 4)
                 }
-                val body = input.readExactly(units * 4 - 4)
                 sequence = (sequence + 1) and 0xffff
                 if (trace) {
                     System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
                 }
+                state.recordRequest(requestName(opcode, minorOpcode))
                 dispatch(opcode, minorOpcode, body)
             }
         } finally {
@@ -67,6 +74,10 @@ internal class X11Connection(
         state.extensionByMajorOpcode(opcode)?.let { extension ->
             if (extension.name == "GLX") {
                 glx(minorOpcode, body, opcode)
+                return
+            }
+            if (extension.name == "BIG-REQUESTS") {
+                bigRequests(minorOpcode, opcode)
                 return
             }
         }
@@ -93,7 +104,20 @@ internal class X11Connection(
             21 -> listProperties(body)
             22 -> unitReplyless()
             23 -> getSelectionOwner()
+            24 -> unitReplyless()
             25 -> unitReplyless()
+            26 -> unitReplyless()
+            27 -> unitReplyless()
+            28 -> unitReplyless()
+            29 -> unitReplyless()
+            30 -> unitReplyless()
+            31 -> unitReplyless()
+            32 -> unitReplyless()
+            33 -> unitReplyless()
+            34 -> unitReplyless()
+            35 -> unitReplyless()
+            36 -> unitReplyless()
+            37 -> unitReplyless()
             38 -> queryPointer()
             40 -> translateCoordinates(body)
             42 -> unitReplyless()
@@ -152,7 +176,7 @@ internal class X11Connection(
             118 -> getModifierMapping()
             119 -> getModifierMapping()
             127 -> unitReplyless()
-            else -> writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = opcode)
+            else -> unsupportedRequest(opcode, minorOpcode, requestName(opcode, minorOpcode))
         }
     }
 
@@ -178,7 +202,7 @@ internal class X11Connection(
             XGlx.CreateNewContext -> glxCreateNewContext(body)
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
-            else -> writeError(error = 1, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = minorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
         }
     }
 
@@ -186,6 +210,15 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, XGlx.MajorVersion)
         byteOrder.put32(reply, 12, XGlx.MinorVersion)
+        write(reply)
+    }
+
+    private fun bigRequests(minorOpcode: Int, majorOpcode: Int) {
+        if (minorOpcode != XBigRequests.Enable) {
+            return unsupportedRequest(majorOpcode, minorOpcode, "BIG-REQUESTS.$minorOpcode")
+        }
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, XBigRequests.MaximumRequestLength)
         write(reply)
     }
 
@@ -414,7 +447,11 @@ internal class X11Connection(
         val width = if ((mask and 0x0004) != 0) next() else null
         val height = if ((mask and 0x0008) != 0) next() else null
         val borderWidth = if ((mask and 0x0010) != 0) next() else null
-        state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth)
+        val configured = state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth) ?: return
+        if (configured.mapped) {
+            sendConfigureNotify(configured)
+            if (width != null || height != null) sendExpose(configured)
+        }
     }
 
     private fun getWindowAttributes(body: ByteArray) {
@@ -952,6 +989,7 @@ internal class X11Connection(
         val name = body.copyOfRange(4, 4 + nameLength).decodeToString()
         val reply = reply(extra = 0, payloadUnits = 0)
         val extension = state.extension(name)
+        state.recordExtensionQuery(name, extension != null)
         if (extension != null) {
             reply[8] = 1
             reply[9] = extension.majorOpcode.toByte()
@@ -960,6 +998,112 @@ internal class X11Connection(
         }
         write(reply)
     }
+
+    private fun unsupportedRequest(opcode: Int, minorOpcode: Int, name: String) {
+        state.recordUnsupportedRequest(opcode, minorOpcode, name)
+        writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = if (opcode == XGlx.MajorOpcode) minorOpcode else opcode)
+    }
+
+    private fun requestName(opcode: Int, minorOpcode: Int): String =
+        when (opcode) {
+            XGlx.MajorOpcode -> "GLX.${XGlx.operationName(minorOpcode)}"
+            XBigRequests.MajorOpcode -> "BIG-REQUESTS.$minorOpcode"
+            1 -> "CreateWindow"
+            2 -> "ChangeWindowAttributes"
+            3 -> "GetWindowAttributes"
+            4 -> "DestroyWindow"
+            6 -> "ChangeSaveSet"
+            7 -> "ReparentWindow"
+            8 -> "MapWindow"
+            9 -> "MapSubwindows"
+            10 -> "UnmapWindow"
+            11 -> "UnmapSubwindows"
+            12 -> "ConfigureWindow"
+            13 -> "CirculateWindow"
+            14 -> "GetGeometry"
+            15 -> "QueryTree"
+            16 -> "InternAtom"
+            17 -> "GetAtomName"
+            18 -> "ChangeProperty"
+            19 -> "DeleteProperty"
+            20 -> "GetProperty"
+            21 -> "ListProperties"
+            22 -> "SetSelectionOwner"
+            23 -> "GetSelectionOwner"
+            24 -> "ConvertSelection"
+            25 -> "SendEvent"
+            26 -> "GrabPointer"
+            27 -> "UngrabPointer"
+            28 -> "GrabButton"
+            29 -> "UngrabButton"
+            30 -> "ChangeActivePointerGrab"
+            31 -> "GrabKeyboard"
+            32 -> "UngrabKeyboard"
+            33 -> "GrabKey"
+            34 -> "UngrabKey"
+            35 -> "AllowEvents"
+            36 -> "GrabServer"
+            37 -> "UngrabServer"
+            38 -> "QueryPointer"
+            40 -> "TranslateCoordinates"
+            42 -> "SetInputFocus"
+            43 -> "GetInputFocus"
+            44 -> "QueryKeymap"
+            45 -> "OpenFont"
+            46 -> "CloseFont"
+            47 -> "QueryFont"
+            49 -> "ListFonts"
+            52 -> "GetFontPath"
+            53 -> "CreatePixmap"
+            54 -> "FreePixmap"
+            55 -> "CreateGC"
+            56 -> "ChangeGC"
+            60 -> "FreeGC"
+            61 -> "ClearArea"
+            62 -> "CopyArea"
+            63 -> "CopyPlane"
+            64 -> "PolyPoint"
+            65 -> "PolyLine"
+            66 -> "PolySegment"
+            67 -> "PolyRectangle"
+            68 -> "PolyArc"
+            69 -> "FillPoly"
+            70 -> "PolyFillRectangle"
+            71 -> "PolyFillArc"
+            72 -> "PutImage"
+            73 -> "GetImage"
+            74 -> "PolyText8"
+            75 -> "PolyText16"
+            76 -> "ImageText8"
+            77 -> "ImageText16"
+            78 -> "CreateColormap"
+            79 -> "FreeColormap"
+            81 -> "InstallColormap"
+            83 -> "ListInstalledColormaps"
+            84 -> "AllocColor"
+            85 -> "AllocNamedColor"
+            91 -> "QueryColors"
+            93 -> "CreateCursor"
+            94 -> "CreateGlyphCursor"
+            95 -> "FreeCursor"
+            96 -> "RecolorCursor"
+            97 -> "QueryBestSize"
+            98 -> "QueryExtension"
+            99 -> "ListExtensions"
+            101 -> "GetKeyboardMapping"
+            103 -> "GetKeyboardControl"
+            105 -> "Bell"
+            106 -> "GetPointerControl"
+            107 -> "SetScreenSaver"
+            108 -> "GetScreenSaver"
+            112 -> "SetPointerMapping"
+            116 -> "SetModifierMapping"
+            117 -> "GetModifierMapping"
+            118 -> "SetModifierMapping"
+            119 -> "GetModifierMapping"
+            127 -> "NoOperation"
+            else -> "Opcode$opcode/$minorOpcode"
+        }
 
     private fun listExtensions() {
         val names = state.extensions.map { it.name.encodeToByteArray() }
@@ -1038,6 +1182,21 @@ internal class X11Connection(
         byteOrder.put16(event, 2, sequence)
         byteOrder.put32(event, 4, window.parentId)
         byteOrder.put32(event, 8, window.id)
+        write(event)
+    }
+
+    private fun sendConfigureNotify(window: XWindow) {
+        val event = ByteArray(32)
+        event[0] = 22
+        byteOrder.put16(event, 2, sequence)
+        byteOrder.put32(event, 4, window.id)
+        byteOrder.put32(event, 8, window.id)
+        byteOrder.put32(event, 12, 0)
+        byteOrder.put16(event, 16, window.x)
+        byteOrder.put16(event, 18, window.y)
+        byteOrder.put16(event, 20, window.width)
+        byteOrder.put16(event, 22, window.height)
+        byteOrder.put16(event, 24, window.borderWidth)
         write(event)
     }
 

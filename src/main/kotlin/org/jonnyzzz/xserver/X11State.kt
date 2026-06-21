@@ -29,6 +29,11 @@ internal class X11State(
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
     private var nextGlxOperationId: Int = 1
     private val glxOperations = mutableListOf<XGlxOperation>()
+    private val requestCounts = linkedMapOf<String, Int>()
+    private val extensionQueries = mutableListOf<XExtensionQuery>()
+    private var nextExtensionQueryId: Int = 1
+    private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
+    private var nextUnsupportedRequestId: Int = 1
 
     val extensions = listOf(
         XExtension(
@@ -37,6 +42,12 @@ internal class X11State(
             firstEvent = XGlx.FirstEvent,
             firstError = XGlx.FirstError,
             aliases = setOf("SGI-GLX"),
+        ),
+        XExtension(
+            name = "BIG-REQUESTS",
+            majorOpcode = XBigRequests.MajorOpcode,
+            firstEvent = XBigRequests.FirstEvent,
+            firstError = XBigRequests.FirstError,
         ),
     )
 
@@ -289,7 +300,44 @@ internal class X11State(
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
             glxOperations = glxOperations.toList(),
+            requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
+            extensionQueries = extensionQueries.toList(),
+            unsupportedRequests = unsupportedRequests.toList(),
         )
+    }
+
+    @Synchronized
+    fun recordRequest(name: String) {
+        requestCounts[name] = (requestCounts[name] ?: 0) + 1
+        if (requestCounts.size > MaxRequestCounts) {
+            val first = requestCounts.keys.firstOrNull()
+            if (first != null) requestCounts.remove(first)
+        }
+    }
+
+    @Synchronized
+    fun recordExtensionQuery(name: String, supported: Boolean) {
+        extensionQueries += XExtensionQuery(
+            id = nextExtensionQueryId++,
+            name = name,
+            supported = supported,
+        )
+        if (extensionQueries.size > MaxExtensionQueries) {
+            extensionQueries.removeAt(0)
+        }
+    }
+
+    @Synchronized
+    fun recordUnsupportedRequest(opcode: Int, minorOpcode: Int, name: String) {
+        unsupportedRequests += XUnsupportedRequest(
+            id = nextUnsupportedRequestId++,
+            opcode = opcode,
+            minorOpcode = minorOpcode,
+            name = name,
+        )
+        if (unsupportedRequests.size > MaxUnsupportedRequests) {
+            unsupportedRequests.removeAt(0)
+        }
     }
 
     @Synchronized
@@ -449,6 +497,9 @@ internal class X11State(
         private const val MaxDrawingCommands = 10_000
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
+        private const val MaxRequestCounts = 256
+        private const val MaxExtensionQueries = 200
+        private const val MaxUnsupportedRequests = 200
 
         private fun pixelsToMillimeters(pixels: Int, dpi: Int): Int =
             ((pixels * 25.4) / dpi).roundToInt().coerceAtLeast(1)
@@ -776,6 +827,27 @@ internal data class XScreenSnapshot(
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
     val glxOperations: List<XGlxOperation>,
+    val requestCounts: List<XRequestCount>,
+    val extensionQueries: List<XExtensionQuery>,
+    val unsupportedRequests: List<XUnsupportedRequest>,
+)
+
+internal data class XRequestCount(
+    val name: String,
+    val count: Int,
+)
+
+internal data class XExtensionQuery(
+    val id: Int,
+    val name: String,
+    val supported: Boolean,
+)
+
+internal data class XUnsupportedRequest(
+    val id: Int,
+    val opcode: Int,
+    val minorOpcode: Int,
+    val name: String,
 )
 
 internal data class XInputOperation(

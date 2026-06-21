@@ -150,6 +150,35 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `text report includes request diagnostics`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(queryExtensionRequest("GLX"))
+                out.write(unsupportedRequest())
+                out.flush()
+                input.readExactly(32)
+                input.readExactly(32)
+
+                val text = httpGet(server.localPort, "/text.txt").body
+                assertContains(text, "Request counts:")
+                assertContains(text, "QueryExtension: 1")
+                assertContains(text, "Extension queries:")
+                assertContains(text, "GLX supported=true")
+                assertContains(text, "Unsupported requests:")
+                assertContains(text, "Opcode200/0 opcode=200 minor=0")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `client windows are removed when x11 connection closes`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -369,6 +398,24 @@ class HttpRenderingTest {
         put32le(bytes, 12, 31)
         put32le(bytes, 16, longOffset)
         put32le(bytes, 20, longLength)
+        return bytes
+    }
+
+    private fun queryExtensionRequest(name: String): ByteArray {
+        val encoded = name.encodeToByteArray()
+        val padded = (encoded.size + 3) and -4
+        val bytes = ByteArray(8 + padded)
+        bytes[0] = 98.toByte()
+        put16le(bytes, 2, bytes.size / 4)
+        put16le(bytes, 4, encoded.size)
+        encoded.copyInto(bytes, 8)
+        return bytes
+    }
+
+    private fun unsupportedRequest(): ByteArray {
+        val bytes = ByteArray(4)
+        bytes[0] = 200.toByte()
+        put16le(bytes, 2, 1)
         return bytes
     }
 
