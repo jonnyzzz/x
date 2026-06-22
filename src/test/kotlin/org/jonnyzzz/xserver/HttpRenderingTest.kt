@@ -51,11 +51,11 @@ class HttpRenderingTest {
                     assertContains(svg.body, "<!--${RenderCredit.Text}-->")
                     assertContains(svg.body, "0x200001")
                     assertContains(svg.body, "0x200002")
-                    assertContains(svg.body, """data-drawable-id="0x200001"""")
-                    assertContains(svg.body, "<polyline")
+                    assertContains(svg.body, """data-window-id="0x200001"""")
                     assertContains(svg.body, """class="framebuffer-image"""")
                     assertContains(svg.body, """href="data:image/png;base64,""")
                     assertFalse(svg.body.contains("""width="65533""""))
+                    assertFalse(svg.body.contains("<polyline"), "Framebuffer-backed core lines should not be double-rendered as SVG overlays")
                     assertContains(svg.body, RenderCredit.Text)
 
                     val text = httpGet(server.localPort, "/text.txt")
@@ -190,6 +190,36 @@ class HttpRenderingTest {
                 )
             }
 
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `svg suppresses fill poly diagnostics after framebuffer paint`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 160, 120))
+                out.write(changePropertyRequest(0x0020_0001, "fill poly target"))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0001))
+                out.write(putImageRequest(0x0020_0001, 0x0020_1001))
+                out.write(fillPolyRequest(0x0020_0001, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "fill poly target")
+                assertContains(svg, """class="framebuffer-image"""")
+                assertEquals(false, svg.contains("""data-drawable-id="0x200001""""))
+                assertEquals(false, svg.contains("<polyline"))
+                assertEquals(false, svg.contains("<polygon"))
+            }
             server.close()
             serverThread.join(1_000)
         }
@@ -397,6 +427,23 @@ class HttpRenderingTest {
         put16le(bytes, 18, 70)
         put16le(bytes, 20, 24)
         put16le(bytes, 22, 78)
+        return bytes
+    }
+
+    private fun fillPolyRequest(drawable: Int, gc: Int): ByteArray {
+        val bytes = ByteArray(28)
+        bytes[0] = 69
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, drawable)
+        put32le(bytes, 8, gc)
+        bytes[12] = 2
+        bytes[13] = 0
+        put16le(bytes, 16, 20)
+        put16le(bytes, 18, 20)
+        put16le(bytes, 20, 70)
+        put16le(bytes, 22, 30)
+        put16le(bytes, 24, 30)
+        put16le(bytes, 26, 70)
         return bytes
     }
 

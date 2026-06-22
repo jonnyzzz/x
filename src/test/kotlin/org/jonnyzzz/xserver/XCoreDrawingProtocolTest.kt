@@ -1,0 +1,802 @@
+package org.jonnyzzz.xserver
+
+import java.io.InputStream
+import java.net.Socket
+import kotlin.concurrent.thread
+import kotlin.test.Test
+import kotlin.test.assertEquals
+
+class XCoreDrawingProtocolTest {
+    @Test
+    fun `PolyPoint paints exact framebuffer pixels for origin and previous coordinate modes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcLineWidthRequest(GcId, lineWidth = 5))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(2 to 3, 6 to 3)))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 1, points = listOf(8 to 3, 2 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 5))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertEquals(60, u32le(image, 4))
+                assertEquals(X11Ids.RootVisual, u32le(image, 8))
+                assertEquals(240, u32le(image, 12))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 2, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 6, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 8, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 10, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 3, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 2, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 1, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyPoint paints pixmap framebuffer content`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(polyPointRequest(PixmapId, GcId, coordMode = 0, points = listOf(1 to 1, 5 to 4)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0, u32le(image, 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 5, 4))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 8, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyLine PolySegment and PolyRectangle paint framebuffer pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(1 to 1, 5 to 1, 5 to 4)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((7 to 1) to (10 to 1))))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 6, 5, 4), XRectangleCommand(8, 6, 0, 3))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 11))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 3, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 5, 3))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 8, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 1, 6))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 6, 10))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 3, 7))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 8, 8))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 9, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `core drawing honors GC clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 2, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(3, 2, 4, 4))))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 3, 11 to 3)))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(5, 1, 3, 5))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 4, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 5, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 8, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 9, 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 12, 5, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 4, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 9, 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `empty GC clip region suppresses framebuffer drawing and svg overlays`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = emptyList()))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 1, 6 to 1)))
+                out.write(mapWindowRequest(WindowId))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 7, height = 2))
+                out.flush()
+
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt())
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt())
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 7, 3, 1))
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertEquals(true, svg.contains("""data-window-id="0x200001""""))
+                assertEquals(true, svg.contains("""class="framebuffer-image""""))
+                assertEquals(false, svg.contains("<polyline"))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage and CopyArea honor GC clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 4, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24Request(PixmapId, width = 4, height = 2, pixel = Green))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(1, 0, 2, 3))))
+                out.write(putImage24Request(WindowId, width = 4, height = 1, pixel = Red))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 1, destinationX = 0, destinationY = 2, width = 4, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 3))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 4, 1, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 4, 2, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `invalid coordinate mode reports Value error without drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 2, points = listOf(2 to 3)))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 3, points = listOf(1 to 1, 4 to 1)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                val pointError = socket.getInputStream().readExactly(32)
+                assertEquals(0, pointError[0].toInt())
+                assertEquals(2, pointError[1].toInt() and 0xff)
+                assertEquals(2, u32le(pointError, 4))
+                assertEquals(64, pointError[10].toInt() and 0xff)
+
+                val lineError = socket.getInputStream().readExactly(32)
+                assertEquals(0, lineError[0].toInt())
+                assertEquals(2, lineError[1].toInt() and 0xff)
+                assertEquals(3, u32le(lineError, 4))
+                assertEquals(65, lineError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 2, 3))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 1, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage validates bounds and applies plane mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = 0x0012_3456))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(2 to 3)))
+                out.write(getImageRequest(WindowId, x = 2, y = 3, width = 1, height = 1, planeMask = 0x00ff_0000))
+                out.write(getImageRequest(WindowId, x = 2, y = 3, width = 1, height = 1, format = 1))
+                out.write(getImageRequest(WindowId, x = 39, y = 29, width = 2, height = 1))
+                out.flush()
+
+                val masked = readReply(socket.getInputStream())
+                assertEquals(1, masked[0].toInt())
+                assertEquals(24, masked[1].toInt() and 0xff)
+                assertEquals(1, u32le(masked, 4))
+                assertEquals(X11Ids.RootVisual, u32le(masked, 8))
+                assertEquals(4, u32le(masked, 12))
+                assertEquals(0x0012_0000, pixelAt(masked, 1, 0, 0))
+
+                val xyPixmap = readReply(socket.getInputStream())
+                assertEquals(1, xyPixmap[0].toInt())
+                assertEquals(24, xyPixmap[1].toInt() and 0xff)
+                assertEquals(X11Ids.RootVisual, u32le(xyPixmap, 8))
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(8, error[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(error, 4))
+                assertEquals(73, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly rejects invalid coordinate mode without drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 2))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(2, u32le(error, 4))
+                assertEquals(69, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 2, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly paints clipped framebuffer pixels for origin and previous coordinate modes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = listOf(1 to 1, 5 to 1, 5 to 5, 1 to 5)))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(8, 1, 2, 4))))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 1, points = listOf(7 to 1, 4 to 0, 0 to 4, -4 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 7))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 2, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 4, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 6, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 8, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 12, 9, 4))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 7, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 12, 10, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly paints pixmap framebuffer content`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(fillPolyRequest(PixmapId, GcId, coordMode = 0, points = listOf(1 to 1, 6 to 1, 6 to 6, 1 to 6)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0, u32le(image, 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 2))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 8, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly rejects invalid shape without drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(fillPolyRequest(WindowId, GcId, shape = 3, coordMode = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 5))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(3, u32le(error, 4))
+                assertEquals(69, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 5, 2, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyArc paints outlines from 12 byte arc records`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 50, height = 30))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(
+                    polyArcRequest(
+                        WindowId,
+                        GcId,
+                        filled = false,
+                        arcs = listOf(
+                            XArcCommand(10, 10, 10, 10, 0, FullCircleAngle),
+                            XArcCommand(30, 10, 10, 10, 0, FullCircleAngle),
+                        ),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 45, height = 25))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 45, 15, 10))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 45, 15, 15))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 45, 35, 10))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyFillArc paints clipped window and pixmap framebuffer pixels without svg overlays`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(mapWindowRequest(WindowId))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(12, 10, 6, 10))))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(10, 10, 10, 10, 0, FullCircleAngle))))
+                out.write(polyArcRequest(PixmapId, GcId + 1, filled = true, arcs = listOf(XArcCommand(1, 1, 6, 6, 0, FullCircleAngle))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 22, height = 22))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt())
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt())
+                val windowImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(windowImage, 22, 15, 15))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, 22, 11, 15))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, 22, 10, 10))
+
+                val pixmapImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(pixmapImage, 8, 4, 4))
+                assertEquals(0xff00_0000.toInt(), pixelAt(pixmapImage, 8, 0, 0))
+
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertEquals(true, svg.contains("""data-window-id="0x200001""""))
+                assertEquals(true, svg.contains("""class="framebuffer-image""""))
+                assertEquals(false, svg.contains("<ellipse"))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyFillArc honors partial angles and GC arc mode`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(changeGcArcModeRequest(GcId + 1, arcMode = ArcChord))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(10, 10, 20, 20, 0, 90 * 64))))
+                out.write(polyArcRequest(WindowId, GcId + 1, filled = true, arcs = listOf(XArcCommand(40, 10, 20, 20, 0, 180 * 64))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 65, height = 35))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 65, 24, 16))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 65, 15, 16))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 65, 50, 15))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 65, 50, 24))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `invalid GC arc mode reports Value error without changing GC`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 40, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcArcModeRequest(GcId, arcMode = 2))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(10, 10, 20, 20, 0, 90 * 64))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 35, height = 35))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(2, u32le(error, 4))
+                assertEquals(56, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 35, 24, 16))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 35, 15, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    private fun setup(socket: Socket) {
+        socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        socket.getOutputStream().flush()
+        val prefix = socket.getInputStream().readExactly(8)
+        assertEquals(1, prefix[0].toInt())
+        socket.getInputStream().readExactly(u16le(prefix, 6) * 4)
+    }
+
+    private fun createWindowRequest(id: Int, width: Int = 40, height: Int = 30): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, id)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 12, width)
+        put16le(body, 14, height)
+        put16le(body, 18, 1)
+        put32le(body, 20, X11Ids.RootVisual)
+        return request(1, 24, body)
+    }
+
+    private fun createPixmapRequest(id: Int, width: Int, height: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, WindowId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        return request(53, 24, body)
+    }
+
+    private fun mapWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(8, 0, body)
+    }
+
+    private fun createGcRequest(id: Int, foreground: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, id)
+        put32le(body, 4, WindowId)
+        put32le(body, 8, 0x0000_0004)
+        put32le(body, 12, foreground)
+        return request(55, 0, body)
+    }
+
+    private fun changeGcLineWidthRequest(id: Int, lineWidth: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_0010)
+        put32le(body, 8, lineWidth)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcArcModeRequest(id: Int, arcMode: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0040_0000)
+        put32le(body, 8, arcMode)
+        return request(56, 0, body)
+    }
+
+    private fun polyPointRequest(drawable: Int, gc: Int, coordMode: Int, points: List<Pair<Int, Int>>): ByteArray {
+        val body = ByteArray(8 + points.size * 4)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for ((x, y) in points) {
+            put16le(body, offset, x)
+            put16le(body, offset + 2, y)
+            offset += 4
+        }
+        return request(64, coordMode, body)
+    }
+
+    private fun polyLineRequest(drawable: Int, gc: Int, coordMode: Int = 0, points: List<Pair<Int, Int>>): ByteArray {
+        val body = ByteArray(8 + points.size * 4)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for ((x, y) in points) {
+            put16le(body, offset, x)
+            put16le(body, offset + 2, y)
+            offset += 4
+        }
+        return request(65, coordMode, body)
+    }
+
+    private fun polySegmentRequest(drawable: Int, gc: Int, segments: List<Pair<Pair<Int, Int>, Pair<Int, Int>>>): ByteArray {
+        val body = ByteArray(8 + segments.size * 8)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for ((start, end) in segments) {
+            put16le(body, offset, start.first)
+            put16le(body, offset + 2, start.second)
+            put16le(body, offset + 4, end.first)
+            put16le(body, offset + 6, end.second)
+            offset += 8
+        }
+        return request(66, 0, body)
+    }
+
+    private fun polyRectangleRequest(drawable: Int, gc: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for (rectangle in rectangles) {
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+            offset += 8
+        }
+        return request(67, 0, body)
+    }
+
+    private fun polyArcRequest(drawable: Int, gc: Int, filled: Boolean, arcs: List<XArcCommand>): ByteArray {
+        val body = ByteArray(8 + arcs.size * 12)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        var offset = 8
+        for (arc in arcs) {
+            put16le(body, offset, arc.x)
+            put16le(body, offset + 2, arc.y)
+            put16le(body, offset + 4, arc.width)
+            put16le(body, offset + 6, arc.height)
+            put16le(body, offset + 8, arc.angle1)
+            put16le(body, offset + 10, arc.angle2)
+            offset += 12
+        }
+        return request(if (filled) 71 else 68, 0, body)
+    }
+
+    private fun setClipRectanglesRequest(
+        gc: Int,
+        clipXOrigin: Int,
+        clipYOrigin: Int,
+        rectangles: List<XRectangleCommand>,
+    ): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, gc)
+        put16le(body, 4, clipXOrigin)
+        put16le(body, 6, clipYOrigin)
+        var offset = 8
+        for (rectangle in rectangles) {
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+            offset += 8
+        }
+        return request(59, 0, body)
+    }
+
+    private fun fillPolyRequest(
+        drawable: Int,
+        gc: Int,
+        shape: Int = 2,
+        coordMode: Int,
+        points: List<Pair<Int, Int>> = listOf(1 to 1, 4 to 1, 1 to 4),
+    ): ByteArray {
+        val body = ByteArray(12 + points.size * 4)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        body[8] = shape.toByte()
+        body[9] = coordMode.toByte()
+        var offset = 12
+        for ((x, y) in points) {
+            put16le(body, offset, x)
+            put16le(body, offset + 2, y)
+            offset += 4
+        }
+        return request(69, 0, body)
+    }
+
+    private fun copyAreaRequest(
+        source: Int,
+        destination: Int,
+        gc: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        put32le(body, 8, gc)
+        put16le(body, 12, sourceX)
+        put16le(body, 14, sourceY)
+        put16le(body, 16, destinationX)
+        put16le(body, 18, destinationY)
+        put16le(body, 20, width)
+        put16le(body, 22, height)
+        return request(62, 0, body)
+    }
+
+    private fun putImage24Request(drawable: Int, width: Int, height: Int, pixel: Int): ByteArray {
+        val data = ByteArray(width * height * 4)
+        for (index in 0 until width * height) {
+            put32le(data, index * 4, pixel)
+        }
+        val body = ByteArray(20 + data.size)
+        put32le(body, 0, drawable)
+        put32le(body, 4, GcId)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        body[17] = 24
+        data.copyInto(body, 20)
+        return request(72, 2, body)
+    }
+
+    private fun getImageRequest(
+        drawable: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        planeMask: Int = 0xffff_ffff.toInt(),
+        format: Int = 2,
+    ): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, drawable)
+        put16le(body, 4, x)
+        put16le(body, 6, y)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        put32le(body, 12, planeMask)
+        return request(73, format, body)
+    }
+
+    private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
+        val bytes = ByteArray(4 + body.size)
+        bytes[0] = opcode.toByte()
+        bytes[1] = minorOpcode.toByte()
+        put16le(bytes, 2, bytes.size / 4)
+        body.copyInto(bytes, 4)
+        return bytes
+    }
+
+    private fun readReply(input: InputStream): ByteArray {
+        val header = input.readExactly(32)
+        val payloadUnits = u32le(header, 4)
+        return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun httpGet(port: Int, path: String): String =
+        Socket("127.0.0.1", port).use { socket ->
+            socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: localhost\r\n\r\n".encodeToByteArray())
+            socket.getOutputStream().flush()
+            socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
+        }
+
+    private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
+        u32le(reply, 32 + (y * imageWidth + x) * 4)
+
+    private fun InputStream.readExactly(size: Int): ByteArray {
+        val bytes = ByteArray(size)
+        var offset = 0
+        while (offset < size) {
+            val read = read(bytes, offset, size - offset)
+            if (read == -1) error("Expected $size bytes, got $offset")
+            offset += read
+        }
+        return bytes
+    }
+
+    private fun put16le(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+    }
+
+    private fun put32le(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+        bytes[offset + 2] = (value ushr 16).toByte()
+        bytes[offset + 3] = (value ushr 24).toByte()
+    }
+
+    private fun u16le(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun u32le(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private companion object {
+        const val WindowId = 0x0020_0001
+        const val PixmapId = 0x0020_0100
+        const val GcId = 0x0020_1001
+        const val Red = 0x00ff_0000
+        const val Green = 0x0000_ff00
+        const val Blue = 0x0000_00ff
+        const val FullCircleAngle = 360 * 64
+        const val ArcChord = 0
+    }
+}

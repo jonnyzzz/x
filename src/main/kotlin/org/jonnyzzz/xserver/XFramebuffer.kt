@@ -4,6 +4,12 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.util.Base64
 import javax.imageio.ImageIO
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 internal class XFramebuffer(
     width: Int,
@@ -47,17 +53,185 @@ internal class XFramebuffer(
         invalidate()
     }
 
-    fun fill(x: Int, y: Int, width: Int, height: Int, pixel: Int, preserveAlpha: Boolean = false): Boolean {
+    fun fill(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        pixel: Int,
+        preserveAlpha: Boolean = false,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
         val bounds = clippedBounds(x, y, width, height) ?: return false
         val color = if (preserveAlpha) pixel else opaque(pixel)
+        var painted = false
         for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
             val offset = row * this.width
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                if (!insideClip(column, row, clipRectangles)) continue
                 pixels[offset + column] = color
+                painted = true
             }
         }
-        markPainted()
-        return true
+        if (painted) markPainted()
+        return painted
+    }
+
+    fun drawPoint(
+        x: Int,
+        y: Int,
+        pixel: Int,
+        lineWidth: Int = 1,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val size = lineWidth.coerceAtLeast(1)
+        val radiusBefore = (size - 1) / 2
+        return fill(
+            x = x - radiusBefore,
+            y = y - radiusBefore,
+            width = size,
+            height = size,
+            pixel = pixel,
+            clipRectangles = clipRectangles,
+        )
+    }
+
+    fun drawLine(
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        pixel: Int,
+        lineWidth: Int = 1,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var x = x1
+        var y = y1
+        val dx = kotlin.math.abs(x2 - x1)
+        val dy = kotlin.math.abs(y2 - y1)
+        val stepX = if (x1 < x2) 1 else -1
+        val stepY = if (y1 < y2) 1 else -1
+        var error = dx - dy
+        var painted = false
+
+        while (true) {
+            painted = drawPoint(x, y, pixel, lineWidth, clipRectangles) || painted
+            if (x == x2 && y == y2) break
+            val twiceError = error * 2
+            if (twiceError > -dy) {
+                error -= dy
+                x += stepX
+            }
+            if (twiceError < dx) {
+                error += dx
+                y += stepY
+            }
+        }
+        return painted
+    }
+
+    fun drawRectangleOutline(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        pixel: Int,
+        lineWidth: Int = 1,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        if (width < 0 || height < 0) return false
+        var painted = false
+        val right = x + width
+        val bottom = y + height
+        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles) || painted
+        if (height > 0) painted = drawLine(x, bottom, right, bottom, pixel, lineWidth, clipRectangles) || painted
+        if (height > 1) {
+            painted = drawLine(x, y + 1, x, bottom - 1, pixel, lineWidth, clipRectangles) || painted
+            if (width > 0) painted = drawLine(right, y + 1, right, bottom - 1, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    fun fillPolygon(
+        points: List<XPoint>,
+        pixel: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        if (points.size < 3) return false
+        val minY = points.minOf { it.y }
+        val maxY = points.maxOf { it.y }
+        val color = opaque(pixel)
+        var painted = false
+        for (y in minY until maxY) {
+            val scanY = y + 0.5
+            val intersections = mutableListOf<Double>()
+            for (index in points.indices) {
+                val start = points[index]
+                val end = points[(index + 1) % points.size]
+                if (start.y == end.y) continue
+                val low = minOf(start.y, end.y)
+                val high = maxOf(start.y, end.y)
+                if (scanY < low || scanY >= high) continue
+                val t = (scanY - start.y) / (end.y - start.y).toDouble()
+                intersections += start.x + t * (end.x - start.x)
+            }
+            intersections.sort()
+            var index = 0
+            while (index + 1 < intersections.size) {
+                val left = kotlin.math.ceil(intersections[index]).toInt()
+                val right = kotlin.math.ceil(intersections[index + 1]).toInt()
+                for (x in left until right) {
+                    if (x !in 0 until width || y !in 0 until height) continue
+                    if (!insideClip(x, y, clipRectangles)) continue
+                    pixels[y * width + x] = color
+                    painted = true
+                }
+                index += 2
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
+    fun drawArc(
+        arc: XArcCommand,
+        pixel: Int,
+        lineWidth: Int = 1,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val points = sampledArcPoints(arc)
+        if (points.isEmpty()) return false
+        var painted = false
+        for (index in 0 until points.lastIndex) {
+            val start = points[index]
+            val end = points[index + 1]
+            painted = drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+        }
+        if (points.size == 1) {
+            painted = drawPoint(points[0].x, points[0].y, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    fun fillArc(
+        arc: XArcCommand,
+        pixel: Int,
+        arcMode: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return false
+        if (abs(arc.angle2) >= FullCircleAngle) {
+            return fillEllipse(arc, pixel, clipRectangles)
+        }
+
+        val arcPoints = sampledArcPoints(arc)
+        if (arcPoints.size < 2) return false
+        val polygon = if (arcMode == ArcChord) {
+            arcPoints
+        } else {
+            listOf(XPoint(arc.centerX().roundToInt(), arc.centerY().roundToInt())) + arcPoints
+        }
+        return fillPolygon(polygon, pixel, clipRectangles)
     }
 
     fun blendSolidOver(
@@ -66,7 +240,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
-        clipRectangles: List<XRectangleCommand> = emptyList(),
+        clipRectangles: List<XRectangleCommand>? = null,
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
@@ -87,7 +261,7 @@ internal class XFramebuffer(
         width: Int,
         height: Int,
         operation: Int,
-        clipRectangles: List<XRectangleCommand> = emptyList(),
+        clipRectangles: List<XRectangleCommand>? = null,
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
@@ -129,7 +303,7 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
-    fun putImage(x: Int, y: Int, image: XImagePixels): Boolean {
+    fun putImage(x: Int, y: Int, image: XImagePixels, clipRectangles: List<XRectangleCommand>? = null): Boolean {
         val bounds = clippedCopyBounds(
             sourceWidth = image.width,
             sourceHeight = image.height,
@@ -141,16 +315,18 @@ internal class XFramebuffer(
             height = image.height,
         ) ?: return false
 
+        var painted = false
         for (row in 0 until bounds.height) {
-            image.pixels.copyInto(
-                destination = pixels,
-                destinationOffset = (bounds.destinationY + row) * this.width + bounds.destinationX,
-                startIndex = (bounds.sourceY + row) * image.width + bounds.sourceX,
-                endIndex = (bounds.sourceY + row) * image.width + bounds.sourceX + bounds.width,
-            )
+            for (column in 0 until bounds.width) {
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                pixels[dy * this.width + dx] = image.pixels[(bounds.sourceY + row) * image.width + bounds.sourceX + column]
+                painted = true
+            }
         }
-        markPainted()
-        return true
+        if (painted) markPainted()
+        return painted
     }
 
     fun copyAreaTo(
@@ -161,6 +337,7 @@ internal class XFramebuffer(
         destinationY: Int,
         width: Int,
         height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
     ): XImagePixels? {
         val bounds = destination.clippedCopyBounds(
             sourceWidth = this.width,
@@ -182,15 +359,17 @@ internal class XFramebuffer(
                 endIndex = (bounds.sourceY + row) * this.width + bounds.sourceX + bounds.width,
             )
         }
+        var painted = false
         for (row in 0 until bounds.height) {
-            copied.copyInto(
-                destination = destination.pixels,
-                destinationOffset = (bounds.destinationY + row) * destination.width + bounds.destinationX,
-                startIndex = row * bounds.width,
-                endIndex = row * bounds.width + bounds.width,
-            )
+            for (column in 0 until bounds.width) {
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                destination.pixels[dy * destination.width + dx] = copied[row * bounds.width + column]
+                painted = true
+            }
         }
-        destination.markPainted()
+        if (painted) destination.markPainted()
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
@@ -288,7 +467,7 @@ internal class XFramebuffer(
 
     private fun compositeBounds(
         bounds: CopyBounds,
-        clipRectangles: List<XRectangleCommand>,
+        clipRectangles: List<XRectangleCommand>?,
         compose: (x: Int, y: Int) -> Int,
     ): Boolean {
         var painted = false
@@ -304,8 +483,58 @@ internal class XFramebuffer(
         return painted
     }
 
-    private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>): Boolean =
-        clipRectangles.isEmpty() || clipRectangles.any { rectangle ->
+    private fun fillEllipse(
+        arc: XArcCommand,
+        pixel: Int,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val bounds = clippedBounds(arc.x, arc.y, arc.width, arc.height) ?: return false
+        val radiusX = arc.width / 2.0
+        val radiusY = arc.height / 2.0
+        if (radiusX <= 0.0 || radiusY <= 0.0) return false
+        val centerX = arc.centerX()
+        val centerY = arc.centerY()
+        val color = opaque(pixel)
+        var painted = false
+        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
+            val normalizedY = ((row + 0.5) - centerY) / radiusY
+            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                if (!insideClip(column, row, clipRectangles)) continue
+                val normalizedX = ((column + 0.5) - centerX) / radiusX
+                if (normalizedX * normalizedX + normalizedY * normalizedY > 1.0) continue
+                pixels[row * width + column] = color
+                painted = true
+            }
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
+    private fun sampledArcPoints(arc: XArcCommand): List<XPoint> {
+        if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return emptyList()
+        val radiusX = arc.width / 2.0
+        val radiusY = arc.height / 2.0
+        if (radiusX <= 0.0 || radiusY <= 0.0) return emptyList()
+        val start = arc.angle1 / 64.0
+        val extent = arc.angle2.coerceIn(-FullCircleAngle, FullCircleAngle) / 64.0
+        val steps = ceil(maxOf(radiusX, radiusY) * abs(extent) / 90.0).roundToInt().coerceAtLeast(1)
+        val centerX = arc.centerX()
+        val centerY = arc.centerY()
+        val points = ArrayList<XPoint>(steps + 1)
+        for (index in 0..steps) {
+            val angle = start + extent * index / steps
+            val radians = angle * PI / 180.0
+            val point = XPoint(
+                x = (centerX + radiusX * cos(radians)).roundToInt(),
+                y = (centerY - radiusY * sin(radians)).roundToInt(),
+            )
+            if (points.lastOrNull() != point) points += point
+        }
+        return points
+    }
+
+    private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>?): Boolean =
+        clipRectangles == null || clipRectangles.any { rectangle ->
             x >= rectangle.x &&
                 y >= rectangle.y &&
                 x < rectangle.x + rectangle.width &&
@@ -327,6 +556,8 @@ internal class XFramebuffer(
 
     companion object {
         private const val MaxPixels = 16_777_216
+        private const val FullCircleAngle = 360 * 64
+        private const val ArcChord = 0
 
         private fun framebufferSize(width: Int, height: Int): Pair<Int, Int> {
             val safeWidth = width.coerceAtLeast(0)
@@ -371,6 +602,10 @@ internal class XFramebuffer(
         }
     }
 }
+
+private fun XArcCommand.centerX(): Double = x + width / 2.0
+
+private fun XArcCommand.centerY(): Double = y + height / 2.0
 
 internal data class XImagePixels(
     val width: Int,

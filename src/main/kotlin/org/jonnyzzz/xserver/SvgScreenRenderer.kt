@@ -518,7 +518,7 @@ internal object SvgScreenRenderer {
             if (drawableIds != null && drawing.drawableId !in drawableIds) continue
             val window = windows[drawing.drawableId] ?: continue
             if (!window.mapped || window.visibleWidth <= 0 || window.visibleHeight <= 0) continue
-            if (window.framebufferDataUri != null && drawing.kind in framebufferBackedDrawings) continue
+            if (drawing.framebufferBacked) continue
             builder.svgElement(
                 "g",
                 "data-drawable-id" to window.idHex,
@@ -538,6 +538,7 @@ internal object SvgScreenRenderer {
                     }
                     XDrawingKind.CopyArea -> renderImages(this, drawing)
                     XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
+                    XDrawingKind.FillPoly -> renderPolygon(this, drawing)
                     XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)
                     XDrawingKind.FillArc -> renderArcs(this, drawing, filled = true)
                     XDrawingKind.Line -> renderLine(this, drawing)
@@ -635,14 +636,19 @@ internal object SvgScreenRenderer {
     }
 
     private fun renderArcs(builder: XmlDom, drawing: XDrawingCommand, filled: Boolean) {
-        for (rectangle in drawing.rectangles) {
-            if (rectangle.width <= 0 || rectangle.height <= 0) continue
+        val arcs = drawing.arcs.ifEmpty {
+            drawing.rectangles.map { rectangle ->
+                XArcCommand(rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, 360 * 64)
+            }
+        }
+        for (arc in arcs) {
+            if (arc.width <= 0 || arc.height <= 0) continue
             builder.svgElement(
                 "ellipse",
-                "cx" to rectangle.x + rectangle.width / 2.0,
-                "cy" to rectangle.y + rectangle.height / 2.0,
-                "rx" to rectangle.width / 2.0,
-                "ry" to rectangle.height / 2.0,
+                "cx" to arc.x + arc.width / 2.0,
+                "cy" to arc.y + arc.height / 2.0,
+                "rx" to arc.width / 2.0,
+                "ry" to arc.height / 2.0,
                 "fill" to if (filled) pixelColor(drawing.foreground) else "none",
                 "stroke" to if (filled) null else pixelColor(drawing.foreground),
                 "stroke-width" to if (filled) null else drawing.lineWidth.coerceAtLeast(1),
@@ -680,6 +686,15 @@ internal object SvgScreenRenderer {
         }
     }
 
+    private fun renderPolygon(builder: XmlDom, drawing: XDrawingCommand) {
+        if (drawing.points.size < 3) return
+        builder.svgElement(
+            "polygon",
+            "points" to drawing.points.joinToString(" ") { "${it.x},${it.y}" },
+            "fill" to pixelColor(drawing.foreground),
+        )
+    }
+
     private fun renderText(builder: XmlDom, drawing: XDrawingCommand) {
         val point = drawing.points.firstOrNull() ?: return
         builder.svgElement(
@@ -712,11 +727,5 @@ internal object SvgScreenRenderer {
         "#eed49f",
         "#91d7e3",
         "#ed8796",
-    )
-    private val framebufferBackedDrawings = setOf(
-        XDrawingKind.Clear,
-        XDrawingKind.FillRectangle,
-        XDrawingKind.PutImage,
-        XDrawingKind.CopyArea,
     )
 }

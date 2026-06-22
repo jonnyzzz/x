@@ -136,6 +136,7 @@ internal class X11Connection(
             54 -> closeResource(body)
             55 -> createGc(body)
             56 -> changeGc(body)
+            59 -> setClipRectangles(minorOpcode, body)
             60 -> closeResource(body)
             61 -> clearArea(body)
             62 -> copyArea(body)
@@ -144,12 +145,12 @@ internal class X11Connection(
             65 -> polyLine(minorOpcode, body)
             66 -> polySegment(body)
             67 -> polyRectangle(body, XDrawingKind.Rectangle)
-            68 -> polyRectangle(body, XDrawingKind.Arc)
+            68 -> polyArc(body, filled = false)
             69 -> fillPoly(body)
             70 -> polyRectangle(body, XDrawingKind.FillRectangle)
-            71 -> polyRectangle(body, XDrawingKind.FillArc)
+            71 -> polyArc(body, filled = true)
             72 -> putImage(minorOpcode, body)
-            73 -> getImage(body)
+            73 -> getImage(minorOpcode, body)
             74 -> polyText(body, is16Bit = false)
             75 -> polyText(body, is16Bit = true)
             76 -> imageText(minorOpcode, body, is16Bit = false)
@@ -409,6 +410,7 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
+                framebufferBacked = true,
             ),
         )
     }
@@ -571,6 +573,7 @@ internal class X11Connection(
                 kind = XDrawingKind.FillRectangle,
                 foreground = targetPixel,
                 rectangles = rectangles,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1164,6 +1167,18 @@ internal class X11Connection(
         applyGcValues(byteOrder.u32(body, 0), byteOrder.u32(body, 4), body, 8)
     }
 
+    private fun setClipRectangles(ordering: Int, body: ByteArray) {
+        if (body.size < 8) return
+        if (ordering !in 0..3) return writeError(error = 2, opcode = 59, badValue = ordering)
+        val gcId = byteOrder.u32(body, 0)
+        state.updateGcClip(
+            id = gcId,
+            clipXOrigin = byteOrder.i16(body, 4),
+            clipYOrigin = byteOrder.i16(body, 6),
+            clipRectangles = rectangles(body, 8),
+        )
+    }
+
     private fun clearArea(body: ByteArray) {
         if (body.size < 12) return
         val windowId = byteOrder.u32(body, 0)
@@ -1183,6 +1198,7 @@ internal class X11Connection(
                 kind = XDrawingKind.Clear,
                 foreground = window.backgroundPixel,
                 rectangles = listOf(rectangle),
+                framebufferBacked = true,
             ),
         )
     }
@@ -1211,6 +1227,7 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
+            clipRectangles = gc.effectiveClipRectangles(),
         ) ?: return
         state.draw(
             XDrawingCommand(
@@ -1228,33 +1245,44 @@ internal class X11Connection(
                 ),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = sourceDrawable,
+                framebufferBacked = true,
             ),
         )
     }
 
     private fun polyPoint(coordMode: Int, body: ByteArray) {
         if (body.size < 12) return
+        if (coordMode !in 0..1) return writeError(error = 2, opcode = 64, badValue = coordMode)
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
+        val points = points(body, 8, coordMode)
+        state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles())
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.FillRectangle,
                 foreground = gc.foreground,
-                rectangles = points(body, 8, coordMode).map { XRectangleCommand(it.x, it.y, 2, 2) },
+                rectangles = points.map { XRectangleCommand(it.x, it.y, 1, 1) },
+                framebufferBacked = true,
             ),
         )
     }
 
     private fun polyLine(coordMode: Int, body: ByteArray) {
         if (body.size < 12) return
+        if (coordMode !in 0..1) return writeError(error = 2, opcode = 65, badValue = coordMode)
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
+        val points = points(body, 8, coordMode)
+        state.drawPolyline(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles())
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.Line,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
-                points = points(body, 8, coordMode),
+                points = points,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1262,6 +1290,7 @@ internal class X11Connection(
     private fun polySegment(body: ByteArray) {
         if (body.size < 16) return
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
         val points = mutableListOf<XPoint>()
         var offset = 8
         while (offset + 8 <= body.size) {
@@ -1269,13 +1298,15 @@ internal class X11Connection(
             points += XPoint(byteOrder.i16(body, offset + 4), byteOrder.i16(body, offset + 6))
             offset += 8
         }
+        state.drawSegments(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles())
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = XDrawingKind.Segment,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
                 points = points,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1283,17 +1314,43 @@ internal class X11Connection(
     private fun polyRectangle(body: ByteArray, kind: XDrawingKind) {
         if (body.size < 16) return
         val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
         val rectangles = rectangles(body, 8)
-        if (kind == XDrawingKind.FillRectangle) {
-            state.fillRectangles(byteOrder.u32(body, 0), gc.foreground, rectangles)
+        when (kind) {
+            XDrawingKind.FillRectangle -> state.fillRectangles(drawableId, gc.foreground, rectangles, clipRectangles = gc.effectiveClipRectangles())
+            XDrawingKind.Rectangle -> state.drawRectangleOutlines(drawableId, gc.foreground, rectangles, gc.lineWidth, gc.effectiveClipRectangles())
+            else -> Unit
         }
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
+                drawableId = drawableId,
                 kind = kind,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
                 rectangles = rectangles,
+                framebufferBacked = kind == XDrawingKind.FillRectangle || kind == XDrawingKind.Rectangle,
+            ),
+        )
+    }
+
+    private fun polyArc(body: ByteArray, filled: Boolean) {
+        if (body.size < 20) return
+        val gc = state.gc(byteOrder.u32(body, 4))
+        val drawableId = byteOrder.u32(body, 0)
+        val arcs = arcs(body, 8)
+        if (filled) {
+            state.fillArcs(drawableId, gc.foreground, arcs, gc.arcMode, gc.effectiveClipRectangles())
+        } else {
+            state.drawArcs(drawableId, gc.foreground, arcs, gc.lineWidth, gc.effectiveClipRectangles())
+        }
+        state.draw(
+            XDrawingCommand(
+                drawableId = drawableId,
+                kind = if (filled) XDrawingKind.FillArc else XDrawingKind.Arc,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                arcs = arcs,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1301,14 +1358,21 @@ internal class X11Connection(
     private fun fillPoly(body: ByteArray) {
         if (body.size < 16) return
         val gc = state.gc(byteOrder.u32(body, 4))
-        val coordMode = body[8].toInt() and 0xff
+        val drawableId = byteOrder.u32(body, 0)
+        val shape = body[8].toInt() and 0xff
+        if (shape !in 0..2) return writeError(error = 2, opcode = 69, badValue = shape)
+        val coordMode = body[9].toInt() and 0xff
+        if (coordMode !in 0..1) return writeError(error = 2, opcode = 69, badValue = coordMode)
+        val points = points(body, 12, coordMode)
+        state.fillPolygon(drawableId, gc.foreground, points, gc.effectiveClipRectangles())
         state.draw(
             XDrawingCommand(
-                drawableId = byteOrder.u32(body, 0),
-                kind = XDrawingKind.Line,
+                drawableId = drawableId,
+                kind = XDrawingKind.FillPoly,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
-                points = points(body, 12, coordMode),
+                points = points,
+                framebufferBacked = true,
             ),
         )
     }
@@ -1324,7 +1388,7 @@ internal class X11Connection(
         val image = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
         if (image != null) {
-            state.putImage(drawableId, x, y, image)
+            state.putImage(drawableId, x, y, image, clipRectangles = gc.effectiveClipRectangles())
         }
         state.draw(
             XDrawingCommand(
@@ -1340,6 +1404,7 @@ internal class X11Connection(
                     ),
                 ),
                 imageDataUri = imageDataUri,
+                framebufferBacked = image != null,
             ),
         )
     }
@@ -1378,25 +1443,32 @@ internal class X11Connection(
         )
     }
 
-    private fun getImage(body: ByteArray) {
+    private fun getImage(format: Int, body: ByteArray) {
         if (body.size < 16) return writeError(error = 2, opcode = 73, badValue = 0)
+        if (format !in 1..2) return writeError(error = 2, opcode = 73, badValue = format)
         val drawableId = byteOrder.u32(body, 0)
         val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 73, badValue = drawableId)
+        val x = byteOrder.i16(body, 4)
+        val y = byteOrder.i16(body, 6)
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
+        if (x < 0 || y < 0 || x + width > drawable.width || y + height > drawable.height) {
+            return writeError(error = 8, opcode = 73, badValue = drawableId)
+        }
+        val planeMask = byteOrder.u32(body, 12)
         val image = state.getImage(
             drawableId = drawableId,
-            x = byteOrder.i16(body, 4),
-            y = byteOrder.i16(body, 6),
+            x = x,
+            y = y,
             width = width,
             height = height,
         ) ?: return writeError(error = 11, opcode = 73, badValue = width * height)
         val bytes = ByteArray(image.width * image.height * 4)
         image.pixels.forEachIndexed { index, pixel ->
-            byteOrder.put32(bytes, index * 4, pixel)
+            byteOrder.put32(bytes, index * 4, pixel and planeMask)
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
-        byteOrder.put32(reply, 8, X11Ids.RootVisual)
+        byteOrder.put32(reply, 8, if (state.window(drawableId) != null) X11Ids.RootVisual else 0)
         byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
@@ -1556,6 +1628,7 @@ internal class X11Connection(
             54 -> "FreePixmap"
             55 -> "CreateGC"
             56 -> "ChangeGC"
+            59 -> "SetClipRectangles"
             60 -> "FreeGC"
             61 -> "ClearArea"
             62 -> "CopyArea"
@@ -1786,6 +1859,10 @@ internal class X11Connection(
         var background: Int? = null
         var lineWidth: Int? = null
         var fontId: Int? = null
+        var clipXOrigin: Int? = null
+        var clipYOrigin: Int? = null
+        var clearClipRectangles = false
+        var arcMode: Int? = null
         for (bit in 0..22) {
             if ((mask and (1 shl bit)) == 0) continue
             val value = next() ?: break
@@ -1794,9 +1871,27 @@ internal class X11Connection(
                 3 -> background = value
                 4 -> lineWidth = value.coerceAtLeast(1)
                 14 -> fontId = value
+                17 -> clipXOrigin = value.toShort().toInt()
+                18 -> clipYOrigin = value.toShort().toInt()
+                19 -> if (value == 0) clearClipRectangles = true
+                22 -> if (value in XGraphicsContext.ArcChord..XGraphicsContext.ArcPieSlice) {
+                    arcMode = value
+                } else {
+                    return writeError(error = 2, opcode = 56, badValue = value)
+                }
             }
         }
-        state.updateGc(id, foreground = foreground, background = background, lineWidth = lineWidth, fontId = fontId)
+        state.updateGc(
+            id = id,
+            foreground = foreground,
+            background = background,
+            lineWidth = lineWidth,
+            fontId = fontId,
+            clipXOrigin = clipXOrigin,
+            clipYOrigin = clipYOrigin,
+            arcMode = arcMode,
+        )
+        if (clearClipRectangles) state.updateGcClip(id, clipRectangles = null)
     }
 
     private fun Long.saturatingTimes4(): Long =
@@ -1835,6 +1930,23 @@ internal class X11Connection(
             offset += 8
         }
         return rectangles
+    }
+
+    private fun arcs(body: ByteArray, startOffset: Int): List<XArcCommand> {
+        val arcs = mutableListOf<XArcCommand>()
+        var offset = startOffset
+        while (offset + 12 <= body.size) {
+            arcs += XArcCommand(
+                x = byteOrder.i16(body, offset),
+                y = byteOrder.i16(body, offset + 2),
+                width = byteOrder.u16(body, offset + 4),
+                height = byteOrder.u16(body, offset + 6),
+                angle1 = byteOrder.i16(body, offset + 8),
+                angle2 = byteOrder.i16(body, offset + 10),
+            )
+            offset += 12
+        }
+        return arcs
     }
 
     private fun decodeText16(bytes: ByteArray): String =

@@ -541,9 +541,15 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putImage(drawableId: Int, x: Int, y: Int, image: XImagePixels): Boolean {
+    fun putImage(
+        drawableId: Int,
+        x: Int,
+        y: Int,
+        image: XImagePixels,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.putImage(x, y, image)
+        return framebuffer.putImage(x, y, image, clipRectangles)
     }
 
     @Synchronized
@@ -556,6 +562,7 @@ internal class X11State(
         destinationY: Int,
         width: Int,
         height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
     ): XImagePixels? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
@@ -567,6 +574,7 @@ internal class X11State(
             destinationY = destinationY,
             width = width,
             height = height,
+            clipRectangles = clipRectangles,
         )
     }
 
@@ -608,7 +616,7 @@ internal class X11State(
                             width = width,
                             height = height,
                             operation = XRender.OpSrc,
-                            clipRectangles = destination.clipRectangles,
+                            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                             mask = maskFramebuffer,
                             maskX = maskX,
                             maskY = maskY,
@@ -623,7 +631,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                         mask = maskFramebuffer,
                         maskX = maskX,
                         maskY = maskY,
@@ -643,7 +651,7 @@ internal class X11State(
             width = width,
             height = height,
             operation = operation,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
             mask = maskFramebuffer,
             maskX = maskX,
             maskY = maskY,
@@ -671,13 +679,132 @@ internal class X11State(
     }
 
     @Synchronized
-    fun fillRectangles(drawableId: Int, pixel: Int, rectangles: List<XRectangleCommand>, preserveAlpha: Boolean = false): Boolean {
+    fun fillRectangles(
+        drawableId: Int,
+        pixel: Int,
+        rectangles: List<XRectangleCommand>,
+        preserveAlpha: Boolean = false,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha) || painted
+            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles) || painted
         }
         return painted
+    }
+
+    @Synchronized
+    fun drawPoints(
+        drawableId: Int,
+        pixel: Int,
+        points: List<XPoint>,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (point in points) {
+            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun drawPolyline(
+        drawableId: Int,
+        pixel: Int,
+        points: List<XPoint>,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (index in 0 until points.lastIndex) {
+            val start = points[index]
+            val end = points[index + 1]
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun drawSegments(
+        drawableId: Int,
+        pixel: Int,
+        points: List<XPoint>,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        var index = 0
+        while (index + 1 < points.size) {
+            val start = points[index]
+            val end = points[index + 1]
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+            index += 2
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun drawRectangleOutlines(
+        drawableId: Int,
+        pixel: Int,
+        rectangles: List<XRectangleCommand>,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (rectangle in rectangles) {
+            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun drawArcs(
+        drawableId: Int,
+        pixel: Int,
+        arcs: List<XArcCommand>,
+        lineWidth: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (arc in arcs) {
+            painted = framebuffer.drawArc(arc, pixel, lineWidth, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun fillArcs(
+        drawableId: Int,
+        pixel: Int,
+        arcs: List<XArcCommand>,
+        arcMode: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        var painted = false
+        for (arc in arcs) {
+            painted = framebuffer.fillArc(arc, pixel, arcMode, clipRectangles) || painted
+        }
+        return painted
+    }
+
+    @Synchronized
+    fun fillPolygon(
+        drawableId: Int,
+        pixel: Int,
+        points: List<XPoint>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.fillPolygon(points, pixel, clipRectangles)
     }
 
     @Synchronized
@@ -700,7 +827,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                 )
                 else -> framebuffer.blendSolidOver(
                     pixel = pixel,
@@ -708,7 +835,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                 )
             } || painted
         }
@@ -740,7 +867,7 @@ internal class X11State(
                 destinationY = destinationY,
                 width = glyph.width,
                 height = glyph.height,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
                 mask = mask,
             ) || painted
         }
@@ -759,12 +886,31 @@ internal class X11State(
         background: Int? = null,
         lineWidth: Int? = null,
         fontId: Int? = null,
+        clipXOrigin: Int? = null,
+        clipYOrigin: Int? = null,
+        arcMode: Int? = null,
     ) {
         val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
         foreground?.let { gc.foreground = it }
         background?.let { gc.background = it }
         lineWidth?.let { gc.lineWidth = it }
         fontId?.let { gc.fontId = it }
+        clipXOrigin?.let { gc.clipXOrigin = it }
+        clipYOrigin?.let { gc.clipYOrigin = it }
+        arcMode?.let { gc.arcMode = it }
+    }
+
+    @Synchronized
+    fun updateGcClip(
+        id: Int,
+        clipXOrigin: Int? = null,
+        clipYOrigin: Int? = null,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ) {
+        val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
+        clipXOrigin?.let { gc.clipXOrigin = it }
+        clipYOrigin?.let { gc.clipYOrigin = it }
+        gc.clipRectangles = clipRectangles
     }
 
     @Synchronized
@@ -1093,7 +1239,27 @@ internal data class XGraphicsContext(
     var background: Int = 0x00ff_ffff,
     var lineWidth: Int = 1,
     var fontId: Int = 0,
-)
+) {
+    var clipXOrigin: Int = 0
+    var clipYOrigin: Int = 0
+    var clipRectangles: List<XRectangleCommand>? = null
+    var arcMode: Int = ArcPieSlice
+
+    fun effectiveClipRectangles(): List<XRectangleCommand>? =
+        clipRectangles?.map { rectangle ->
+            XRectangleCommand(
+                x = rectangle.x + clipXOrigin,
+                y = rectangle.y + clipYOrigin,
+                width = rectangle.width,
+                height = rectangle.height,
+            )
+        }
+
+    companion object {
+        const val ArcChord = 0
+        const val ArcPieSlice = 1
+    }
+}
 
 internal data class XPicture(
     val id: Int,
@@ -1132,6 +1298,7 @@ internal enum class XDrawingKind {
     Line,
     Segment,
     Rectangle,
+    FillPoly,
     FillRectangle,
     Arc,
     FillArc,
@@ -1153,9 +1320,11 @@ internal data class XDrawingCommand(
     val lineWidth: Int = 1,
     val points: List<XPoint> = emptyList(),
     val rectangles: List<XRectangleCommand> = emptyList(),
+    val arcs: List<XArcCommand> = emptyList(),
     val text: String = "",
     val imageDataUri: String? = null,
     val sourceDrawableId: Int? = null,
+    val framebufferBacked: Boolean = false,
 )
 
 internal data class XRectangleCommand(
@@ -1163,6 +1332,15 @@ internal data class XRectangleCommand(
     val y: Int,
     val width: Int,
     val height: Int,
+)
+
+internal data class XArcCommand(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val angle1: Int,
+    val angle2: Int,
 )
 
 internal data class XProperty(
