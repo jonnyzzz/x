@@ -371,6 +371,51 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
+    fun copyPlaneTo(
+        destination: XFramebuffer,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        bitPlane: Int,
+        foreground: Int,
+        background: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): XImagePixels? {
+        if (bitPlane == 0 || bitPlane.countOneBits() != 1) return null
+        val bounds = destination.clippedCopyBounds(
+            sourceWidth = this.width,
+            sourceHeight = this.height,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+        ) ?: return null
+
+        val copied = IntArray(bounds.width * bounds.height)
+        val foregroundPixel = opaque(foreground)
+        val backgroundPixel = opaque(background)
+        var painted = false
+        for (row in 0 until bounds.height) {
+            for (column in 0 until bounds.width) {
+                val sourcePixel = pixels[(bounds.sourceY + row) * this.width + bounds.sourceX + column]
+                val targetPixel = if ((sourcePixel and bitPlane) != 0) foregroundPixel else backgroundPixel
+                copied[row * bounds.width + column] = targetPixel
+                val dx = bounds.destinationX + column
+                val dy = bounds.destinationY + row
+                if (!insideClip(dx, dy, clipRectangles)) continue
+                destination.pixels[dy * destination.width + dx] = targetPixel
+                painted = true
+            }
+        }
+        if (painted) destination.markPainted()
+        return XImagePixels(bounds.width, bounds.height, copied)
+    }
+
     fun pixelAt(x: Int, y: Int): Int? =
         if (x in 0 until width && y in 0 until height) {
             pixels[y * width + x]

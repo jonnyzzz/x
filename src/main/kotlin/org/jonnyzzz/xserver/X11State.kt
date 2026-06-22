@@ -579,6 +579,38 @@ internal class X11State(
     }
 
     @Synchronized
+    fun copyPlane(
+        sourceDrawableId: Int,
+        destinationDrawableId: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        bitPlane: Int,
+        foreground: Int,
+        background: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): XImagePixels? {
+        val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        return source.copyPlaneTo(
+            destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            bitPlane = bitPlane,
+            foreground = foreground,
+            background = background,
+            clipRectangles = clipRectangles,
+        )
+    }
+
+    @Synchronized
     fun composite(
         operation: Int,
         source: XPicture,
@@ -1311,6 +1343,7 @@ internal enum class XDrawingKind {
     Text,
     PutImage,
     CopyArea,
+    CopyPlane,
 }
 
 internal data class XPoint(

@@ -537,6 +537,7 @@ internal object SvgScreenRenderer {
                         }
                     }
                     XDrawingKind.CopyArea -> renderImages(this, drawing)
+                    XDrawingKind.CopyPlane -> renderImages(this, drawing)
                     XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
                     XDrawingKind.FillPoly -> renderPolygon(this, drawing)
                     XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)

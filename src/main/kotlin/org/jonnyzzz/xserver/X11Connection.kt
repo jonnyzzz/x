@@ -140,7 +140,7 @@ internal class X11Connection(
             60 -> closeResource(body)
             61 -> clearArea(body)
             62 -> copyArea(body)
-            63 -> copyArea(body)
+            63 -> copyPlane(body)
             64 -> polyPoint(minorOpcode, body)
             65 -> polyLine(minorOpcode, body)
             66 -> polySegment(body)
@@ -1233,6 +1233,56 @@ internal class X11Connection(
             XDrawingCommand(
                 drawableId = destinationDrawable,
                 kind = XDrawingKind.CopyArea,
+                foreground = gc.foreground,
+                lineWidth = gc.lineWidth,
+                rectangles = listOf(
+                    XRectangleCommand(
+                        x = destinationX,
+                        y = destinationY,
+                        width = width,
+                        height = height,
+                    ),
+                ),
+                imageDataUri = XFramebuffer.imageDataUri(image),
+                sourceDrawableId = sourceDrawable,
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun copyPlane(body: ByteArray) {
+        if (body.size < 28) return
+        val gc = state.gc(byteOrder.u32(body, 8))
+        val sourceDrawable = byteOrder.u32(body, 0)
+        val destinationDrawable = byteOrder.u32(body, 4)
+        val sourceX = byteOrder.i16(body, 12)
+        val sourceY = byteOrder.i16(body, 14)
+        val destinationX = byteOrder.i16(body, 16)
+        val destinationY = byteOrder.i16(body, 18)
+        val width = byteOrder.u16(body, 20)
+        val height = byteOrder.u16(body, 22)
+        val bitPlane = byteOrder.u32(body, 24)
+        if (bitPlane == 0 || bitPlane.countOneBits() != 1) {
+            return writeError(error = 2, opcode = 63, badValue = bitPlane)
+        }
+        val image = state.copyPlane(
+            sourceDrawableId = sourceDrawable,
+            destinationDrawableId = destinationDrawable,
+            sourceX = sourceX,
+            sourceY = sourceY,
+            destinationX = destinationX,
+            destinationY = destinationY,
+            width = width,
+            height = height,
+            bitPlane = bitPlane,
+            foreground = gc.foreground,
+            background = gc.background,
+            clipRectangles = gc.effectiveClipRectangles(),
+        ) ?: return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawable,
+                kind = XDrawingKind.CopyPlane,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
                 rectangles = listOf(

@@ -189,6 +189,75 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CopyPlane paints foreground and background pixels through GC clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 4, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 4,
+                        height = 2,
+                        pixels = listOf(
+                            1, 0, 1, 0,
+                            0, 1, 0, 1,
+                        ),
+                    ),
+                )
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(1, 0, 2, 2))))
+                out.write(copyPlaneRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 4, height = 2, bitPlane = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 2, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyPlane rejects invalid bit plane without drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(putImage24PixelsRequest(PixmapId, width = 2, height = 1, pixels = listOf(1, 0)))
+                out.write(copyPlaneRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1, bitPlane = 3))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(3, u32le(error, 4))
+                assertEquals(63, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid coordinate mode reports Value error without drawing`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -598,12 +667,20 @@ class XCoreDrawingProtocolTest {
         return request(8, 0, body)
     }
 
-    private fun createGcRequest(id: Int, foreground: Int): ByteArray {
-        val body = ByteArray(16)
+    private fun createGcRequest(id: Int, foreground: Int, background: Int? = null): ByteArray {
+        val values = mutableListOf(foreground)
+        var mask = 0x0000_0004
+        if (background != null) {
+            mask = mask or 0x0000_0008
+            values += background
+        }
+        val body = ByteArray(12 + values.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, WindowId)
-        put32le(body, 8, 0x0000_0004)
-        put32le(body, 12, foreground)
+        put32le(body, 8, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 12 + index * 4, value)
+        }
         return request(55, 0, body)
     }
 
@@ -770,9 +847,40 @@ class XCoreDrawingProtocolTest {
         return request(62, 0, body)
     }
 
+    private fun copyPlaneRequest(
+        source: Int,
+        destination: Int,
+        gc: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        bitPlane: Int,
+    ): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        put32le(body, 8, gc)
+        put16le(body, 12, sourceX)
+        put16le(body, 14, sourceY)
+        put16le(body, 16, destinationX)
+        put16le(body, 18, destinationY)
+        put16le(body, 20, width)
+        put16le(body, 22, height)
+        put32le(body, 24, bitPlane)
+        return request(63, 0, body)
+    }
+
     private fun putImage24Request(drawable: Int, width: Int, height: Int, pixel: Int): ByteArray {
+        return putImage24PixelsRequest(drawable, width, height, List(width * height) { pixel })
+    }
+
+    private fun putImage24PixelsRequest(drawable: Int, width: Int, height: Int, pixels: List<Int>): ByteArray {
+        require(pixels.size == width * height)
         val data = ByteArray(width * height * 4)
-        for (index in 0 until width * height) {
+        for ((index, pixel) in pixels.withIndex()) {
             put32le(data, index * 4, pixel)
         }
         val body = ByteArray(20 + data.size)
