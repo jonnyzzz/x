@@ -166,7 +166,7 @@ internal class X11Connection(
             94 -> createCursor(body)
             95 -> closeResource(body)
             96 -> unitReplyless()
-            97 -> queryBestSize(body)
+            97 -> queryBestSize(minorOpcode, body)
             98 -> queryExtension(body)
             99 -> listExtensions()
             101 -> getKeyboardMapping(body)
@@ -1569,10 +1569,18 @@ internal class X11Connection(
         }
     }
 
-    private fun queryBestSize(body: ByteArray) {
+    private fun queryBestSize(sizeClass: Int, body: ByteArray) {
+        if (body.size < 8) return writeError(error = 2, opcode = 97, badValue = 0)
+        if (sizeClass !in QueryBestSizeCursor..QueryBestSizeStipple) {
+            return writeError(error = 2, opcode = 97, badValue = sizeClass)
+        }
+        val drawableId = byteOrder.u32(body, 0)
+        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 97, badValue = drawableId)
+        val requestedWidth = byteOrder.u16(body, 4)
+        val requestedHeight = byteOrder.u16(body, 6)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, byteOrder.u16(body, 4))
-        byteOrder.put16(reply, 10, byteOrder.u16(body, 6))
+        byteOrder.put16(reply, 8, requestedWidth.coerceAtLeast(1))
+        byteOrder.put16(reply, 10, requestedHeight.coerceAtLeast(1))
         write(reply)
     }
 
@@ -2097,6 +2105,12 @@ internal class X11Connection(
 
     private fun own(id: Int) {
         ownedResources += id
+    }
+
+    private companion object {
+        const val QueryBestSizeCursor = 0
+        const val QueryBestSizeTile = 1
+        const val QueryBestSizeStipple = 2
     }
 }
 
