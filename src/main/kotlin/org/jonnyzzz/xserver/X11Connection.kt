@@ -1159,12 +1159,12 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         state.putGc(XGraphicsContext(id))
         own(id)
-        applyGcValues(id, byteOrder.u32(body, 8), body, 12)
+        applyGcValues(id, byteOrder.u32(body, 8), body, 12, opcode = 55)
     }
 
     private fun changeGc(body: ByteArray) {
         if (body.size < 8) return
-        applyGcValues(byteOrder.u32(body, 0), byteOrder.u32(body, 4), body, 8)
+        applyGcValues(byteOrder.u32(body, 0), byteOrder.u32(body, 4), body, 8, opcode = 56)
     }
 
     private fun setClipRectangles(ordering: Int, body: ByteArray) {
@@ -1364,7 +1364,7 @@ internal class X11Connection(
         val coordMode = body[9].toInt() and 0xff
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 69, badValue = coordMode)
         val points = points(body, 12, coordMode)
-        state.fillPolygon(drawableId, gc.foreground, points, gc.effectiveClipRectangles())
+        state.fillPolygon(drawableId, gc.foreground, points, gc.fillRule, gc.effectiveClipRectangles())
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -1463,15 +1463,43 @@ internal class X11Connection(
             width = width,
             height = height,
         ) ?: return writeError(error = 11, opcode = 73, badValue = width * height)
-        val bytes = ByteArray(image.width * image.height * 4)
-        image.pixels.forEachIndexed { index, pixel ->
-            byteOrder.put32(bytes, index * 4, pixel and planeMask)
+        val bytes = when (format) {
+            1 -> encodeXyPixmap(image, drawable.depth, planeMask)
+            else -> encodeZPixmap(image, planeMask)
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
         byteOrder.put32(reply, 8, if (state.window(drawableId) != null) X11Ids.RootVisual else 0)
         byteOrder.put32(reply, 12, bytes.size)
         bytes.copyInto(reply, 32)
         write(reply)
+    }
+
+    private fun encodeZPixmap(image: XImagePixels, planeMask: Int): ByteArray {
+        val bytes = ByteArray(image.width * image.height * 4)
+        image.pixels.forEachIndexed { index, pixel ->
+            byteOrder.put32(bytes, index * 4, pixel and planeMask)
+        }
+        return bytes
+    }
+
+    private fun encodeXyPixmap(image: XImagePixels, depth: Int, planeMask: Int): ByteArray {
+        val effectiveDepth = depth.coerceIn(0, 32)
+        val drawableMask = if (effectiveDepth >= 32) -1 else (1 shl effectiveDepth) - 1
+        val planes = (0 until effectiveDepth).filter { bit -> (planeMask and drawableMask and (1 shl bit)) != 0 }
+        val stride = paddedLength((image.width + 7) / 8)
+        val bytes = ByteArray(stride * image.height * planes.size)
+        for ((planeIndex, bit) in planes.withIndex()) {
+            val planeOffset = planeIndex * stride * image.height
+            for (y in 0 until image.height) {
+                val rowOffset = planeOffset + y * stride
+                for (x in 0 until image.width) {
+                    val pixel = image.pixels[y * image.width + x]
+                    if ((pixel and (1 shl bit)) == 0) continue
+                    bytes[rowOffset + x / 8] = (bytes[rowOffset + x / 8].toInt() or (1 shl (x % 8))).toByte()
+                }
+            }
+        }
+        return bytes
     }
 
     private fun createColormap(body: ByteArray) {
@@ -1847,7 +1875,7 @@ internal class X11Connection(
         return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask)
     }
 
-    private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int) {
+    private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int) {
         var offset = valuesOffset
         fun next(): Int? {
             if (offset + 4 > body.size) return null
@@ -1862,6 +1890,7 @@ internal class X11Connection(
         var clipXOrigin: Int? = null
         var clipYOrigin: Int? = null
         var clearClipRectangles = false
+        var fillRule: Int? = null
         var arcMode: Int? = null
         for (bit in 0..22) {
             if ((mask and (1 shl bit)) == 0) continue
@@ -1870,6 +1899,11 @@ internal class X11Connection(
                 2 -> foreground = value
                 3 -> background = value
                 4 -> lineWidth = value.coerceAtLeast(1)
+                9 -> if (value in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
+                    fillRule = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
                 14 -> fontId = value
                 17 -> clipXOrigin = value.toShort().toInt()
                 18 -> clipYOrigin = value.toShort().toInt()
@@ -1877,7 +1911,7 @@ internal class X11Connection(
                 22 -> if (value in XGraphicsContext.ArcChord..XGraphicsContext.ArcPieSlice) {
                     arcMode = value
                 } else {
-                    return writeError(error = 2, opcode = 56, badValue = value)
+                    return writeError(error = 2, opcode = opcode, badValue = value)
                 }
             }
         }
@@ -1889,6 +1923,7 @@ internal class X11Connection(
             fontId = fontId,
             clipXOrigin = clipXOrigin,
             clipYOrigin = clipYOrigin,
+            fillRule = fillRule,
             arcMode = arcMode,
         )
         if (clearClipRectangles) state.updateGcClip(id, clipRectangles = null)

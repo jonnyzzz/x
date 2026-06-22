@@ -155,6 +155,7 @@ internal class XFramebuffer(
     fun fillPolygon(
         points: List<XPoint>,
         pixel: Int,
+        fillRule: Int = XGraphicsContext.EvenOddRule,
         clipRectangles: List<XRectangleCommand>? = null,
     ): Boolean {
         if (points.size < 3) return false
@@ -176,17 +177,14 @@ internal class XFramebuffer(
                 intersections += start.x + t * (end.x - start.x)
             }
             intersections.sort()
-            var index = 0
-            while (index + 1 < intersections.size) {
-                val left = kotlin.math.ceil(intersections[index]).toInt()
-                val right = kotlin.math.ceil(intersections[index + 1]).toInt()
-                for (x in left until right) {
-                    if (x !in 0 until width || y !in 0 until height) continue
-                    if (!insideClip(x, y, clipRectangles)) continue
-                    pixels[y * width + x] = color
-                    painted = true
+            if (fillRule == XGraphicsContext.WindingRule) {
+                painted = fillWindingScanline(y, points, scanY, color, clipRectangles) || painted
+            } else {
+                var index = 0
+                while (index + 1 < intersections.size) {
+                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], color, clipRectangles) || painted
+                    index += 2
                 }
-                index += 2
             }
         }
         if (painted) markPainted()
@@ -231,7 +229,7 @@ internal class XFramebuffer(
         } else {
             listOf(XPoint(arc.centerX().roundToInt(), arc.centerY().roundToInt())) + arcPoints
         }
-        return fillPolygon(polygon, pixel, clipRectangles)
+        return fillPolygon(polygon, pixel, clipRectangles = clipRectangles)
     }
 
     fun blendSolidOver(
@@ -531,6 +529,66 @@ internal class XFramebuffer(
             if (points.lastOrNull() != point) points += point
         }
         return points
+    }
+
+    private fun fillWindingScanline(
+        y: Int,
+        points: List<XPoint>,
+        scanY: Double,
+        color: Int,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val events = mutableListOf<Pair<Double, Int>>()
+        for (index in points.indices) {
+            val start = points[index]
+            val end = points[(index + 1) % points.size]
+            if (start.y == end.y) continue
+            val low = minOf(start.y, end.y)
+            val high = maxOf(start.y, end.y)
+            if (scanY < low || scanY >= high) continue
+            val t = (scanY - start.y) / (end.y - start.y).toDouble()
+            val x = start.x + t * (end.x - start.x)
+            val direction = if (end.y > start.y) 1 else -1
+            events += x to direction
+        }
+        events.sortBy { it.first }
+        var painted = false
+        var winding = 0
+        var previousX: Double? = null
+        var index = 0
+        while (index < events.size) {
+            val x = events[index].first
+            previousX?.let { previous ->
+                if (winding != 0) {
+                    painted = fillScanlineSpan(y, previous, x, color, clipRectangles) || painted
+                }
+            }
+            while (index < events.size && events[index].first == x) {
+                winding += events[index].second
+                index += 1
+            }
+            previousX = x
+        }
+        return painted
+    }
+
+    private fun fillScanlineSpan(
+        y: Int,
+        leftIntersection: Double,
+        rightIntersection: Double,
+        color: Int,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val left = ceil(leftIntersection).toInt()
+        val right = ceil(rightIntersection).toInt()
+        var painted = false
+        for (x in left until right) {
+            if (x !in 0 until width || y !in 0 until height) continue
+            if (!insideClip(x, y, clipRectangles)) continue
+            pixels[y * width + x] = color
+            painted = true
+        }
+        return painted
     }
 
     private fun insideClip(x: Int, y: Int, clipRectangles: List<XRectangleCommand>?): Boolean =

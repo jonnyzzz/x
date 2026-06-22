@@ -801,10 +801,11 @@ internal class X11State(
         drawableId: Int,
         pixel: Int,
         points: List<XPoint>,
+        fillRule: Int,
         clipRectangles: List<XRectangleCommand>? = null,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.fillPolygon(points, pixel, clipRectangles)
+        return framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles)
     }
 
     @Synchronized
@@ -888,6 +889,7 @@ internal class X11State(
         fontId: Int? = null,
         clipXOrigin: Int? = null,
         clipYOrigin: Int? = null,
+        fillRule: Int? = null,
         arcMode: Int? = null,
     ) {
         val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
@@ -897,6 +899,7 @@ internal class X11State(
         fontId?.let { gc.fontId = it }
         clipXOrigin?.let { gc.clipXOrigin = it }
         clipYOrigin?.let { gc.clipYOrigin = it }
+        fillRule?.let { gc.fillRule = it }
         arcMode?.let { gc.arcMode = it }
     }
 
@@ -1243,6 +1246,7 @@ internal data class XGraphicsContext(
     var clipXOrigin: Int = 0
     var clipYOrigin: Int = 0
     var clipRectangles: List<XRectangleCommand>? = null
+    var fillRule: Int = EvenOddRule
     var arcMode: Int = ArcPieSlice
 
     fun effectiveClipRectangles(): List<XRectangleCommand>? =
@@ -1256,6 +1260,8 @@ internal data class XGraphicsContext(
         }
 
     companion object {
+        const val EvenOddRule = 0
+        const val WindingRule = 1
         const val ArcChord = 0
         const val ArcPieSlice = 1
     }

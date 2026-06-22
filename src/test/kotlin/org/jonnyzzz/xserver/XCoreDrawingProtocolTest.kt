@@ -234,7 +234,7 @@ class XCoreDrawingProtocolTest {
                 out.write(createGcRequest(GcId, foreground = 0x0012_3456))
                 out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(2 to 3)))
                 out.write(getImageRequest(WindowId, x = 2, y = 3, width = 1, height = 1, planeMask = 0x00ff_0000))
-                out.write(getImageRequest(WindowId, x = 2, y = 3, width = 1, height = 1, format = 1))
+                out.write(getImageRequest(WindowId, x = 2, y = 3, width = 1, height = 1, planeMask = 0x0000_0010, format = 1))
                 out.write(getImageRequest(WindowId, x = 39, y = 29, width = 2, height = 1))
                 out.flush()
 
@@ -249,7 +249,13 @@ class XCoreDrawingProtocolTest {
                 val xyPixmap = readReply(socket.getInputStream())
                 assertEquals(1, xyPixmap[0].toInt())
                 assertEquals(24, xyPixmap[1].toInt() and 0xff)
+                assertEquals(1, u32le(xyPixmap, 4))
                 assertEquals(X11Ids.RootVisual, u32le(xyPixmap, 8))
+                assertEquals(4, u32le(xyPixmap, 12))
+                assertEquals(1, xyPixmap[32].toInt() and 0xff)
+                assertEquals(0, xyPixmap[33].toInt() and 0xff)
+                assertEquals(0, xyPixmap[34].toInt() and 0xff)
+                assertEquals(0, xyPixmap[35].toInt() and 0xff)
 
                 val error = socket.getInputStream().readExactly(32)
                 assertEquals(0, error[0].toInt())
@@ -336,6 +342,64 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, u32le(image, 8))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 2))
                 assertEquals(0xff00_0000.toInt(), pixelAt(image, 8, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FillPoly honors GC fill rule for complex polygons`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val repeatedLoop = listOf(1 to 1, 6 to 1, 6 to 6, 1 to 6, 1 to 1, 6 to 1, 6 to 6, 1 to 6)
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = repeatedLoop))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.write(changeGcFillRuleRequest(GcId, fillRule = WindingRule))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = repeatedLoop))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val evenOddImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(evenOddImage, 8, 2, 2))
+
+                val windingImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(windingImage, 8, 2, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windingImage, 8, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `invalid GC fill rule reports Value error without changing GC`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val repeatedLoop = listOf(1 to 1, 6 to 1, 6 to 6, 1 to 6, 1 to 1, 6 to 1, 6 to 6, 1 to 6)
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcFillRuleRequest(GcId, fillRule = 2))
+                out.write(fillPolyRequest(WindowId, GcId, coordMode = 0, points = repeatedLoop))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(2, u32le(error, 4))
+                assertEquals(56, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 2, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -548,6 +612,14 @@ class XCoreDrawingProtocolTest {
         put32le(body, 0, id)
         put32le(body, 4, 0x0000_0010)
         put32le(body, 8, lineWidth)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcFillRuleRequest(id: Int, fillRule: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_0200)
+        put32le(body, 8, fillRule)
         return request(56, 0, body)
     }
 
@@ -798,5 +870,6 @@ class XCoreDrawingProtocolTest {
         const val Blue = 0x0000_00ff
         const val FullCircleAngle = 360 * 64
         const val ArcChord = 0
+        const val WindingRule = 1
     }
 }
