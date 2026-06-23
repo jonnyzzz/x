@@ -67,6 +67,229 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `core drawing applies GC plane mask to framebuffer pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24PixelsRequest(WindowId, width = 1, height = 1, pixels = listOf(0x0012_3456)))
+                out.write(changeGcRasterRequest(GcId, planeMask = 0x0000_ff00))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_0056.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `core drawing applies GC xor raster operation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = 0x000f_0f0f))
+                out.write(putImage24PixelsRequest(WindowId, width = 1, height = 1, pixels = listOf(0x0012_3456)))
+                out.write(changeGcRasterRequest(GcId, function = GXxor))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff1d_3b59.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage and CopyArea apply GC raster operation and plane mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24PixelsRequest(WindowId, width = 2, height = 1, pixels = listOf(0x0012_3456, 0x0012_3456)))
+                out.write(putImage24PixelsRequest(PixmapId, width = 1, height = 1, pixels = listOf(0x0000_0f00)))
+                out.write(changeGcRasterRequest(GcId, function = GXxor, planeMask = 0x0000_ff00))
+                out.write(putImage24PixelsRequest(WindowId, width = 1, height = 1, pixels = listOf(0x0000_0f00)))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 1, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3b56.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff12_3b56.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `invalid GC function reports Value error without changing GC`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(changeGcRasterRequest(GcId, function = GXxor))
+                out.write(changeGcRasterRequest(GcId, function = 16))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(16, u32le(error, 4))
+                assertEquals(56, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ffff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeGC on unknown GC reports GC error`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(changeGcRasterRequest(GcId, function = GXxor))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(13, error[1].toInt() and 0xff)
+                assertEquals(GcId, u32le(error, 4))
+                assertEquals(56, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `invalid CreateGC function reports Value error before usable GC creation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRasterRequest(GcId, function = 16))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(16, u32le(error, 4))
+                assertEquals(55, error[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateGC validates drawable and duplicate id before mutating GC state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDrawable = 0x0020_9999
+                out.write(createGcRequest(GcId, foreground = Red, drawable = missingDrawable))
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val drawableError = socket.getInputStream().readExactly(32)
+                assertEquals(0, drawableError[0].toInt())
+                assertEquals(9, drawableError[1].toInt() and 0xff)
+                assertEquals(missingDrawable, u32le(drawableError, 4))
+                assertEquals(55, drawableError[10].toInt() and 0xff)
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(GcId, u32le(duplicateError, 4))
+                assertEquals(55, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateGC and ChangeGC reject undefined value mask bits`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val undefinedMask = 0x0080_0000
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRawRequest(GcId, mask = undefinedMask))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(changeGcRawRequest(GcId, mask = undefinedMask))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val createError = socket.getInputStream().readExactly(32)
+                assertEquals(0, createError[0].toInt())
+                assertEquals(2, createError[1].toInt() and 0xff)
+                assertEquals(undefinedMask, u32le(createError, 4))
+                assertEquals(55, createError[10].toInt() and 0xff)
+
+                val changeError = socket.getInputStream().readExactly(32)
+                assertEquals(0, changeError[0].toInt())
+                assertEquals(2, changeError[1].toInt() and 0xff)
+                assertEquals(undefinedMask, u32le(changeError, 4))
+                assertEquals(56, changeError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyLine PolySegment and PolyRectangle paint framebuffer pixels`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -667,13 +890,28 @@ class XCoreDrawingProtocolTest {
         return request(8, 0, body)
     }
 
-    private fun createGcRequest(id: Int, foreground: Int, background: Int? = null): ByteArray {
+    private fun createGcRequest(id: Int, foreground: Int, background: Int? = null, drawable: Int = WindowId): ByteArray {
         val values = mutableListOf(foreground)
         var mask = 0x0000_0004
         if (background != null) {
             mask = mask or 0x0000_0008
             values += background
         }
+        val body = ByteArray(12 + values.size * 4)
+        put32le(body, 0, id)
+        put32le(body, 4, drawable)
+        put32le(body, 8, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 12 + index * 4, value)
+        }
+        return request(55, 0, body)
+    }
+
+    private fun createGcRasterRequest(id: Int, function: Int): ByteArray {
+        return createGcRawRequest(id, mask = 0x0000_0001, values = listOf(function))
+    }
+
+    private fun createGcRawRequest(id: Int, mask: Int, values: List<Int> = emptyList()): ByteArray {
         val body = ByteArray(12 + values.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, WindowId)
@@ -705,6 +943,36 @@ class XCoreDrawingProtocolTest {
         put32le(body, 0, id)
         put32le(body, 4, 0x0040_0000)
         put32le(body, 8, arcMode)
+        return request(56, 0, body)
+    }
+
+    private fun changeGcRasterRequest(id: Int, function: Int? = null, planeMask: Int? = null): ByteArray {
+        val values = mutableListOf<Int>()
+        var mask = 0
+        if (function != null) {
+            mask = mask or 0x0000_0001
+            values += function
+        }
+        if (planeMask != null) {
+            mask = mask or 0x0000_0002
+            values += planeMask
+        }
+        val body = ByteArray(8 + values.size * 4)
+        put32le(body, 0, id)
+        put32le(body, 4, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 8 + index * 4, value)
+        }
+        return request(56, 0, body)
+    }
+
+    private fun changeGcRawRequest(id: Int, mask: Int, values: List<Int> = emptyList()): ByteArray {
+        val body = ByteArray(8 + values.size * 4)
+        put32le(body, 0, id)
+        put32le(body, 4, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 8 + index * 4, value)
+        }
         return request(56, 0, body)
     }
 
@@ -976,6 +1244,7 @@ class XCoreDrawingProtocolTest {
         const val Red = 0x00ff_0000
         const val Green = 0x0000_ff00
         const val Blue = 0x0000_00ff
+        const val GXxor = 0x6
         const val FullCircleAngle = 360 * 64
         const val ArcChord = 0
         const val WindingRule = 1

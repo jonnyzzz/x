@@ -61,6 +61,8 @@ internal class XFramebuffer(
         pixel: Int,
         preserveAlpha: Boolean = false,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val bounds = clippedBounds(x, y, width, height) ?: return false
         val color = if (preserveAlpha) pixel else opaque(pixel)
@@ -69,7 +71,11 @@ internal class XFramebuffer(
             val offset = row * this.width
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 if (!insideClip(column, row, clipRectangles)) continue
-                pixels[offset + column] = color
+                pixels[offset + column] = if (preserveAlpha && function == XGraphicsContext.GXcopy && planeMask == -1) {
+                    color
+                } else {
+                    corePixel(source = color, destination = pixels[offset + column], function = function, planeMask = planeMask)
+                }
                 painted = true
             }
         }
@@ -83,6 +89,8 @@ internal class XFramebuffer(
         pixel: Int,
         lineWidth: Int = 1,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val size = lineWidth.coerceAtLeast(1)
         val radiusBefore = (size - 1) / 2
@@ -93,6 +101,8 @@ internal class XFramebuffer(
             height = size,
             pixel = pixel,
             clipRectangles = clipRectangles,
+            function = function,
+            planeMask = planeMask,
         )
     }
 
@@ -104,6 +114,8 @@ internal class XFramebuffer(
         pixel: Int,
         lineWidth: Int = 1,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         var x = x1
         var y = y1
@@ -115,7 +127,7 @@ internal class XFramebuffer(
         var painted = false
 
         while (true) {
-            painted = drawPoint(x, y, pixel, lineWidth, clipRectangles) || painted
+            painted = drawPoint(x, y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
             if (x == x2 && y == y2) break
             val twiceError = error * 2
             if (twiceError > -dy) {
@@ -138,16 +150,18 @@ internal class XFramebuffer(
         pixel: Int,
         lineWidth: Int = 1,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         if (width < 0 || height < 0) return false
         var painted = false
         val right = x + width
         val bottom = y + height
-        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles) || painted
-        if (height > 0) painted = drawLine(x, bottom, right, bottom, pixel, lineWidth, clipRectangles) || painted
+        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+        if (height > 0) painted = drawLine(x, bottom, right, bottom, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         if (height > 1) {
-            painted = drawLine(x, y + 1, x, bottom - 1, pixel, lineWidth, clipRectangles) || painted
-            if (width > 0) painted = drawLine(right, y + 1, right, bottom - 1, pixel, lineWidth, clipRectangles) || painted
+            painted = drawLine(x, y + 1, x, bottom - 1, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            if (width > 0) painted = drawLine(right, y + 1, right, bottom - 1, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -157,6 +171,8 @@ internal class XFramebuffer(
         pixel: Int,
         fillRule: Int = XGraphicsContext.EvenOddRule,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         if (points.size < 3) return false
         val minY = points.minOf { it.y }
@@ -178,11 +194,11 @@ internal class XFramebuffer(
             }
             intersections.sort()
             if (fillRule == XGraphicsContext.WindingRule) {
-                painted = fillWindingScanline(y, points, scanY, color, clipRectangles) || painted
+                painted = fillWindingScanline(y, points, scanY, color, clipRectangles, function, planeMask) || painted
             } else {
                 var index = 0
                 while (index + 1 < intersections.size) {
-                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], color, clipRectangles) || painted
+                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], color, clipRectangles, function, planeMask) || painted
                     index += 2
                 }
             }
@@ -196,6 +212,8 @@ internal class XFramebuffer(
         pixel: Int,
         lineWidth: Int = 1,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val points = sampledArcPoints(arc)
         if (points.isEmpty()) return false
@@ -203,10 +221,10 @@ internal class XFramebuffer(
         for (index in 0 until points.lastIndex) {
             val start = points[index]
             val end = points[index + 1]
-            painted = drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+            painted = drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         if (points.size == 1) {
-            painted = drawPoint(points[0].x, points[0].y, pixel, lineWidth, clipRectangles) || painted
+            painted = drawPoint(points[0].x, points[0].y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -216,10 +234,12 @@ internal class XFramebuffer(
         pixel: Int,
         arcMode: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return false
         if (abs(arc.angle2) >= FullCircleAngle) {
-            return fillEllipse(arc, pixel, clipRectangles)
+            return fillEllipse(arc, pixel, clipRectangles, function, planeMask)
         }
 
         val arcPoints = sampledArcPoints(arc)
@@ -229,7 +249,7 @@ internal class XFramebuffer(
         } else {
             listOf(XPoint(arc.centerX().roundToInt(), arc.centerY().roundToInt())) + arcPoints
         }
-        return fillPolygon(polygon, pixel, clipRectangles = clipRectangles)
+        return fillPolygon(polygon, pixel, clipRectangles = clipRectangles, function = function, planeMask = planeMask)
     }
 
     fun blendSolidOver(
@@ -301,7 +321,14 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
-    fun putImage(x: Int, y: Int, image: XImagePixels, clipRectangles: List<XRectangleCommand>? = null): Boolean {
+    fun putImage(
+        x: Int,
+        y: Int,
+        image: XImagePixels,
+        clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
+    ): Boolean {
         val bounds = clippedCopyBounds(
             sourceWidth = image.width,
             sourceHeight = image.height,
@@ -319,7 +346,13 @@ internal class XFramebuffer(
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
                 if (!insideClip(dx, dy, clipRectangles)) continue
-                pixels[dy * this.width + dx] = image.pixels[(bounds.sourceY + row) * image.width + bounds.sourceX + column]
+                val index = dy * this.width + dx
+                val sourcePixel = image.pixels[(bounds.sourceY + row) * image.width + bounds.sourceX + column]
+                pixels[index] = if (usesCoreRaster(function, planeMask)) {
+                    corePixel(source = sourcePixel, destination = pixels[index], function = function, planeMask = planeMask)
+                } else {
+                    sourcePixel
+                }
                 painted = true
             }
         }
@@ -336,6 +369,8 @@ internal class XFramebuffer(
         width: Int,
         height: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): XImagePixels? {
         val bounds = destination.clippedCopyBounds(
             sourceWidth = this.width,
@@ -363,7 +398,13 @@ internal class XFramebuffer(
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
                 if (!insideClip(dx, dy, clipRectangles)) continue
-                destination.pixels[dy * destination.width + dx] = copied[row * bounds.width + column]
+                val index = dy * destination.width + dx
+                val sourcePixel = copied[row * bounds.width + column]
+                destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
+                    corePixel(source = sourcePixel, destination = destination.pixels[index], function = function, planeMask = planeMask)
+                } else {
+                    sourcePixel
+                }
                 painted = true
             }
         }
@@ -383,6 +424,8 @@ internal class XFramebuffer(
         foreground: Int,
         background: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): XImagePixels? {
         if (bitPlane == 0 || bitPlane.countOneBits() != 1) return null
         val bounds = destination.clippedCopyBounds(
@@ -399,16 +442,27 @@ internal class XFramebuffer(
         val copied = IntArray(bounds.width * bounds.height)
         val foregroundPixel = opaque(foreground)
         val backgroundPixel = opaque(background)
-        var painted = false
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val sourcePixel = pixels[(bounds.sourceY + row) * this.width + bounds.sourceX + column]
                 val targetPixel = if ((sourcePixel and bitPlane) != 0) foregroundPixel else backgroundPixel
                 copied[row * bounds.width + column] = targetPixel
+            }
+        }
+
+        var painted = false
+        for (row in 0 until bounds.height) {
+            for (column in 0 until bounds.width) {
+                val targetPixel = copied[row * bounds.width + column]
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
                 if (!insideClip(dx, dy, clipRectangles)) continue
-                destination.pixels[dy * destination.width + dx] = targetPixel
+                val index = dy * destination.width + dx
+                destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
+                    corePixel(source = targetPixel, destination = destination.pixels[index], function = function, planeMask = planeMask)
+                } else {
+                    targetPixel
+                }
                 painted = true
             }
         }
@@ -530,6 +584,8 @@ internal class XFramebuffer(
         arc: XArcCommand,
         pixel: Int,
         clipRectangles: List<XRectangleCommand>?,
+        function: Int,
+        planeMask: Int,
     ): Boolean {
         val bounds = clippedBounds(arc.x, arc.y, arc.width, arc.height) ?: return false
         val radiusX = arc.width / 2.0
@@ -545,7 +601,8 @@ internal class XFramebuffer(
                 if (!insideClip(column, row, clipRectangles)) continue
                 val normalizedX = ((column + 0.5) - centerX) / radiusX
                 if (normalizedX * normalizedX + normalizedY * normalizedY > 1.0) continue
-                pixels[row * width + column] = color
+                val index = row * width + column
+                pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
                 painted = true
             }
         }
@@ -582,6 +639,8 @@ internal class XFramebuffer(
         scanY: Double,
         color: Int,
         clipRectangles: List<XRectangleCommand>?,
+        function: Int,
+        planeMask: Int,
     ): Boolean {
         val events = mutableListOf<Pair<Double, Int>>()
         for (index in points.indices) {
@@ -605,7 +664,7 @@ internal class XFramebuffer(
             val x = events[index].first
             previousX?.let { previous ->
                 if (winding != 0) {
-                    painted = fillScanlineSpan(y, previous, x, color, clipRectangles) || painted
+                    painted = fillScanlineSpan(y, previous, x, color, clipRectangles, function, planeMask) || painted
                 }
             }
             while (index < events.size && events[index].first == x) {
@@ -623,6 +682,8 @@ internal class XFramebuffer(
         rightIntersection: Double,
         color: Int,
         clipRectangles: List<XRectangleCommand>?,
+        function: Int,
+        planeMask: Int,
     ): Boolean {
         val left = ceil(leftIntersection).toInt()
         val right = ceil(rightIntersection).toInt()
@@ -630,7 +691,8 @@ internal class XFramebuffer(
         for (x in left until right) {
             if (x !in 0 until width || y !in 0 until height) continue
             if (!insideClip(x, y, clipRectangles)) continue
-            pixels[y * width + x] = color
+            val index = y * width + x
+            pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
             painted = true
         }
         return painted
@@ -648,6 +710,35 @@ internal class XFramebuffer(
         cachedDataUri = null
     }
 
+    private fun usesCoreRaster(function: Int, planeMask: Int): Boolean =
+        function != XGraphicsContext.GXcopy || planeMask != -1
+
+    private fun corePixel(source: Int, destination: Int, function: Int, planeMask: Int): Int {
+        val mask = planeMask and CorePixelMask
+        val sourcePixel = source and CorePixelMask
+        val destinationPixel = destination and CorePixelMask
+        val functionPixel = when (function) {
+            XGraphicsContext.GXclear -> 0
+            XGraphicsContext.GXand -> sourcePixel and destinationPixel
+            XGraphicsContext.GXandReverse -> sourcePixel and destinationPixel.inv()
+            XGraphicsContext.GXcopy -> sourcePixel
+            XGraphicsContext.GXandInverted -> sourcePixel.inv() and destinationPixel
+            XGraphicsContext.GXnoop -> destinationPixel
+            XGraphicsContext.GXxor -> sourcePixel xor destinationPixel
+            XGraphicsContext.GXor -> sourcePixel or destinationPixel
+            XGraphicsContext.GXnor -> (sourcePixel or destinationPixel).inv()
+            XGraphicsContext.GXequiv -> (sourcePixel xor destinationPixel).inv()
+            XGraphicsContext.GXinvert -> destinationPixel.inv()
+            XGraphicsContext.GXorReverse -> sourcePixel or destinationPixel.inv()
+            XGraphicsContext.GXcopyInverted -> sourcePixel.inv()
+            XGraphicsContext.GXorInverted -> sourcePixel.inv() or destinationPixel
+            XGraphicsContext.GXnand -> (sourcePixel and destinationPixel).inv()
+            XGraphicsContext.GXset -> CorePixelMask
+            else -> sourcePixel
+        } and CorePixelMask
+        return (destination and 0xff00_0000.toInt()) or ((destinationPixel and mask.inv()) or (functionPixel and mask))
+    }
+
     private data class CopyBounds(
         val sourceX: Int,
         val sourceY: Int,
@@ -661,6 +752,7 @@ internal class XFramebuffer(
         private const val MaxPixels = 16_777_216
         private const val FullCircleAngle = 360 * 64
         private const val ArcChord = 0
+        private const val CorePixelMask = 0x00ff_ffff
 
         private fun framebufferSize(width: Int, height: Int): Pair<Int, Int> {
             val safeWidth = width.coerceAtLeast(0)

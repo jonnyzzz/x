@@ -547,9 +547,11 @@ internal class X11State(
         y: Int,
         image: XImagePixels,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.putImage(x, y, image, clipRectangles)
+        return framebuffer.putImage(x, y, image, clipRectangles, function, planeMask)
     }
 
     @Synchronized
@@ -563,6 +565,8 @@ internal class X11State(
         width: Int,
         height: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): XImagePixels? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
@@ -575,6 +579,8 @@ internal class X11State(
             width = width,
             height = height,
             clipRectangles = clipRectangles,
+            function = function,
+            planeMask = planeMask,
         )
     }
 
@@ -592,6 +598,8 @@ internal class X11State(
         foreground: Int,
         background: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): XImagePixels? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
@@ -607,6 +615,8 @@ internal class X11State(
             foreground = foreground,
             background = background,
             clipRectangles = clipRectangles,
+            function = function,
+            planeMask = planeMask,
         )
     }
 
@@ -717,11 +727,13 @@ internal class X11State(
         rectangles: List<XRectangleCommand>,
         preserveAlpha: Boolean = false,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles) || painted
+            painted = framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -733,11 +745,13 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (point in points) {
-            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, clipRectangles) || painted
+            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -749,13 +763,15 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (index in 0 until points.lastIndex) {
             val start = points[index]
             val end = points[index + 1]
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -767,6 +783,8 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
@@ -774,7 +792,7 @@ internal class X11State(
         while (index + 1 < points.size) {
             val start = points[index]
             val end = points[index + 1]
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles) || painted
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
             index += 2
         }
         return painted
@@ -787,11 +805,13 @@ internal class X11State(
         rectangles: List<XRectangleCommand>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, clipRectangles) || painted
+            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -803,11 +823,13 @@ internal class X11State(
         arcs: List<XArcCommand>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (arc in arcs) {
-            painted = framebuffer.drawArc(arc, pixel, lineWidth, clipRectangles) || painted
+            painted = framebuffer.drawArc(arc, pixel, lineWidth, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -819,11 +841,13 @@ internal class X11State(
         arcs: List<XArcCommand>,
         arcMode: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         var painted = false
         for (arc in arcs) {
-            painted = framebuffer.fillArc(arc, pixel, arcMode, clipRectangles) || painted
+            painted = framebuffer.fillArc(arc, pixel, arcMode, clipRectangles, function, planeMask) || painted
         }
         return painted
     }
@@ -835,9 +859,11 @@ internal class X11State(
         points: List<XPoint>,
         fillRule: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        function: Int = XGraphicsContext.GXcopy,
+        planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles)
+        return framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles, function, planeMask)
     }
 
     @Synchronized
@@ -913,11 +939,28 @@ internal class X11State(
     }
 
     @Synchronized
+    fun hasGc(id: Int): Boolean = gcs.containsKey(id)
+
+    @Synchronized
+    fun hasResource(id: Int): Boolean =
+        windows.containsKey(id) ||
+            pixmaps.containsKey(id) ||
+            gcs.containsKey(id) ||
+            fonts.contains(id) ||
+            cursors.contains(id) ||
+            colormaps.contains(id) ||
+            pictures.containsKey(id) ||
+            glyphSets.containsKey(id) ||
+            glxContexts.containsKey(id)
+
+    @Synchronized
     fun updateGc(
         id: Int,
         foreground: Int? = null,
         background: Int? = null,
         lineWidth: Int? = null,
+        function: Int? = null,
+        planeMask: Int? = null,
         fontId: Int? = null,
         clipXOrigin: Int? = null,
         clipYOrigin: Int? = null,
@@ -928,6 +971,8 @@ internal class X11State(
         foreground?.let { gc.foreground = it }
         background?.let { gc.background = it }
         lineWidth?.let { gc.lineWidth = it }
+        function?.let { gc.function = it }
+        planeMask?.let { gc.planeMask = it }
         fontId?.let { gc.fontId = it }
         clipXOrigin?.let { gc.clipXOrigin = it }
         clipYOrigin?.let { gc.clipYOrigin = it }
@@ -1273,6 +1318,8 @@ internal data class XGraphicsContext(
     var foreground: Int = 0,
     var background: Int = 0x00ff_ffff,
     var lineWidth: Int = 1,
+    var function: Int = GXcopy,
+    var planeMask: Int = -1,
     var fontId: Int = 0,
 ) {
     var clipXOrigin: Int = 0
@@ -1292,6 +1339,22 @@ internal data class XGraphicsContext(
         }
 
     companion object {
+        const val GXclear = 0x0
+        const val GXand = 0x1
+        const val GXandReverse = 0x2
+        const val GXcopy = 0x3
+        const val GXandInverted = 0x4
+        const val GXnoop = 0x5
+        const val GXxor = 0x6
+        const val GXor = 0x7
+        const val GXnor = 0x8
+        const val GXequiv = 0x9
+        const val GXinvert = 0xa
+        const val GXorReverse = 0xb
+        const val GXcopyInverted = 0xc
+        const val GXorInverted = 0xd
+        const val GXnand = 0xe
+        const val GXset = 0xf
         const val EvenOddRule = 0
         const val WindingRule = 1
         const val ArcChord = 0

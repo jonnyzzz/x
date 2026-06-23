@@ -1157,14 +1157,21 @@ internal class X11Connection(
     private fun createGc(body: ByteArray) {
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
+        val drawableId = byteOrder.u32(body, 4)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 55, badValue = id)
+        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 55, badValue = drawableId)
+        val mask = byteOrder.u32(body, 8)
+        if (!validateGcValues(mask, body, 12, opcode = 55)) return
         state.putGc(XGraphicsContext(id))
         own(id)
-        applyGcValues(id, byteOrder.u32(body, 8), body, 12, opcode = 55)
+        applyGcValues(id, mask, body, 12, opcode = 55)
     }
 
     private fun changeGc(body: ByteArray) {
         if (body.size < 8) return
-        applyGcValues(byteOrder.u32(body, 0), byteOrder.u32(body, 4), body, 8, opcode = 56)
+        val id = byteOrder.u32(body, 0)
+        if (!state.hasGc(id)) return writeError(error = 13, opcode = 56, badValue = id)
+        applyGcValues(id, byteOrder.u32(body, 4), body, 8, opcode = 56)
     }
 
     private fun setClipRectangles(ordering: Int, body: ByteArray) {
@@ -1228,6 +1235,8 @@ internal class X11Connection(
             width = width,
             height = height,
             clipRectangles = gc.effectiveClipRectangles(),
+            function = gc.function,
+            planeMask = gc.planeMask,
         ) ?: return
         state.draw(
             XDrawingCommand(
@@ -1278,6 +1287,8 @@ internal class X11Connection(
             foreground = gc.foreground,
             background = gc.background,
             clipRectangles = gc.effectiveClipRectangles(),
+            function = gc.function,
+            planeMask = gc.planeMask,
         ) ?: return
         state.draw(
             XDrawingCommand(
@@ -1306,7 +1317,7 @@ internal class X11Connection(
         val gc = state.gc(byteOrder.u32(body, 4))
         val drawableId = byteOrder.u32(body, 0)
         val points = points(body, 8, coordMode)
-        state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles())
+        state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -1324,7 +1335,7 @@ internal class X11Connection(
         val gc = state.gc(byteOrder.u32(body, 4))
         val drawableId = byteOrder.u32(body, 0)
         val points = points(body, 8, coordMode)
-        state.drawPolyline(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles())
+        state.drawPolyline(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -1348,7 +1359,7 @@ internal class X11Connection(
             points += XPoint(byteOrder.i16(body, offset + 4), byteOrder.i16(body, offset + 6))
             offset += 8
         }
-        state.drawSegments(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles())
+        state.drawSegments(drawableId, gc.foreground, points, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -1367,8 +1378,8 @@ internal class X11Connection(
         val drawableId = byteOrder.u32(body, 0)
         val rectangles = rectangles(body, 8)
         when (kind) {
-            XDrawingKind.FillRectangle -> state.fillRectangles(drawableId, gc.foreground, rectangles, clipRectangles = gc.effectiveClipRectangles())
-            XDrawingKind.Rectangle -> state.drawRectangleOutlines(drawableId, gc.foreground, rectangles, gc.lineWidth, gc.effectiveClipRectangles())
+            XDrawingKind.FillRectangle -> state.fillRectangles(drawableId, gc.foreground, rectangles, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
+            XDrawingKind.Rectangle -> state.drawRectangleOutlines(drawableId, gc.foreground, rectangles, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
             else -> Unit
         }
         state.draw(
@@ -1389,9 +1400,9 @@ internal class X11Connection(
         val drawableId = byteOrder.u32(body, 0)
         val arcs = arcs(body, 8)
         if (filled) {
-            state.fillArcs(drawableId, gc.foreground, arcs, gc.arcMode, gc.effectiveClipRectangles())
+            state.fillArcs(drawableId, gc.foreground, arcs, gc.arcMode, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         } else {
-            state.drawArcs(drawableId, gc.foreground, arcs, gc.lineWidth, gc.effectiveClipRectangles())
+            state.drawArcs(drawableId, gc.foreground, arcs, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         }
         state.draw(
             XDrawingCommand(
@@ -1414,7 +1425,7 @@ internal class X11Connection(
         val coordMode = body[9].toInt() and 0xff
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 69, badValue = coordMode)
         val points = points(body, 12, coordMode)
-        state.fillPolygon(drawableId, gc.foreground, points, gc.fillRule, gc.effectiveClipRectangles())
+        state.fillPolygon(drawableId, gc.foreground, points, gc.fillRule, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -1438,7 +1449,7 @@ internal class X11Connection(
         val image = decodePutImage(format = format, width = width, height = height, depth = body[17].toInt() and 0xff, data = body.copyOfRange(20, body.size))
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
         if (image != null) {
-            state.putImage(drawableId, x, y, image, clipRectangles = gc.effectiveClipRectangles())
+            state.putImage(drawableId, x, y, image, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
         }
         state.draw(
             XDrawingCommand(
@@ -1933,7 +1944,41 @@ internal class X11Connection(
         return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask)
     }
 
+    private fun validateGcValues(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
+        if ((mask and GcValueMask.inv()) != 0) {
+            writeError(error = 2, opcode = opcode, badValue = mask)
+            return false
+        }
+        var offset = valuesOffset
+        fun next(): Int? {
+            if (offset + 4 > body.size) return null
+            val value = byteOrder.u32(body, offset)
+            offset += 4
+            return value
+        }
+        for (bit in 0..22) {
+            if ((mask and (1 shl bit)) == 0) continue
+            val value = next() ?: break
+            when (bit) {
+                0 -> if (value !in XGraphicsContext.GXclear..XGraphicsContext.GXset) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                9 -> if (value !in XGraphicsContext.EvenOddRule..XGraphicsContext.WindingRule) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                22 -> if (value !in XGraphicsContext.ArcChord..XGraphicsContext.ArcPieSlice) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
     private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int) {
+        if (!validateGcValues(mask, body, valuesOffset, opcode)) return
         var offset = valuesOffset
         fun next(): Int? {
             if (offset + 4 > body.size) return null
@@ -1944,6 +1989,8 @@ internal class X11Connection(
         var foreground: Int? = null
         var background: Int? = null
         var lineWidth: Int? = null
+        var function: Int? = null
+        var planeMask: Int? = null
         var fontId: Int? = null
         var clipXOrigin: Int? = null
         var clipYOrigin: Int? = null
@@ -1954,6 +2001,12 @@ internal class X11Connection(
             if ((mask and (1 shl bit)) == 0) continue
             val value = next() ?: break
             when (bit) {
+                0 -> if (value in XGraphicsContext.GXclear..XGraphicsContext.GXset) {
+                    function = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
+                1 -> planeMask = value
                 2 -> foreground = value
                 3 -> background = value
                 4 -> lineWidth = value.coerceAtLeast(1)
@@ -1978,6 +2031,8 @@ internal class X11Connection(
             foreground = foreground,
             background = background,
             lineWidth = lineWidth,
+            function = function,
+            planeMask = planeMask,
             fontId = fontId,
             clipXOrigin = clipXOrigin,
             clipYOrigin = clipYOrigin,
@@ -2158,6 +2213,7 @@ internal class X11Connection(
     }
 
     private companion object {
+        const val GcValueMask = 0x007f_ffff
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
