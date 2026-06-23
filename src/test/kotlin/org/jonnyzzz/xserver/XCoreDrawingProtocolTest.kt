@@ -771,6 +771,182 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `AllocNamedColor returns pixel and exact visual color triples`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                socket.getOutputStream().write(allocNamedColorRequest(X11Ids.DefaultColormap, "Red"))
+                socket.getOutputStream().flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(0, u32le(reply, 4))
+                assertEquals(Red, u32le(reply, 8))
+                assertColorTriples(reply, offset = 12, red = 0xffff, green = 0, blue = 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `LookupColor uses opcode 92 and resolves normalized names and hex colors`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "Light Gray"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "#00ff80"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "#123456789abc"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "rgb:1/23/456"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "RGBi:1.0/0.5/0.0"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "CIEXYZ:0.95047/1.0/1.08883"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "gray50"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "linen"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "snow1"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "blue4"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "DarkSeaGreen4"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "web gray"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "x11 gray"))
+                out.flush()
+
+                val gray = readReply(socket.getInputStream())
+                assertEquals(0, u32le(gray, 4))
+                assertColorTriples(gray, offset = 8, red = 0xd3d3, green = 0xd3d3, blue = 0xd3d3)
+
+                val hex = readReply(socket.getInputStream())
+                assertColorTriples(
+                    hex,
+                    offset = 8,
+                    red = 0,
+                    green = 0xff00,
+                    blue = 0x8000,
+                    visualRed = 0,
+                    visualGreen = 0xffff,
+                    visualBlue = 0x8080,
+                )
+
+                val highPrecisionHex = readReply(socket.getInputStream())
+                assertColorTriples(
+                    highPrecisionHex,
+                    offset = 8,
+                    red = 0x1234,
+                    green = 0x5678,
+                    blue = 0x9abc,
+                    visualRed = 0x1212,
+                    visualGreen = 0x5656,
+                    visualBlue = 0x9a9a,
+                )
+
+                val rgb = readReply(socket.getInputStream())
+                assertColorTriples(
+                    rgb,
+                    offset = 8,
+                    red = 0x1111,
+                    green = 0x2323,
+                    blue = 0x4564,
+                    visualRed = 0x1111,
+                    visualGreen = 0x2323,
+                    visualBlue = 0x4545,
+                )
+
+                val rgbi = readReply(socket.getInputStream())
+                assertColorTriples(
+                    rgbi,
+                    offset = 8,
+                    red = 0xffff,
+                    green = 0x8000,
+                    blue = 0,
+                    visualRed = 0xffff,
+                    visualGreen = 0x8080,
+                    visualBlue = 0,
+                )
+
+                val cieXyz = readReply(socket.getInputStream())
+                assertColorTriples(
+                    cieXyz,
+                    offset = 8,
+                    red = 0xffff,
+                    green = 0xffff,
+                    blue = 0xfffa,
+                    visualRed = 0xffff,
+                    visualGreen = 0xffff,
+                    visualBlue = 0xffff,
+                )
+
+                val gray50 = readReply(socket.getInputStream())
+                assertColorTriples(gray50, offset = 8, red = 0x7f7f, green = 0x7f7f, blue = 0x7f7f)
+
+                val linen = readReply(socket.getInputStream())
+                assertColorTriples(linen, offset = 8, red = 0xfafa, green = 0xf0f0, blue = 0xe6e6)
+
+                val snow1 = readReply(socket.getInputStream())
+                assertColorTriples(snow1, offset = 8, red = 0xffff, green = 0xfafa, blue = 0xfafa)
+
+                val blue4 = readReply(socket.getInputStream())
+                assertColorTriples(blue4, offset = 8, red = 0, green = 0, blue = 0x8b8b)
+
+                val darkSeaGreen4 = readReply(socket.getInputStream())
+                assertColorTriples(darkSeaGreen4, offset = 8, red = 0x6969, green = 0x8b8b, blue = 0x6969)
+
+                val webGray = readReply(socket.getInputStream())
+                assertColorTriples(webGray, offset = 8, red = 0x8080, green = 0x8080, blue = 0x8080)
+
+                val x11Gray = readReply(socket.getInputStream())
+                assertColorTriples(x11Gray, offset = 8, red = 0xbebe, green = 0xbebe, blue = 0xbebe)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `named color requests validate colormap name and length`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 20
+                val malformed = ByteArray(8).also {
+                    put32le(it, 0, X11Ids.DefaultColormap)
+                    put16le(it, 4, 1)
+                }
+                val out = socket.getOutputStream()
+                out.write(allocNamedColorRequest(missingColormap, "red"))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "definitely-not-a-color"))
+                out.write(request(85, 0, malformed))
+                out.write(lookupColorRequest(X11Ids.DefaultColormap, "blue"))
+                out.flush()
+
+                val colormapError = socket.getInputStream().readExactly(32)
+                assertEquals(0, colormapError[0].toInt())
+                assertEquals(12, colormapError[1].toInt() and 0xff)
+                assertEquals(missingColormap, u32le(colormapError, 4))
+                assertEquals(85, colormapError[10].toInt() and 0xff)
+
+                val nameError = socket.getInputStream().readExactly(32)
+                assertEquals(0, nameError[0].toInt())
+                assertEquals(15, nameError[1].toInt() and 0xff)
+                assertEquals(92, nameError[10].toInt() and 0xff)
+
+                val lengthError = socket.getInputStream().readExactly(32)
+                assertEquals(0, lengthError[0].toInt())
+                assertEquals(16, lengthError[1].toInt() and 0xff)
+                assertEquals(85, lengthError[10].toInt() and 0xff)
+
+                val reply = readReply(socket.getInputStream())
+                assertColorTriples(reply, offset = 8, red = 0, green = 0, blue = 0xffff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3142,6 +3318,21 @@ class XCoreDrawingProtocolTest {
         return request(83, 0, body)
     }
 
+    private fun allocNamedColorRequest(colormap: Int, name: String): ByteArray =
+        namedColorRequest(opcode = 85, colormap = colormap, name = name)
+
+    private fun lookupColorRequest(colormap: Int, name: String): ByteArray =
+        namedColorRequest(opcode = 92, colormap = colormap, name = name)
+
+    private fun namedColorRequest(opcode: Int, colormap: Int, name: String): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(8 + paddedLength(nameBytes.size))
+        put32le(body, 0, colormap)
+        put16le(body, 4, nameBytes.size)
+        nameBytes.copyInto(body, 8)
+        return request(opcode, 0, body)
+    }
+
     private fun grabPointerRequest(window: Int): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
@@ -3763,6 +3954,24 @@ class XCoreDrawingProtocolTest {
     private fun installedColormaps(reply: ByteArray): List<Int> {
         val count = u16le(reply, 8)
         return (0 until count).map { index -> u32le(reply, 32 + index * 4) }
+    }
+
+    private fun assertColorTriples(
+        reply: ByteArray,
+        offset: Int,
+        red: Int,
+        green: Int,
+        blue: Int,
+        visualRed: Int = red,
+        visualGreen: Int = green,
+        visualBlue: Int = blue,
+    ) {
+        assertEquals(red, u16le(reply, offset))
+        assertEquals(green, u16le(reply, offset + 2))
+        assertEquals(blue, u16le(reply, offset + 4))
+        assertEquals(visualRed, u16le(reply, offset + 6))
+        assertEquals(visualGreen, u16le(reply, offset + 8))
+        assertEquals(visualBlue, u16le(reply, offset + 10))
     }
 
     private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {

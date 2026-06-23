@@ -4,6 +4,10 @@ import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
 import java.math.BigInteger
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
 
 internal class X11Connection(
     private val input: InputStream,
@@ -166,8 +170,9 @@ internal class X11Connection(
             82 -> uninstallColormap(body)
             83 -> listInstalledColormaps(body)
             84 -> allocColor(body)
-            85 -> lookupColor()
+            85 -> allocNamedColor(body)
             91 -> queryColors(body)
+            92 -> lookupColor(body)
             93 -> createCursor(opcode, body)
             94 -> createCursor(opcode, body)
             95 -> closeResource(body)
@@ -2216,16 +2221,201 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun lookupColor() {
+    private fun allocNamedColor(body: ByteArray) {
+        val color = namedColorRequest(opcode = 85, body = body) ?: return
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, 0xffff)
-        byteOrder.put16(reply, 10, 0xffff)
-        byteOrder.put16(reply, 12, 0xffff)
-        byteOrder.put16(reply, 14, 0xffff)
-        byteOrder.put16(reply, 16, 0xffff)
-        byteOrder.put16(reply, 18, 0xffff)
+        byteOrder.put32(reply, 8, color.pixel)
+        putColorTriples(reply, 12, color)
         write(reply)
     }
+
+    private fun lookupColor(body: ByteArray) {
+        val color = namedColorRequest(opcode = 92, body = body) ?: return
+        val reply = reply(extra = 0, payloadUnits = 0)
+        putColorTriples(reply, 8, color)
+        write(reply)
+    }
+
+    private fun namedColorRequest(opcode: Int, body: ByteArray): XNamedColor? {
+        if (body.size < 8) {
+            writeError(error = 16, opcode = opcode, badValue = 0)
+            return null
+        }
+        val colormap = byteOrder.u32(body, 0)
+        val nameLength = byteOrder.u16(body, 4)
+        if (body.size != 8 + paddedLength(nameLength)) {
+            writeError(error = 16, opcode = opcode, badValue = 0)
+            return null
+        }
+        if (!state.hasColormap(colormap)) {
+            writeError(error = 12, opcode = opcode, badValue = colormap)
+            return null
+        }
+        val name = body.copyOfRange(8, 8 + nameLength).decodeToString()
+        return namedColor(name) ?: run {
+            writeError(error = 15, opcode = opcode, badValue = 0)
+            null
+        }
+    }
+
+    private fun putColorTriples(reply: ByteArray, offset: Int, color: XNamedColor) {
+        byteOrder.put16(reply, offset, color.exactRed)
+        byteOrder.put16(reply, offset + 2, color.exactGreen)
+        byteOrder.put16(reply, offset + 4, color.exactBlue)
+        byteOrder.put16(reply, offset + 6, color.visualRed)
+        byteOrder.put16(reply, offset + 8, color.visualGreen)
+        byteOrder.put16(reply, offset + 10, color.visualBlue)
+    }
+
+    private fun namedColor(name: String): XNamedColor? {
+        val normalized = name.trim().lowercase().replace(" ", "")
+        XNamedColors[normalized]?.let { return XNamedColor.fromPixel(it) }
+        parseGrayPercentage(normalized)?.let { return it }
+        parseHexColor(normalized)?.let { return it }
+        parseRgbColor(normalized)?.let { return it }
+        return parseXcmsNumericColor(normalized)
+    }
+
+    private fun parseGrayPercentage(name: String): XNamedColor? {
+        val digits = when {
+            name.startsWith("gray") -> name.removePrefix("gray")
+            name.startsWith("grey") -> name.removePrefix("grey")
+            else -> return null
+        }
+        val percent = digits.toIntOrNull() ?: return null
+        if (percent !in 0..100) return null
+        val component = percent * 255 / 100
+        val pixel = (component shl 16) or (component shl 8) or component
+        return XNamedColor.fromPixel(pixel)
+    }
+
+    private fun parseHexColor(name: String): XNamedColor? {
+        if (!name.startsWith("#")) return null
+        val hex = name.drop(1)
+        if (hex.length !in setOf(3, 6, 9, 12) || hex.any { it.digitToIntOrNull(16) == null }) return null
+        val digitsPerComponent = hex.length / 3
+        val red = parseHexColorComponent(hex.substring(0, digitsPerComponent))
+        val green = parseHexColorComponent(hex.substring(digitsPerComponent, digitsPerComponent * 2))
+        val blue = parseHexColorComponent(hex.substring(digitsPerComponent * 2))
+        return XNamedColor.fromExact(red, green, blue)
+    }
+
+    private fun parseHexColorComponent(hex: String): Int {
+        val value = hex.toInt(16)
+        return when (hex.length) {
+            1 -> value shl 12
+            2 -> value shl 8
+            3 -> value shl 4
+            4 -> value
+            else -> error("unsupported color component length ${hex.length}")
+        }
+    }
+
+    private fun parseRgbColor(name: String): XNamedColor? {
+        if (!name.startsWith("rgb:")) return null
+        val components = name.removePrefix("rgb:").split("/")
+        if (components.size != 3) return null
+        val red = parseRgbColorComponent(components[0]) ?: return null
+        val green = parseRgbColorComponent(components[1]) ?: return null
+        val blue = parseRgbColorComponent(components[2]) ?: return null
+        return XNamedColor.fromExact(red, green, blue)
+    }
+
+    private fun parseRgbColorComponent(hex: String): Int? {
+        if (hex.isEmpty() || hex.length > 4 || hex.any { it.digitToIntOrNull(16) == null }) return null
+        val value = hex.toInt(16)
+        return when (hex.length) {
+            1 -> value * 0x1111
+            2 -> value * 0x0101
+            3 -> (value shl 4) or (value ushr 8)
+            4 -> value
+            else -> null
+        }
+    }
+
+    private fun parseXcmsNumericColor(name: String): XNamedColor? {
+        val separator = name.indexOf(':')
+        if (separator <= 0) return null
+        val components = name.substring(separator + 1).split("/")
+        if (components.size != 3) return null
+        val values = components.map { it.toDoubleOrNull() ?: return null }
+        if (values.any { !it.isFinite() }) return null
+        return when (name.substring(0, separator)) {
+            "rgbi" -> rgbIntensity(values[0], values[1], values[2])
+            "ciexyz" -> xyzColor(values[0], values[1], values[2])
+            "ciexyy" -> xyYColor(values[0], values[1], values[2])
+            "cieuvy" -> uvYColor(values[0], values[1], values[2])
+            "cielab" -> labColor(values[0], values[1], values[2])
+            "cieluv" -> luvColor(values[0], values[1], values[2])
+            "tekhvc" -> tekHvcColor(values[0], values[1], values[2])
+            else -> null
+        }
+    }
+
+    private fun rgbIntensity(red: Double, green: Double, blue: Double): XNamedColor? {
+        if (red !in 0.0..1.0 || green !in 0.0..1.0 || blue !in 0.0..1.0) return null
+        return XNamedColor.fromExact(componentFromUnit(red), componentFromUnit(green), componentFromUnit(blue))
+    }
+
+    private fun xyzColor(x: Double, y: Double, z: Double): XNamedColor? {
+        if (x < 0.0 || y < 0.0 || z < 0.0) return null
+        val linearRed = 3.2406 * x - 1.5372 * y - 0.4986 * z
+        val linearGreen = -0.9689 * x + 1.8758 * y + 0.0415 * z
+        val linearBlue = 0.0557 * x - 0.2040 * y + 1.0570 * z
+        return rgbIntensity(srgbTransfer(linearRed), srgbTransfer(linearGreen), srgbTransfer(linearBlue))
+    }
+
+    private fun xyYColor(x: Double, y: Double, luminance: Double): XNamedColor? {
+        if (x < 0.0 || y <= 0.0 || luminance < 0.0) return null
+        val xyzX = x * luminance / y
+        val xyzZ = (1.0 - x - y) * luminance / y
+        return xyzColor(xyzX, luminance, xyzZ)
+    }
+
+    private fun uvYColor(u: Double, v: Double, luminance: Double): XNamedColor? {
+        if (v <= 0.0 || luminance < 0.0) return null
+        val x = 9.0 * u * luminance / (4.0 * v)
+        val z = luminance * (12.0 - 3.0 * u - 20.0 * v) / (4.0 * v)
+        return xyzColor(x, luminance, z)
+    }
+
+    private fun labColor(lightness: Double, a: Double, b: Double): XNamedColor? {
+        if (lightness !in 0.0..100.0) return null
+        val fy = (lightness + 16.0) / 116.0
+        val fx = fy + a / 500.0
+        val fz = fy - b / 200.0
+        return xyzColor(D65_X * labInverse(fx), labInverse(fy), D65_Z * labInverse(fz))
+    }
+
+    private fun luvColor(lightness: Double, uStar: Double, vStar: Double): XNamedColor? {
+        if (lightness !in 0.0..100.0) return null
+        if (lightness == 0.0) return XNamedColor.fromExact(0, 0, 0)
+        val uPrime = uStar / (13.0 * lightness) + D65_U_PRIME
+        val vPrime = vStar / (13.0 * lightness) + D65_V_PRIME
+        val luminance = labInverse((lightness + 16.0) / 116.0)
+        return uvYColor(uPrime, vPrime, luminance)
+    }
+
+    private fun tekHvcColor(hue: Double, value: Double, chroma: Double): XNamedColor? {
+        if (value !in 0.0..100.0 || chroma < 0.0) return null
+        val radians = hue * PI / 180.0
+        return luvColor(value, chroma * cos(radians), chroma * sin(radians))
+    }
+
+    private fun componentFromUnit(value: Double): Int =
+        (value.coerceIn(0.0, 1.0) * 65535.0 + 0.5).toInt()
+
+    private fun srgbTransfer(value: Double): Double {
+        val clamped = value.coerceIn(0.0, 1.0)
+        return if (clamped <= 0.0031308) {
+            12.92 * clamped
+        } else {
+            1.055 * clamped.pow(1.0 / 2.4) - 0.055
+        }
+    }
+
+    private fun labInverse(value: Double): Double =
+        if (value > 6.0 / 29.0) value * value * value else 3.0 * (6.0 / 29.0).pow(2.0) * (value - 4.0 / 29.0)
 
     private fun queryColors(body: ByteArray) {
         val count = (body.size - 4) / 4
@@ -2379,6 +2569,7 @@ internal class X11Connection(
             84 -> "AllocColor"
             85 -> "AllocNamedColor"
             91 -> "QueryColors"
+            92 -> "LookupColor"
             93 -> "CreateCursor"
             94 -> "CreateGlyphCursor"
             95 -> "FreeCursor"
@@ -3226,8 +3417,690 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        const val D65_X = 0.95047
+        const val D65_Z = 1.08883
+        const val D65_U_PRIME = 0.19783982482140777
+        const val D65_V_PRIME = 0.4683363029324097
         val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
         val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)
+        val XNamedColors = mapOf(
+            "aliceblue" to 0x00f0f8ff,
+            "antiquewhite" to 0x00faebd7,
+            "antiquewhite1" to 0x00ffefdb,
+            "antiquewhite2" to 0x00eedfcc,
+            "antiquewhite3" to 0x00cdc0b0,
+            "antiquewhite4" to 0x008b8378,
+            "aqua" to 0x0000ffff,
+            "aquamarine" to 0x007fffd4,
+            "aquamarine1" to 0x007fffd4,
+            "aquamarine2" to 0x0076eec6,
+            "aquamarine3" to 0x0066cdaa,
+            "aquamarine4" to 0x00458b74,
+            "azure" to 0x00f0ffff,
+            "azure1" to 0x00f0ffff,
+            "azure2" to 0x00e0eeee,
+            "azure3" to 0x00c1cdcd,
+            "azure4" to 0x00838b8b,
+            "beige" to 0x00f5f5dc,
+            "bisque" to 0x00ffe4c4,
+            "bisque1" to 0x00ffe4c4,
+            "bisque2" to 0x00eed5b7,
+            "bisque3" to 0x00cdb79e,
+            "bisque4" to 0x008b7d6b,
+            "black" to 0x00000000,
+            "blanchedalmond" to 0x00ffebcd,
+            "blue" to 0x000000ff,
+            "blue1" to 0x000000ff,
+            "blue2" to 0x000000ee,
+            "blue3" to 0x000000cd,
+            "blue4" to 0x0000008b,
+            "blueviolet" to 0x008a2be2,
+            "brown" to 0x00a52a2a,
+            "brown1" to 0x00ff4040,
+            "brown2" to 0x00ee3b3b,
+            "brown3" to 0x00cd3333,
+            "brown4" to 0x008b2323,
+            "burlywood" to 0x00deb887,
+            "burlywood1" to 0x00ffd39b,
+            "burlywood2" to 0x00eec591,
+            "burlywood3" to 0x00cdaa7d,
+            "burlywood4" to 0x008b7355,
+            "cadetblue" to 0x005f9ea0,
+            "cadetblue1" to 0x0098f5ff,
+            "cadetblue2" to 0x008ee5ee,
+            "cadetblue3" to 0x007ac5cd,
+            "cadetblue4" to 0x0053868b,
+            "chartreuse" to 0x007fff00,
+            "chartreuse1" to 0x007fff00,
+            "chartreuse2" to 0x0076ee00,
+            "chartreuse3" to 0x0066cd00,
+            "chartreuse4" to 0x00458b00,
+            "chocolate" to 0x00d2691e,
+            "chocolate1" to 0x00ff7f24,
+            "chocolate2" to 0x00ee7621,
+            "chocolate3" to 0x00cd661d,
+            "chocolate4" to 0x008b4513,
+            "coral" to 0x00ff7f50,
+            "coral1" to 0x00ff7256,
+            "coral2" to 0x00ee6a50,
+            "coral3" to 0x00cd5b45,
+            "coral4" to 0x008b3e2f,
+            "cornflowerblue" to 0x006495ed,
+            "cornsilk" to 0x00fff8dc,
+            "cornsilk1" to 0x00fff8dc,
+            "cornsilk2" to 0x00eee8cd,
+            "cornsilk3" to 0x00cdc8b1,
+            "cornsilk4" to 0x008b8878,
+            "crimson" to 0x00dc143c,
+            "cyan" to 0x0000ffff,
+            "cyan1" to 0x0000ffff,
+            "cyan2" to 0x0000eeee,
+            "cyan3" to 0x0000cdcd,
+            "cyan4" to 0x00008b8b,
+            "darkblue" to 0x0000008b,
+            "darkcyan" to 0x00008b8b,
+            "darkgoldenrod" to 0x00b8860b,
+            "darkgoldenrod1" to 0x00ffb90f,
+            "darkgoldenrod2" to 0x00eead0e,
+            "darkgoldenrod3" to 0x00cd950c,
+            "darkgoldenrod4" to 0x008b6508,
+            "darkgray" to 0x00a9a9a9,
+            "darkgreen" to 0x00006400,
+            "darkgrey" to 0x00a9a9a9,
+            "darkkhaki" to 0x00bdb76b,
+            "darkmagenta" to 0x008b008b,
+            "darkolivegreen" to 0x00556b2f,
+            "darkolivegreen1" to 0x00caff70,
+            "darkolivegreen2" to 0x00bcee68,
+            "darkolivegreen3" to 0x00a2cd5a,
+            "darkolivegreen4" to 0x006e8b3d,
+            "darkorange" to 0x00ff8c00,
+            "darkorange1" to 0x00ff7f00,
+            "darkorange2" to 0x00ee7600,
+            "darkorange3" to 0x00cd6600,
+            "darkorange4" to 0x008b4500,
+            "darkorchid" to 0x009932cc,
+            "darkorchid1" to 0x00bf3eff,
+            "darkorchid2" to 0x00b23aee,
+            "darkorchid3" to 0x009a32cd,
+            "darkorchid4" to 0x0068228b,
+            "darkred" to 0x008b0000,
+            "darksalmon" to 0x00e9967a,
+            "darkseagreen" to 0x008fbc8f,
+            "darkseagreen1" to 0x00c1ffc1,
+            "darkseagreen2" to 0x00b4eeb4,
+            "darkseagreen3" to 0x009bcd9b,
+            "darkseagreen4" to 0x00698b69,
+            "darkslateblue" to 0x00483d8b,
+            "darkslategray" to 0x002f4f4f,
+            "darkslategray1" to 0x0097ffff,
+            "darkslategray2" to 0x008deeee,
+            "darkslategray3" to 0x0079cdcd,
+            "darkslategray4" to 0x00528b8b,
+            "darkslategrey" to 0x002f4f4f,
+            "darkturquoise" to 0x0000ced1,
+            "darkviolet" to 0x009400d3,
+            "deeppink" to 0x00ff1493,
+            "deeppink1" to 0x00ff1493,
+            "deeppink2" to 0x00ee1289,
+            "deeppink3" to 0x00cd1076,
+            "deeppink4" to 0x008b0a50,
+            "deepskyblue" to 0x0000bfff,
+            "deepskyblue1" to 0x0000bfff,
+            "deepskyblue2" to 0x0000b2ee,
+            "deepskyblue3" to 0x00009acd,
+            "deepskyblue4" to 0x0000688b,
+            "dimgray" to 0x00696969,
+            "dimgrey" to 0x00696969,
+            "dodgerblue" to 0x001e90ff,
+            "dodgerblue1" to 0x001e90ff,
+            "dodgerblue2" to 0x001c86ee,
+            "dodgerblue3" to 0x001874cd,
+            "dodgerblue4" to 0x00104e8b,
+            "firebrick" to 0x00b22222,
+            "firebrick1" to 0x00ff3030,
+            "firebrick2" to 0x00ee2c2c,
+            "firebrick3" to 0x00cd2626,
+            "firebrick4" to 0x008b1a1a,
+            "floralwhite" to 0x00fffaf0,
+            "forestgreen" to 0x00228b22,
+            "fuchsia" to 0x00ff00ff,
+            "gainsboro" to 0x00dcdcdc,
+            "ghostwhite" to 0x00f8f8ff,
+            "gold" to 0x00ffd700,
+            "gold1" to 0x00ffd700,
+            "gold2" to 0x00eec900,
+            "gold3" to 0x00cdad00,
+            "gold4" to 0x008b7500,
+            "goldenrod" to 0x00daa520,
+            "goldenrod1" to 0x00ffc125,
+            "goldenrod2" to 0x00eeb422,
+            "goldenrod3" to 0x00cd9b1d,
+            "goldenrod4" to 0x008b6914,
+            "gray" to 0x00bebebe,
+            "gray0" to 0x00000000,
+            "gray1" to 0x00030303,
+            "gray10" to 0x001a1a1a,
+            "gray100" to 0x00ffffff,
+            "gray11" to 0x001c1c1c,
+            "gray12" to 0x001f1f1f,
+            "gray13" to 0x00212121,
+            "gray14" to 0x00242424,
+            "gray15" to 0x00262626,
+            "gray16" to 0x00292929,
+            "gray17" to 0x002b2b2b,
+            "gray18" to 0x002e2e2e,
+            "gray19" to 0x00303030,
+            "gray2" to 0x00050505,
+            "gray20" to 0x00333333,
+            "gray21" to 0x00363636,
+            "gray22" to 0x00383838,
+            "gray23" to 0x003b3b3b,
+            "gray24" to 0x003d3d3d,
+            "gray25" to 0x00404040,
+            "gray26" to 0x00424242,
+            "gray27" to 0x00454545,
+            "gray28" to 0x00474747,
+            "gray29" to 0x004a4a4a,
+            "gray3" to 0x00080808,
+            "gray30" to 0x004d4d4d,
+            "gray31" to 0x004f4f4f,
+            "gray32" to 0x00525252,
+            "gray33" to 0x00545454,
+            "gray34" to 0x00575757,
+            "gray35" to 0x00595959,
+            "gray36" to 0x005c5c5c,
+            "gray37" to 0x005e5e5e,
+            "gray38" to 0x00616161,
+            "gray39" to 0x00636363,
+            "gray4" to 0x000a0a0a,
+            "gray40" to 0x00666666,
+            "gray41" to 0x00696969,
+            "gray42" to 0x006b6b6b,
+            "gray43" to 0x006e6e6e,
+            "gray44" to 0x00707070,
+            "gray45" to 0x00737373,
+            "gray46" to 0x00757575,
+            "gray47" to 0x00787878,
+            "gray48" to 0x007a7a7a,
+            "gray49" to 0x007d7d7d,
+            "gray5" to 0x000d0d0d,
+            "gray50" to 0x007f7f7f,
+            "gray51" to 0x00828282,
+            "gray52" to 0x00858585,
+            "gray53" to 0x00878787,
+            "gray54" to 0x008a8a8a,
+            "gray55" to 0x008c8c8c,
+            "gray56" to 0x008f8f8f,
+            "gray57" to 0x00919191,
+            "gray58" to 0x00949494,
+            "gray59" to 0x00969696,
+            "gray6" to 0x000f0f0f,
+            "gray60" to 0x00999999,
+            "gray61" to 0x009c9c9c,
+            "gray62" to 0x009e9e9e,
+            "gray63" to 0x00a1a1a1,
+            "gray64" to 0x00a3a3a3,
+            "gray65" to 0x00a6a6a6,
+            "gray66" to 0x00a8a8a8,
+            "gray67" to 0x00ababab,
+            "gray68" to 0x00adadad,
+            "gray69" to 0x00b0b0b0,
+            "gray7" to 0x00121212,
+            "gray70" to 0x00b3b3b3,
+            "gray71" to 0x00b5b5b5,
+            "gray72" to 0x00b8b8b8,
+            "gray73" to 0x00bababa,
+            "gray74" to 0x00bdbdbd,
+            "gray75" to 0x00bfbfbf,
+            "gray76" to 0x00c2c2c2,
+            "gray77" to 0x00c4c4c4,
+            "gray78" to 0x00c7c7c7,
+            "gray79" to 0x00c9c9c9,
+            "gray8" to 0x00141414,
+            "gray80" to 0x00cccccc,
+            "gray81" to 0x00cfcfcf,
+            "gray82" to 0x00d1d1d1,
+            "gray83" to 0x00d4d4d4,
+            "gray84" to 0x00d6d6d6,
+            "gray85" to 0x00d9d9d9,
+            "gray86" to 0x00dbdbdb,
+            "gray87" to 0x00dedede,
+            "gray88" to 0x00e0e0e0,
+            "gray89" to 0x00e3e3e3,
+            "gray9" to 0x00171717,
+            "gray90" to 0x00e5e5e5,
+            "gray91" to 0x00e8e8e8,
+            "gray92" to 0x00ebebeb,
+            "gray93" to 0x00ededed,
+            "gray94" to 0x00f0f0f0,
+            "gray95" to 0x00f2f2f2,
+            "gray96" to 0x00f5f5f5,
+            "gray97" to 0x00f7f7f7,
+            "gray98" to 0x00fafafa,
+            "gray99" to 0x00fcfcfc,
+            "green" to 0x0000ff00,
+            "green1" to 0x0000ff00,
+            "green2" to 0x0000ee00,
+            "green3" to 0x0000cd00,
+            "green4" to 0x00008b00,
+            "greenyellow" to 0x00adff2f,
+            "grey" to 0x00bebebe,
+            "grey0" to 0x00000000,
+            "grey1" to 0x00030303,
+            "grey10" to 0x001a1a1a,
+            "grey100" to 0x00ffffff,
+            "grey11" to 0x001c1c1c,
+            "grey12" to 0x001f1f1f,
+            "grey13" to 0x00212121,
+            "grey14" to 0x00242424,
+            "grey15" to 0x00262626,
+            "grey16" to 0x00292929,
+            "grey17" to 0x002b2b2b,
+            "grey18" to 0x002e2e2e,
+            "grey19" to 0x00303030,
+            "grey2" to 0x00050505,
+            "grey20" to 0x00333333,
+            "grey21" to 0x00363636,
+            "grey22" to 0x00383838,
+            "grey23" to 0x003b3b3b,
+            "grey24" to 0x003d3d3d,
+            "grey25" to 0x00404040,
+            "grey26" to 0x00424242,
+            "grey27" to 0x00454545,
+            "grey28" to 0x00474747,
+            "grey29" to 0x004a4a4a,
+            "grey3" to 0x00080808,
+            "grey30" to 0x004d4d4d,
+            "grey31" to 0x004f4f4f,
+            "grey32" to 0x00525252,
+            "grey33" to 0x00545454,
+            "grey34" to 0x00575757,
+            "grey35" to 0x00595959,
+            "grey36" to 0x005c5c5c,
+            "grey37" to 0x005e5e5e,
+            "grey38" to 0x00616161,
+            "grey39" to 0x00636363,
+            "grey4" to 0x000a0a0a,
+            "grey40" to 0x00666666,
+            "grey41" to 0x00696969,
+            "grey42" to 0x006b6b6b,
+            "grey43" to 0x006e6e6e,
+            "grey44" to 0x00707070,
+            "grey45" to 0x00737373,
+            "grey46" to 0x00757575,
+            "grey47" to 0x00787878,
+            "grey48" to 0x007a7a7a,
+            "grey49" to 0x007d7d7d,
+            "grey5" to 0x000d0d0d,
+            "grey50" to 0x007f7f7f,
+            "grey51" to 0x00828282,
+            "grey52" to 0x00858585,
+            "grey53" to 0x00878787,
+            "grey54" to 0x008a8a8a,
+            "grey55" to 0x008c8c8c,
+            "grey56" to 0x008f8f8f,
+            "grey57" to 0x00919191,
+            "grey58" to 0x00949494,
+            "grey59" to 0x00969696,
+            "grey6" to 0x000f0f0f,
+            "grey60" to 0x00999999,
+            "grey61" to 0x009c9c9c,
+            "grey62" to 0x009e9e9e,
+            "grey63" to 0x00a1a1a1,
+            "grey64" to 0x00a3a3a3,
+            "grey65" to 0x00a6a6a6,
+            "grey66" to 0x00a8a8a8,
+            "grey67" to 0x00ababab,
+            "grey68" to 0x00adadad,
+            "grey69" to 0x00b0b0b0,
+            "grey7" to 0x00121212,
+            "grey70" to 0x00b3b3b3,
+            "grey71" to 0x00b5b5b5,
+            "grey72" to 0x00b8b8b8,
+            "grey73" to 0x00bababa,
+            "grey74" to 0x00bdbdbd,
+            "grey75" to 0x00bfbfbf,
+            "grey76" to 0x00c2c2c2,
+            "grey77" to 0x00c4c4c4,
+            "grey78" to 0x00c7c7c7,
+            "grey79" to 0x00c9c9c9,
+            "grey8" to 0x00141414,
+            "grey80" to 0x00cccccc,
+            "grey81" to 0x00cfcfcf,
+            "grey82" to 0x00d1d1d1,
+            "grey83" to 0x00d4d4d4,
+            "grey84" to 0x00d6d6d6,
+            "grey85" to 0x00d9d9d9,
+            "grey86" to 0x00dbdbdb,
+            "grey87" to 0x00dedede,
+            "grey88" to 0x00e0e0e0,
+            "grey89" to 0x00e3e3e3,
+            "grey9" to 0x00171717,
+            "grey90" to 0x00e5e5e5,
+            "grey91" to 0x00e8e8e8,
+            "grey92" to 0x00ebebeb,
+            "grey93" to 0x00ededed,
+            "grey94" to 0x00f0f0f0,
+            "grey95" to 0x00f2f2f2,
+            "grey96" to 0x00f5f5f5,
+            "grey97" to 0x00f7f7f7,
+            "grey98" to 0x00fafafa,
+            "grey99" to 0x00fcfcfc,
+            "honeydew" to 0x00f0fff0,
+            "honeydew1" to 0x00f0fff0,
+            "honeydew2" to 0x00e0eee0,
+            "honeydew3" to 0x00c1cdc1,
+            "honeydew4" to 0x00838b83,
+            "hotpink" to 0x00ff69b4,
+            "hotpink1" to 0x00ff6eb4,
+            "hotpink2" to 0x00ee6aa7,
+            "hotpink3" to 0x00cd6090,
+            "hotpink4" to 0x008b3a62,
+            "indianred" to 0x00cd5c5c,
+            "indianred1" to 0x00ff6a6a,
+            "indianred2" to 0x00ee6363,
+            "indianred3" to 0x00cd5555,
+            "indianred4" to 0x008b3a3a,
+            "indigo" to 0x004b0082,
+            "ivory" to 0x00fffff0,
+            "ivory1" to 0x00fffff0,
+            "ivory2" to 0x00eeeee0,
+            "ivory3" to 0x00cdcdc1,
+            "ivory4" to 0x008b8b83,
+            "khaki" to 0x00f0e68c,
+            "khaki1" to 0x00fff68f,
+            "khaki2" to 0x00eee685,
+            "khaki3" to 0x00cdc673,
+            "khaki4" to 0x008b864e,
+            "lavender" to 0x00e6e6fa,
+            "lavenderblush" to 0x00fff0f5,
+            "lavenderblush1" to 0x00fff0f5,
+            "lavenderblush2" to 0x00eee0e5,
+            "lavenderblush3" to 0x00cdc1c5,
+            "lavenderblush4" to 0x008b8386,
+            "lawngreen" to 0x007cfc00,
+            "lemonchiffon" to 0x00fffacd,
+            "lemonchiffon1" to 0x00fffacd,
+            "lemonchiffon2" to 0x00eee9bf,
+            "lemonchiffon3" to 0x00cdc9a5,
+            "lemonchiffon4" to 0x008b8970,
+            "lightblue" to 0x00add8e6,
+            "lightblue1" to 0x00bfefff,
+            "lightblue2" to 0x00b2dfee,
+            "lightblue3" to 0x009ac0cd,
+            "lightblue4" to 0x0068838b,
+            "lightcoral" to 0x00f08080,
+            "lightcyan" to 0x00e0ffff,
+            "lightcyan1" to 0x00e0ffff,
+            "lightcyan2" to 0x00d1eeee,
+            "lightcyan3" to 0x00b4cdcd,
+            "lightcyan4" to 0x007a8b8b,
+            "lightgoldenrod" to 0x00eedd82,
+            "lightgoldenrod1" to 0x00ffec8b,
+            "lightgoldenrod2" to 0x00eedc82,
+            "lightgoldenrod3" to 0x00cdbe70,
+            "lightgoldenrod4" to 0x008b814c,
+            "lightgoldenrodyellow" to 0x00fafad2,
+            "lightgray" to 0x00d3d3d3,
+            "lightgreen" to 0x0090ee90,
+            "lightgrey" to 0x00d3d3d3,
+            "lightpink" to 0x00ffb6c1,
+            "lightpink1" to 0x00ffaeb9,
+            "lightpink2" to 0x00eea2ad,
+            "lightpink3" to 0x00cd8c95,
+            "lightpink4" to 0x008b5f65,
+            "lightsalmon" to 0x00ffa07a,
+            "lightsalmon1" to 0x00ffa07a,
+            "lightsalmon2" to 0x00ee9572,
+            "lightsalmon3" to 0x00cd8162,
+            "lightsalmon4" to 0x008b5742,
+            "lightseagreen" to 0x0020b2aa,
+            "lightskyblue" to 0x0087cefa,
+            "lightskyblue1" to 0x00b0e2ff,
+            "lightskyblue2" to 0x00a4d3ee,
+            "lightskyblue3" to 0x008db6cd,
+            "lightskyblue4" to 0x00607b8b,
+            "lightslateblue" to 0x008470ff,
+            "lightslategray" to 0x00778899,
+            "lightslategrey" to 0x00778899,
+            "lightsteelblue" to 0x00b0c4de,
+            "lightsteelblue1" to 0x00cae1ff,
+            "lightsteelblue2" to 0x00bcd2ee,
+            "lightsteelblue3" to 0x00a2b5cd,
+            "lightsteelblue4" to 0x006e7b8b,
+            "lightyellow" to 0x00ffffe0,
+            "lightyellow1" to 0x00ffffe0,
+            "lightyellow2" to 0x00eeeed1,
+            "lightyellow3" to 0x00cdcdb4,
+            "lightyellow4" to 0x008b8b7a,
+            "lime" to 0x0000ff00,
+            "limegreen" to 0x0032cd32,
+            "linen" to 0x00faf0e6,
+            "magenta" to 0x00ff00ff,
+            "magenta1" to 0x00ff00ff,
+            "magenta2" to 0x00ee00ee,
+            "magenta3" to 0x00cd00cd,
+            "magenta4" to 0x008b008b,
+            "maroon" to 0x00b03060,
+            "maroon1" to 0x00ff34b3,
+            "maroon2" to 0x00ee30a7,
+            "maroon3" to 0x00cd2990,
+            "maroon4" to 0x008b1c62,
+            "mediumaquamarine" to 0x0066cdaa,
+            "mediumblue" to 0x000000cd,
+            "mediumorchid" to 0x00ba55d3,
+            "mediumorchid1" to 0x00e066ff,
+            "mediumorchid2" to 0x00d15fee,
+            "mediumorchid3" to 0x00b452cd,
+            "mediumorchid4" to 0x007a378b,
+            "mediumpurple" to 0x009370db,
+            "mediumpurple1" to 0x00ab82ff,
+            "mediumpurple2" to 0x009f79ee,
+            "mediumpurple3" to 0x008968cd,
+            "mediumpurple4" to 0x005d478b,
+            "mediumseagreen" to 0x003cb371,
+            "mediumslateblue" to 0x007b68ee,
+            "mediumspringgreen" to 0x0000fa9a,
+            "mediumturquoise" to 0x0048d1cc,
+            "mediumvioletred" to 0x00c71585,
+            "midnightblue" to 0x00191970,
+            "mintcream" to 0x00f5fffa,
+            "mistyrose" to 0x00ffe4e1,
+            "mistyrose1" to 0x00ffe4e1,
+            "mistyrose2" to 0x00eed5d2,
+            "mistyrose3" to 0x00cdb7b5,
+            "mistyrose4" to 0x008b7d7b,
+            "moccasin" to 0x00ffe4b5,
+            "navajowhite" to 0x00ffdead,
+            "navajowhite1" to 0x00ffdead,
+            "navajowhite2" to 0x00eecfa1,
+            "navajowhite3" to 0x00cdb38b,
+            "navajowhite4" to 0x008b795e,
+            "navy" to 0x00000080,
+            "navyblue" to 0x00000080,
+            "oldlace" to 0x00fdf5e6,
+            "olive" to 0x00808000,
+            "olivedrab" to 0x006b8e23,
+            "olivedrab1" to 0x00c0ff3e,
+            "olivedrab2" to 0x00b3ee3a,
+            "olivedrab3" to 0x009acd32,
+            "olivedrab4" to 0x00698b22,
+            "orange" to 0x00ffa500,
+            "orange1" to 0x00ffa500,
+            "orange2" to 0x00ee9a00,
+            "orange3" to 0x00cd8500,
+            "orange4" to 0x008b5a00,
+            "orangered" to 0x00ff4500,
+            "orangered1" to 0x00ff4500,
+            "orangered2" to 0x00ee4000,
+            "orangered3" to 0x00cd3700,
+            "orangered4" to 0x008b2500,
+            "orchid" to 0x00da70d6,
+            "orchid1" to 0x00ff83fa,
+            "orchid2" to 0x00ee7ae9,
+            "orchid3" to 0x00cd69c9,
+            "orchid4" to 0x008b4789,
+            "palegoldenrod" to 0x00eee8aa,
+            "palegreen" to 0x0098fb98,
+            "palegreen1" to 0x009aff9a,
+            "palegreen2" to 0x0090ee90,
+            "palegreen3" to 0x007ccd7c,
+            "palegreen4" to 0x00548b54,
+            "paleturquoise" to 0x00afeeee,
+            "paleturquoise1" to 0x00bbffff,
+            "paleturquoise2" to 0x00aeeeee,
+            "paleturquoise3" to 0x0096cdcd,
+            "paleturquoise4" to 0x00668b8b,
+            "palevioletred" to 0x00db7093,
+            "palevioletred1" to 0x00ff82ab,
+            "palevioletred2" to 0x00ee799f,
+            "palevioletred3" to 0x00cd6889,
+            "palevioletred4" to 0x008b475d,
+            "papayawhip" to 0x00ffefd5,
+            "peachpuff" to 0x00ffdab9,
+            "peachpuff1" to 0x00ffdab9,
+            "peachpuff2" to 0x00eecbad,
+            "peachpuff3" to 0x00cdaf95,
+            "peachpuff4" to 0x008b7765,
+            "peru" to 0x00cd853f,
+            "pink" to 0x00ffc0cb,
+            "pink1" to 0x00ffb5c5,
+            "pink2" to 0x00eea9b8,
+            "pink3" to 0x00cd919e,
+            "pink4" to 0x008b636c,
+            "plum" to 0x00dda0dd,
+            "plum1" to 0x00ffbbff,
+            "plum2" to 0x00eeaeee,
+            "plum3" to 0x00cd96cd,
+            "plum4" to 0x008b668b,
+            "powderblue" to 0x00b0e0e6,
+            "purple" to 0x00a020f0,
+            "purple1" to 0x009b30ff,
+            "purple2" to 0x00912cee,
+            "purple3" to 0x007d26cd,
+            "purple4" to 0x00551a8b,
+            "rebeccapurple" to 0x00663399,
+            "red" to 0x00ff0000,
+            "red1" to 0x00ff0000,
+            "red2" to 0x00ee0000,
+            "red3" to 0x00cd0000,
+            "red4" to 0x008b0000,
+            "rosybrown" to 0x00bc8f8f,
+            "rosybrown1" to 0x00ffc1c1,
+            "rosybrown2" to 0x00eeb4b4,
+            "rosybrown3" to 0x00cd9b9b,
+            "rosybrown4" to 0x008b6969,
+            "royalblue" to 0x004169e1,
+            "royalblue1" to 0x004876ff,
+            "royalblue2" to 0x00436eee,
+            "royalblue3" to 0x003a5fcd,
+            "royalblue4" to 0x0027408b,
+            "saddlebrown" to 0x008b4513,
+            "salmon" to 0x00fa8072,
+            "salmon1" to 0x00ff8c69,
+            "salmon2" to 0x00ee8262,
+            "salmon3" to 0x00cd7054,
+            "salmon4" to 0x008b4c39,
+            "sandybrown" to 0x00f4a460,
+            "seagreen" to 0x002e8b57,
+            "seagreen1" to 0x0054ff9f,
+            "seagreen2" to 0x004eee94,
+            "seagreen3" to 0x0043cd80,
+            "seagreen4" to 0x002e8b57,
+            "seashell" to 0x00fff5ee,
+            "seashell1" to 0x00fff5ee,
+            "seashell2" to 0x00eee5de,
+            "seashell3" to 0x00cdc5bf,
+            "seashell4" to 0x008b8682,
+            "sienna" to 0x00a0522d,
+            "sienna1" to 0x00ff8247,
+            "sienna2" to 0x00ee7942,
+            "sienna3" to 0x00cd6839,
+            "sienna4" to 0x008b4726,
+            "silver" to 0x00c0c0c0,
+            "skyblue" to 0x0087ceeb,
+            "skyblue1" to 0x0087ceff,
+            "skyblue2" to 0x007ec0ee,
+            "skyblue3" to 0x006ca6cd,
+            "skyblue4" to 0x004a708b,
+            "slateblue" to 0x006a5acd,
+            "slateblue1" to 0x00836fff,
+            "slateblue2" to 0x007a67ee,
+            "slateblue3" to 0x006959cd,
+            "slateblue4" to 0x00473c8b,
+            "slategray" to 0x00708090,
+            "slategray1" to 0x00c6e2ff,
+            "slategray2" to 0x00b9d3ee,
+            "slategray3" to 0x009fb6cd,
+            "slategray4" to 0x006c7b8b,
+            "slategrey" to 0x00708090,
+            "snow" to 0x00fffafa,
+            "snow1" to 0x00fffafa,
+            "snow2" to 0x00eee9e9,
+            "snow3" to 0x00cdc9c9,
+            "snow4" to 0x008b8989,
+            "springgreen" to 0x0000ff7f,
+            "springgreen1" to 0x0000ff7f,
+            "springgreen2" to 0x0000ee76,
+            "springgreen3" to 0x0000cd66,
+            "springgreen4" to 0x00008b45,
+            "steelblue" to 0x004682b4,
+            "steelblue1" to 0x0063b8ff,
+            "steelblue2" to 0x005cacee,
+            "steelblue3" to 0x004f94cd,
+            "steelblue4" to 0x0036648b,
+            "tan" to 0x00d2b48c,
+            "tan1" to 0x00ffa54f,
+            "tan2" to 0x00ee9a49,
+            "tan3" to 0x00cd853f,
+            "tan4" to 0x008b5a2b,
+            "teal" to 0x00008080,
+            "thistle" to 0x00d8bfd8,
+            "thistle1" to 0x00ffe1ff,
+            "thistle2" to 0x00eed2ee,
+            "thistle3" to 0x00cdb5cd,
+            "thistle4" to 0x008b7b8b,
+            "tomato" to 0x00ff6347,
+            "tomato1" to 0x00ff6347,
+            "tomato2" to 0x00ee5c42,
+            "tomato3" to 0x00cd4f39,
+            "tomato4" to 0x008b3626,
+            "turquoise" to 0x0040e0d0,
+            "turquoise1" to 0x0000f5ff,
+            "turquoise2" to 0x0000e5ee,
+            "turquoise3" to 0x0000c5cd,
+            "turquoise4" to 0x0000868b,
+            "violet" to 0x00ee82ee,
+            "violetred" to 0x00d02090,
+            "violetred1" to 0x00ff3e96,
+            "violetred2" to 0x00ee3a8c,
+            "violetred3" to 0x00cd3278,
+            "violetred4" to 0x008b2252,
+            "webgray" to 0x00808080,
+            "webgreen" to 0x00008000,
+            "webgrey" to 0x00808080,
+            "webmaroon" to 0x00800000,
+            "webpurple" to 0x00800080,
+            "wheat" to 0x00f5deb3,
+            "wheat1" to 0x00ffe7ba,
+            "wheat2" to 0x00eed8ae,
+            "wheat3" to 0x00cdba96,
+            "wheat4" to 0x008b7e66,
+            "white" to 0x00ffffff,
+            "whitesmoke" to 0x00f5f5f5,
+            "x11gray" to 0x00bebebe,
+            "x11green" to 0x0000ff00,
+            "x11grey" to 0x00bebebe,
+            "x11maroon" to 0x00b03060,
+            "x11purple" to 0x00a020f0,
+            "yellow" to 0x00ffff00,
+            "yellow1" to 0x00ffff00,
+            "yellow2" to 0x00eeee00,
+            "yellow3" to 0x00cdcd00,
+            "yellow4" to 0x008b8b00,
+            "yellowgreen" to 0x009acd32,
+        )
     }
 }
 
@@ -3247,6 +4120,33 @@ private data class XTextRun(
     val y: Int,
     val text: String,
 )
+
+private data class XNamedColor(
+    val pixel: Int,
+    val exactRed: Int,
+    val exactGreen: Int,
+    val exactBlue: Int,
+    val visualRed: Int,
+    val visualGreen: Int,
+    val visualBlue: Int,
+) {
+    companion object {
+        fun fromPixel(pixel: Int): XNamedColor {
+            val red = ((pixel ushr 16) and 0xff) * 257
+            val green = ((pixel ushr 8) and 0xff) * 257
+            val blue = (pixel and 0xff) * 257
+            return XNamedColor(pixel, red, green, blue, red, green, blue)
+        }
+
+        fun fromExact(red: Int, green: Int, blue: Int): XNamedColor {
+            val visualRed = ((red ushr 8) and 0xff) * 257
+            val visualGreen = ((green ushr 8) and 0xff) * 257
+            val visualBlue = ((blue ushr 8) and 0xff) * 257
+            val pixel = ((red ushr 8) shl 16) or ((green ushr 8) shl 8) or (blue ushr 8)
+            return XNamedColor(pixel, red, green, blue, visualRed, visualGreen, visualBlue)
+        }
+    }
+}
 
 private fun java.io.InputStream.readExactly(size: Int): ByteArray {
     val bytes = ByteArray(size)
