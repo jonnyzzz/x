@@ -904,6 +904,7 @@ internal class X11Connection(
     private fun renderCreateRadialGradient(body: ByteArray) {
         if (body.size < 32) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 35, badValue = id)
         val stops = renderGradientStops(body, countOffset = 28, stopsOffset = 32) ?: return
         val gradient = XRadialGradient(
             inner = XFixedCircle(
