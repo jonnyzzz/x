@@ -26,6 +26,7 @@ internal class X11State(
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
+    private var focusRevertTo: Int = 0
     private var pointerX: Int = 0
     private var pointerY: Int = 0
     private var pointerState: Int = 0
@@ -136,6 +137,22 @@ internal class X11State(
     fun window(id: Int): XWindow? = windows[id]
 
     @Synchronized
+    fun windowIsViewable(id: Int): Boolean {
+        val window = windows[id] ?: return false
+        if (!window.mapped) return false
+        if (id == X11Ids.RootWindow) return true
+        var parentId = window.parentId
+        val visited = mutableSetOf(id)
+        while (parentId != 0 && visited.add(parentId)) {
+            val parent = windows[parentId] ?: return false
+            if (!parent.mapped) return false
+            if (parent.id == X11Ids.RootWindow) return true
+            parentId = parent.parentId
+        }
+        return false
+    }
+
+    @Synchronized
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
 
     @Synchronized
@@ -152,7 +169,7 @@ internal class X11State(
     fun mapWindow(id: Int): XWindow? {
         val window = windows[id] ?: return null
         window.mapped = true
-        focusWindowId = id
+        if (windowIsViewable(id)) focusWindowId = id
         return window
     }
 
@@ -161,6 +178,15 @@ internal class X11State(
         windows[id]?.mapped = false
         if (focusWindowId == id) focusWindowId = X11Ids.RootWindow
     }
+
+    @Synchronized
+    fun setInputFocus(focusWindowId: Int, revertTo: Int) {
+        this.focusWindowId = focusWindowId
+        this.focusRevertTo = revertTo
+    }
+
+    @Synchronized
+    fun inputFocus(): Pair<Int, Int> = focusWindowId to focusRevertTo
 
     @Synchronized
     fun registerEventSink(sink: XEventSink) {

@@ -125,7 +125,7 @@ internal class X11Connection(
             37 -> unitReplyless()
             38 -> queryPointer()
             40 -> translateCoordinates(body)
-            42 -> unitReplyless()
+            42 -> setInputFocus(minorOpcode, body)
             43 -> getInputFocus()
             44 -> queryKeymap()
             45 -> openFont(body)
@@ -1447,9 +1447,22 @@ internal class X11Connection(
     }
 
     private fun getInputFocus() {
+        val (focusWindowId, revertTo) = state.inputFocus()
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, state.snapshot().focusWindowId)
+        reply[1] = revertTo.toByte()
+        byteOrder.put32(reply, 8, focusWindowId)
         write(reply)
+    }
+
+    private fun setInputFocus(revertTo: Int, body: ByteArray) {
+        if (body.size < 8) return writeError(error = 16, opcode = 42, badValue = 0)
+        if (revertTo !in 0..2) return writeError(error = 2, opcode = 42, badValue = revertTo)
+        val focusWindowId = byteOrder.u32(body, 0)
+        if (focusWindowId !in 0..1) {
+            val window = state.window(focusWindowId) ?: return writeError(error = 3, opcode = 42, badValue = focusWindowId)
+            if (!state.windowIsViewable(window.id)) return writeError(error = 8, opcode = 42, badValue = focusWindowId)
+        }
+        state.setInputFocus(focusWindowId, revertTo)
     }
 
     private fun queryKeymap() {

@@ -1964,6 +1964,104 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `SetInputFocus updates GetInputFocus reply`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createWindowRequest(WindowId + 1))
+                out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId + 1))
+                out.write(setInputFocusRequest(WindowId, revertTo = 2))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt())
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt())
+                val secondMapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, secondMapNotify[0].toInt())
+                val secondExpose = socket.getInputStream().readExactly(32)
+                assertEquals(12, secondExpose[0].toInt())
+                val focus = readReply(socket.getInputStream())
+                assertEquals(1, focus[0].toInt())
+                assertEquals(2, focus[1].toInt() and 0xff)
+                assertEquals(0, u32le(focus, 4))
+                assertEquals(WindowId, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetInputFocus rejects unmapped window without changing focus`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(setInputFocusRequest(WindowId, revertTo = 2))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(8, error[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(error, 4))
+                assertEquals(42, error[10].toInt() and 0xff)
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(1, focus[0].toInt())
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetInputFocus rejects mapped child of unmapped parent without changing focus`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val childId = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createWindowRequest(childId, parent = WindowId))
+                out.write(mapWindowRequest(childId))
+                out.write(setInputFocusRequest(childId, revertTo = 2))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt())
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt())
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(8, error[1].toInt() and 0xff)
+                assertEquals(childId, u32le(error, 4))
+                assertEquals(42, error[10].toInt() and 0xff)
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -1972,10 +2070,10 @@ class XCoreDrawingProtocolTest {
         socket.getInputStream().readExactly(u16le(prefix, 6) * 4)
     }
 
-    private fun createWindowRequest(id: Int, width: Int = 40, height: Int = 30): ByteArray {
+    private fun createWindowRequest(id: Int, width: Int = 40, height: Int = 30, parent: Int = X11Ids.RootWindow): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
-        put32le(body, 4, X11Ids.RootWindow)
+        put32le(body, 4, parent)
         put16le(body, 12, width)
         put16le(body, 14, height)
         put16le(body, 18, 1)
@@ -2061,6 +2159,16 @@ class XCoreDrawingProtocolTest {
         body[9] = 0
         return request(31, 0, body)
     }
+
+    private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put32le(body, 4, 0)
+        return request(42, revertTo, body)
+    }
+
+    private fun getInputFocusRequest(): ByteArray =
+        request(43, 0, ByteArray(0))
 
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
