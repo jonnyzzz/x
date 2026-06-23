@@ -422,6 +422,25 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidAdd(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBounds(bounds, clipRectangles) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+            add(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -1076,6 +1095,7 @@ internal class XFramebuffer(
             XRender.OpClear -> clearWithMask(destination, maskAlpha)
             XRender.OpSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
             XRender.OpOver -> over(source, destination, maskAlpha)
+            XRender.OpAdd -> add(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
 
@@ -1083,6 +1103,20 @@ internal class XFramebuffer(
         if (maskAlpha >= 255) return 0
         val inverse = 255 - maskAlpha
         fun channel(shift: Int): Int = (((destination ushr shift) and 0xff) * inverse + 127) / 255
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun add(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        if (sourceAlpha <= 0) return destination
+        fun channel(shift: Int): Int {
+            val sourceChannel = if (shift == 24) {
+                sourceAlpha
+            } else {
+                (((source ushr shift) and 0xff) * sourceAlpha + 127) / 255
+            }
+            return (((destination ushr shift) and 0xff) + sourceChannel).coerceAtMost(255)
+        }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
 

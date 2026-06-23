@@ -15,6 +15,7 @@ internal object XRender {
     const val OpClear = 0
     const val OpSrc = 1
     const val OpOver = 3
+    const val OpAdd = 12
 
     const val CPRepeat = 1 shl 0
 

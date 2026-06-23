@@ -756,6 +756,21 @@ internal class X11State(
                     }
                     XImagePixels(width, height, IntArray(width * height) { solid })
                 }
+                XRender.OpAdd -> {
+                    destinationFramebuffer.blendSolidAdd(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    XImagePixels(width, height, IntArray(width * height) { solid })
+                }
                 else -> {
                     destinationFramebuffer.blendSolidOver(
                         pixel = solid,
@@ -1435,6 +1450,14 @@ internal class X11State(
                 XRender.OpClear -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, preserveAlpha = true)
                 XRender.OpSrc -> framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha = true)
                 XRender.OpOver -> framebuffer.blendSolidOver(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                )
+                XRender.OpAdd -> framebuffer.blendSolidAdd(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
