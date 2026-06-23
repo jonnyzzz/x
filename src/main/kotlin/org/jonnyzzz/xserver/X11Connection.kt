@@ -1398,7 +1398,7 @@ internal class X11Connection(
         val selection = byteOrder.u32(body, 4)
         if (state.atomName(selection) == null) return writeError(error = 5, opcode = 22, badValue = selection)
         if (owner != 0 && state.window(owner) == null) return writeError(error = 3, opcode = 22, badValue = owner)
-        state.setSelectionOwner(selection, owner)
+        state.setSelectionOwner(selection, owner, this)
     }
 
     private fun getSelectionOwner(body: ByteArray) {
@@ -1422,8 +1422,11 @@ internal class X11Connection(
         if (state.atomName(target) == null) return writeError(error = 5, opcode = 24, badValue = target)
         if (property != 0 && state.atomName(property) == null) return writeError(error = 5, opcode = 24, badValue = property)
 
-        if (state.selectionOwner(selection) == 0) {
+        val selectionRequest = state.selectionRequestDispatch(selection, requestor, target, property, time)
+        if (selectionRequest == null) {
             sendSelectionNotify(requestor, selection, target, property = 0, time)
+        } else {
+            selectionRequest.sink.sendSelectionRequestEvent(selectionRequest.event)
         }
     }
 
@@ -2459,6 +2462,19 @@ internal class X11Connection(
         byteOrder.put16(bytes, 26, event.eventY)
         byteOrder.put16(bytes, 28, event.state)
         bytes[30] = 1
+        write(bytes)
+    }
+
+    override fun sendSelectionRequestEvent(event: XSelectionRequestEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 30
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.time)
+        byteOrder.put32(bytes, 8, event.ownerWindowId)
+        byteOrder.put32(bytes, 12, event.requestorWindowId)
+        byteOrder.put32(bytes, 16, event.selection)
+        byteOrder.put32(bytes, 20, event.target)
+        byteOrder.put32(bytes, 24, event.property)
         write(bytes)
     }
 

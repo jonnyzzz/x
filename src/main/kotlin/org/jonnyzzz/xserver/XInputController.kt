@@ -69,6 +69,7 @@ data class XInputResult(
 
 internal interface XEventSink {
     fun sendPointerEvent(event: XPointerEvent)
+    fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
 }
 
 internal data class XPointerEvent(
@@ -92,6 +93,20 @@ internal enum class XPointerEventType(val code: Int) {
 internal data class XPointerDispatch(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
+)
+
+internal data class XSelectionRequestEvent(
+    val time: Int,
+    val ownerWindowId: Int,
+    val requestorWindowId: Int,
+    val selection: Int,
+    val target: Int,
+    val property: Int,
+)
+
+internal data class XSelectionRequestDispatch(
+    val sink: XEventSink,
+    val event: XSelectionRequestEvent,
 )
 
 internal object XEventMasks {

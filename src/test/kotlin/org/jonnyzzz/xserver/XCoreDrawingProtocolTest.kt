@@ -2095,6 +2095,57 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetSelectionOwner clears owner when owner client disconnects`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+                    ownerSocket.getOutputStream().write(createWindowRequest(WindowId))
+                    ownerSocket.getOutputStream().write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    ownerSocket.getOutputStream().flush()
+
+                    var owner: ByteArray? = null
+                    var ownerAttempts = 0
+                    while (owner == null && ownerAttempts < 20) {
+                        ownerAttempts += 1
+                        observerSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                        observerSocket.getOutputStream().flush()
+                        val reply = readReply(observerSocket.getInputStream())
+                        if (u32le(reply, 8) == WindowId) {
+                            owner = reply
+                        } else {
+                            Thread.sleep(25)
+                        }
+                    }
+                    assertEquals(WindowId, u32le(owner ?: error("selection owner was not set"), 8))
+
+                    ownerSocket.close()
+                    var cleared: ByteArray? = null
+                    var attempts = 0
+                    while (cleared == null && attempts < 20) {
+                        attempts += 1
+                        observerSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                        observerSocket.getOutputStream().flush()
+                        val reply = readReply(observerSocket.getInputStream())
+                        if (u32le(reply, 8) == 0) {
+                            cleared = reply
+                        } else {
+                            Thread.sleep(25)
+                        }
+                    }
+                    assertEquals(0, u32le(cleared ?: error("selection owner was not cleared"), 8))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConvertSelection without owner sends SelectionNotify with property none`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2199,23 +2250,54 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `ConvertSelection with owner does not send no-owner SelectionNotify`() {
+    fun `ConvertSelection with owner sends SelectionRequest to owner client`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            Socket("127.0.0.1", server.localPort).use { socket ->
-                socket.soTimeout = 2_000
-                setup(socket)
-                val requestor = WindowId + 1
-                val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(createWindowRequest(requestor))
-                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
-                out.write(convertSelectionRequest(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77))
-                out.flush()
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { requestorSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    requestorSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(requestorSocket)
+                    val requestor = WindowId + 1
+                    ownerSocket.getOutputStream().write(createWindowRequest(WindowId))
+                    ownerSocket.getOutputStream().write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    ownerSocket.getOutputStream().flush()
+                    var observedOwner: ByteArray? = null
+                    var attempts = 0
+                    while (observedOwner == null && attempts < 20) {
+                        attempts += 1
+                        requestorSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                        requestorSocket.getOutputStream().flush()
+                        val reply = readReply(requestorSocket.getInputStream())
+                        if (u32le(reply, 8) == WindowId) {
+                            observedOwner = reply
+                        } else {
+                            Thread.sleep(25)
+                        }
+                    }
+                    assertEquals(WindowId, u32le(observedOwner ?: error("selection owner was not set"), 8))
 
-                socket.soTimeout = 250
-                assertFailsWith<SocketTimeoutException> {
-                    socket.getInputStream().readExactly(32)
+                    requestorSocket.getOutputStream().write(createWindowRequest(requestor))
+                    requestorSocket.getOutputStream().write(
+                        convertSelectionRequest(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                    )
+                    requestorSocket.getOutputStream().flush()
+
+                    val event = ownerSocket.getInputStream().readExactly(32)
+                    assertEquals(30, event[0].toInt() and 0xff)
+                    assertEquals(2, u16le(event, 2))
+                    assertEquals(77, u32le(event, 4))
+                    assertEquals(WindowId, u32le(event, 8))
+                    assertEquals(requestor, u32le(event, 12))
+                    assertEquals(PrimaryAtom, u32le(event, 16))
+                    assertEquals(AtomAtom, u32le(event, 20))
+                    assertEquals(StringAtom, u32le(event, 24))
+
+                    requestorSocket.soTimeout = 250
+                    assertFailsWith<SocketTimeoutException> {
+                        requestorSocket.getInputStream().readExactly(32)
+                    }
                 }
             }
             server.close()

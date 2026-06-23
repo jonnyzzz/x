@@ -23,7 +23,7 @@ internal class X11State(
     private val glyphSets = linkedMapOf<Int, XGlyphSet>()
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
-    private val selectionOwners = linkedMapOf<Int, Int>()
+    private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
@@ -107,7 +107,7 @@ internal class X11State(
         for (windowId in removed) {
             windows.remove(windowId)
         }
-        selectionOwners.entries.removeIf { it.value in removed }
+        selectionOwners.entries.removeIf { it.value.windowId in removed }
         removeEventSelections(removed)
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
         return removed
@@ -198,6 +198,7 @@ internal class X11State(
     @Synchronized
     fun unregisterEventSink(sink: XEventSink) {
         eventSinks.remove(sink)
+        selectionOwners.entries.removeIf { it.value.sink == sink }
     }
 
     @Synchronized
@@ -1789,16 +1790,42 @@ internal class X11State(
     fun atomName(id: Int): String? = atomNames[id]
 
     @Synchronized
-    fun setSelectionOwner(selection: Int, owner: Int) {
+    fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink) {
         if (owner == 0) {
             selectionOwners.remove(selection)
         } else {
-            selectionOwners[selection] = owner
+            selectionOwners[selection] = XSelectionOwner(owner, sink)
         }
     }
 
     @Synchronized
-    fun selectionOwner(selection: Int): Int = selectionOwners[selection] ?: 0
+    fun selectionOwner(selection: Int): Int = selectionOwners[selection]?.windowId ?: 0
+
+    @Synchronized
+    fun selectionRequestDispatch(
+        selection: Int,
+        requestor: Int,
+        target: Int,
+        property: Int,
+        time: Int,
+    ): XSelectionRequestDispatch? {
+        val owner = selectionOwners[selection] ?: return null
+        if (!windows.containsKey(owner.windowId)) {
+            selectionOwners.remove(selection)
+            return null
+        }
+        return XSelectionRequestDispatch(
+            sink = owner.sink,
+            event = XSelectionRequestEvent(
+                time = time,
+                ownerWindowId = owner.windowId,
+                requestorWindowId = requestor,
+                selection = selection,
+                target = target,
+                property = property,
+            ),
+        )
+    }
 
     fun extension(name: String): XExtension? = extensions.firstOrNull { it.name == name || name in it.aliases }
 
@@ -2036,6 +2063,11 @@ internal class X11State(
     )
 
 }
+
+private data class XSelectionOwner(
+    val windowId: Int,
+    val sink: XEventSink,
+)
 
 internal data class XWindow(
     val id: Int,
