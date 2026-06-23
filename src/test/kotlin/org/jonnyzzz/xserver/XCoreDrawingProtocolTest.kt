@@ -813,6 +813,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `AllocColorCells and AllocColorPlanes validate requests before TrueColor allocation failure`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 25
+                val out = socket.getOutputStream()
+                out.write(allocColorCellsRequest(X11Ids.DefaultColormap, colors = 1, planes = 1))
+                out.write(allocColorCellsRequest(missingColormap, colors = 1, planes = 0))
+                out.write(request(86, 2, ByteArray(8)))
+                out.write(request(86, 0, ByteArray(4)))
+                out.write(allocColorPlanesRequest(X11Ids.DefaultColormap, colors = 1, reds = 1, greens = 1, blues = 1))
+                out.write(allocColorPlanesRequest(missingColormap, colors = 1, reds = 1, greens = 0, blues = 0))
+                out.write(request(87, 3, ByteArray(12)))
+                out.write(request(87, 0, ByteArray(8)))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0xffff, blue = 0))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 11, opcode = 86, badValue = 0)
+                assertError(socket.getInputStream(), error = 12, opcode = 86, badValue = missingColormap)
+                assertError(socket.getInputStream(), error = 2, opcode = 86, badValue = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 86, badValue = 0)
+                assertError(socket.getInputStream(), error = 11, opcode = 87, badValue = 0)
+                assertError(socket.getInputStream(), error = 12, opcode = 87, badValue = missingColormap)
+                assertError(socket.getInputStream(), error = 2, opcode = 87, badValue = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 87, badValue = 0)
+
+                val green = readReply(socket.getInputStream())
+                assertEquals(0x0000_ff00, u32le(green, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `AllocNamedColor returns pixel and exact visual color triples`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3369,6 +3406,31 @@ class XCoreDrawingProtocolTest {
         return request(84, 0, body)
     }
 
+    private fun allocColorCellsRequest(colormap: Int, colors: Int, planes: Int, contiguous: Int = 0): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, colormap)
+        put16le(body, 4, colors)
+        put16le(body, 6, planes)
+        return request(86, contiguous, body)
+    }
+
+    private fun allocColorPlanesRequest(
+        colormap: Int,
+        colors: Int,
+        reds: Int,
+        greens: Int,
+        blues: Int,
+        contiguous: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, colormap)
+        put16le(body, 4, colors)
+        put16le(body, 6, reds)
+        put16le(body, 8, greens)
+        put16le(body, 10, blues)
+        return request(87, contiguous, body)
+    }
+
     private fun allocNamedColorRequest(colormap: Int, name: String): ByteArray =
         namedColorRequest(opcode = 85, colormap = colormap, name = name)
 
@@ -4023,6 +4085,14 @@ class XCoreDrawingProtocolTest {
         assertEquals(visualRed, u16le(reply, offset + 6))
         assertEquals(visualGreen, u16le(reply, offset + 8))
         assertEquals(visualBlue, u16le(reply, offset + 10))
+    }
+
+    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(opcode, reply[10].toInt() and 0xff)
     }
 
     private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {
