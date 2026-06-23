@@ -579,8 +579,8 @@ internal class X11State(
 
     @Synchronized
     fun drawable(id: Int): XDrawable? =
-        windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, 24) }
-            ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.depth) }
+        windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, 24) }
+            ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.rootId, it.depth) }
 
     @Synchronized
     fun putPixmap(pixmap: XPixmap) {
@@ -1590,6 +1590,14 @@ internal class X11State(
     fun hasGc(id: Int): Boolean = gcs.containsKey(id)
 
     @Synchronized
+    fun canCopyGc(sourceId: Int, destinationId: Int): Boolean {
+        val source = gcs[sourceId] ?: return false
+        val destination = gcs[destinationId] ?: return false
+        return source.drawableRootId == destination.drawableRootId &&
+            source.drawableDepth == destination.drawableDepth
+    }
+
+    @Synchronized
     fun copyGc(sourceId: Int, destinationId: Int, mask: Int) {
         val source = gcs[sourceId] ?: return
         val destination = gcs[destinationId] ?: return
@@ -2009,6 +2017,7 @@ internal data class XPixmap(
     val width: Int,
     val height: Int,
     val depth: Int,
+    val rootId: Int = X11Ids.RootWindow,
     val framebuffer: XFramebuffer = XFramebuffer(width, height),
 )
 
@@ -2018,6 +2027,7 @@ internal data class XDrawable(
     val width: Int,
     val height: Int,
     val borderWidth: Int,
+    val rootId: Int,
     val depth: Int,
 )
 
@@ -2046,6 +2056,8 @@ private data class XFillPattern(
 
 internal data class XGraphicsContext(
     val id: Int,
+    val drawableRootId: Int = X11Ids.RootWindow,
+    val drawableDepth: Int = 24,
     var foreground: Int = 0,
     var background: Int = 0x00ff_ffff,
     var lineWidth: Int = 1,

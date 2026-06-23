@@ -1500,10 +1500,10 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 55, badValue = id)
-        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 55, badValue = drawableId)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 55, badValue = drawableId)
         val mask = byteOrder.u32(body, 8)
         if (!validateGcValues(mask, body, 12, opcode = 55)) return
-        state.putGc(XGraphicsContext(id))
+        state.putGc(XGraphicsContext(id = id, drawableRootId = drawable.rootId, drawableDepth = drawable.depth))
         own(id)
         applyGcValues(id, mask, body, 12, opcode = 55)
     }
@@ -1522,6 +1522,7 @@ internal class X11Connection(
         val mask = byteOrder.u32(body, 8)
         if (!state.hasGc(sourceId)) return writeError(error = 13, opcode = 57, badValue = sourceId)
         if (!state.hasGc(destinationId)) return writeError(error = 13, opcode = 57, badValue = destinationId)
+        if (!state.canCopyGc(sourceId, destinationId)) return writeError(error = 8, opcode = 57, badValue = 0)
         if ((mask and GcValueMask.inv()) != 0) return writeError(error = 2, opcode = 57, badValue = mask)
         state.copyGc(sourceId, destinationId, mask)
     }
