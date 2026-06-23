@@ -116,7 +116,7 @@ internal class X11Connection(
             28 -> unitReplyless()
             29 -> unitReplyless()
             30 -> unitReplyless()
-            31 -> unitReplyless()
+            31 -> grabKeyboard(minorOpcode, body)
             32 -> unitReplyless()
             33 -> unitReplyless()
             34 -> unitReplyless()
@@ -1421,6 +1421,19 @@ internal class X11Connection(
         if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 26, badValue = keyboardMode)
         val confineTo = byteOrder.u32(body, 8)
         if (confineTo != 0 && state.window(confineTo) == null) return writeError(error = 3, opcode = 26, badValue = confineTo)
+
+        write(reply(extra = 0, payloadUnits = 0))
+    }
+
+    private fun grabKeyboard(ownerEvents: Int, body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = 31, badValue = 0)
+        if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 31, badValue = ownerEvents)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 31, badValue = grabWindow)
+        val pointerMode = body[8].toInt() and 0xff
+        if (pointerMode !in 0..1) return writeError(error = 2, opcode = 31, badValue = pointerMode)
+        val keyboardMode = body[9].toInt() and 0xff
+        if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 31, badValue = keyboardMode)
 
         write(reply(extra = 0, payloadUnits = 0))
     }
