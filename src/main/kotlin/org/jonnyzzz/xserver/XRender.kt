@@ -59,6 +59,9 @@ internal object XRender {
             else -> "Unknown"
         }
 
+    fun isAlphaMaskFormat(format: Int): Boolean =
+        format == A8Format || format == A1Format
+
     fun argb32Pixel(red: Int, green: Int, blue: Int, alpha: Int): Int =
         ((alpha ushr 8).coerceIn(0, 255) shl 24) or
             ((red ushr 8).coerceIn(0, 255) shl 16) or

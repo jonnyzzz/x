@@ -341,12 +341,7 @@ internal class XFramebuffer(
         return compositeBounds(bounds, clipRectangles) { x, y ->
             val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
             val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
-            when (operation) {
-                XRender.OpClear -> 0
-                XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
-                XRender.OpOver -> over(sourcePixel, pixels[y * this.width + x], maskAlpha)
-                else -> over(sourcePixel, pixels[y * this.width + x], maskAlpha)
-            }
+            renderPixel(sourcePixel, pixels[y * this.width + x], operation, maskAlpha)
         }
     }
 
@@ -389,12 +384,7 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
                 val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
-                pixels[index] = when (operation) {
-                    XRender.OpClear -> 0
-                    XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
-                    XRender.OpOver -> over(sourcePixel, pixels[index], maskAlpha)
-                    else -> over(sourcePixel, pixels[index], maskAlpha)
-                }
+                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
         }
@@ -432,12 +422,7 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
                 val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
-                pixels[index] = when (operation) {
-                    XRender.OpClear -> 0
-                    XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
-                    XRender.OpOver -> over(sourcePixel, pixels[index], maskAlpha)
-                    else -> over(sourcePixel, pixels[index], maskAlpha)
-                }
+                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
         }
@@ -598,23 +583,26 @@ internal class XFramebuffer(
         pixel: Int,
         operation: Int,
         trapezoids: List<XTrapezoidCommand>,
+        maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
     ): Boolean =
         compositeTrapezoids(
             operation = operation,
             trapezoids = trapezoids,
+            maskFormat = maskFormat,
             clipRectangles = clipRectangles,
         ) { _, _ -> pixel }
 
     fun compositeTrapezoids(
         operation: Int,
         trapezoids: List<XTrapezoidCommand>,
+        maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = compositeTrapezoid(operation, trapezoid, clipRectangles, sourcePixelAt) || painted
+            painted = compositeTrapezoid(operation, trapezoid, maskFormat, clipRectangles, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -624,23 +612,26 @@ internal class XFramebuffer(
         pixel: Int,
         operation: Int,
         triangles: List<XTriangleCommand>,
+        maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
     ): Boolean =
         compositeTriangles(
             operation = operation,
             triangles = triangles,
+            maskFormat = maskFormat,
             clipRectangles = clipRectangles,
         ) { _, _ -> pixel }
 
     fun compositeTriangles(
         operation: Int,
         triangles: List<XTriangleCommand>,
+        maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeTriangle(operation, triangle, clipRectangles, sourcePixelAt) || painted
+            painted = compositeTriangle(operation, triangle, maskFormat, clipRectangles, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -806,6 +797,7 @@ internal class XFramebuffer(
     private fun compositeTrapezoid(
         operation: Int,
         trapezoid: XTrapezoidCommand,
+        maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
@@ -828,15 +820,11 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles)) continue
                 val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
                 if (coverage == 0) continue
-                val maskAlpha = coverage * 255 / TrapezoidSamples
+                val maskAlpha = maskAlpha(maskFormat, coverage)
+                if (maskAlpha == 0) continue
                 val index = y * width + x
                 val pixel = sourcePixelAt(x, y)
-                pixels[index] = when (operation) {
-                    XRender.OpClear -> if (coverage == TrapezoidSamples) 0 else over(0, pixels[index], maskAlpha)
-                    XRender.OpSrc -> if (coverage == TrapezoidSamples) pixel else withMask(pixel, maskAlpha)
-                    XRender.OpOver -> over(pixel, pixels[index], maskAlpha)
-                    else -> over(pixel, pixels[index], maskAlpha)
-                }
+                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
         }
@@ -869,6 +857,7 @@ internal class XFramebuffer(
     private fun compositeTriangle(
         operation: Int,
         triangle: XTriangleCommand,
+        maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
@@ -890,10 +879,11 @@ internal class XFramebuffer(
                 if (!insideClip(x, y, clipRectangles)) continue
                 val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area)
                 if (coverage == 0) continue
-                val maskAlpha = coverage * 255 / TrapezoidSamples
+                val maskAlpha = maskAlpha(maskFormat, coverage)
+                if (maskAlpha == 0) continue
                 val index = y * width + x
                 val pixel = sourcePixelAt(x, y)
-                pixels[index] = renderPixel(pixel, pixels[index], operation, coverage, maskAlpha)
+                pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
         }
@@ -929,13 +919,26 @@ internal class XFramebuffer(
         return covered
     }
 
-    private fun renderPixel(source: Int, destination: Int, operation: Int, coverage: Int, maskAlpha: Int): Int =
+    private fun maskAlpha(maskFormat: Int, coverage: Int): Int =
+        when (maskFormat) {
+            XRender.A1Format -> if (coverage * 2 >= TrapezoidSamples) 255 else 0
+            else -> coverage * 255 / TrapezoidSamples
+        }
+
+    private fun renderPixel(source: Int, destination: Int, operation: Int, maskAlpha: Int): Int =
         when (operation) {
-            XRender.OpClear -> if (coverage == TrapezoidSamples) 0 else over(0, destination, maskAlpha)
-            XRender.OpSrc -> if (coverage == TrapezoidSamples) source else withMask(source, maskAlpha)
+            XRender.OpClear -> clearWithMask(destination, maskAlpha)
+            XRender.OpSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
             XRender.OpOver -> over(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
+
+    private fun clearWithMask(destination: Int, maskAlpha: Int): Int {
+        if (maskAlpha >= 255) return 0
+        val inverse = 255 - maskAlpha
+        fun channel(shift: Int): Int = (((destination ushr shift) and 0xff) * inverse + 127) / 255
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
 
     private fun sampledMaskAlpha(
         mask: XFramebuffer?,

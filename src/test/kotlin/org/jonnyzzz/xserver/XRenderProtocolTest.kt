@@ -233,6 +233,35 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER composite clear applies A8 mask pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 4, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 2))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 2, height = 2, alphas = byteArrayOf(0xff.toByte(), 0x80.toByte(), 0x00, 0xff.toByte())))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 2, height = 2, operation = XRender.OpClear))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x0000_0000, u32le(image, 32))
+                assertEquals(0x7f00_007f, u32le(image, 36))
+                assertEquals(0xff00_00ff.toInt(), u32le(image, 40))
+                assertEquals(0x0000_0000, u32le(image, 44))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed mask picture samples mask coordinates`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -861,6 +890,33 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER trapezoids honor A1 mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 18, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTrapezoids(SolidPictureId, PictureId, x = 5, y = 4, width = 6, height = 4, maskFormat = XRender.A1Format))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 18, height = 12))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 18, x = 5, y = 4))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 18, x = 10, y = 7))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 18, x = 4, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 18, x = 11, y = 7))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Trapezoids")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER AddTraps builds A8 mask used by composite`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -912,6 +968,85 @@ class XRenderProtocolTest {
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 32, x = 12, y = 12))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 7, y = 6))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 24, y = 20))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER triangles honor A1 mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 20, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(6 to 4, 14 to 4, 6 to 12), maskFormat = XRender.A1Format))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 16))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 20, x = 7, y = 5))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 20, x = 10, y = 5))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 5, y = 5))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 12, y = 10))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER A1 triangle clear uses quantized mask alpha`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 20, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(6 to 4, 14 to 4, 6 to 12), operation = XRender.OpClear, maskFormat = XRender.A1Format))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 16))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x0000_0000, pixelAt(image, imageWidth = 20, x = 7, y = 5))
+                assertEquals(0x0000_0000, pixelAt(image, imageWidth = 20, x = 13, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 14, y = 4))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER A8 triangle clear attenuates partial coverage`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 20, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(6 to 4, 14 to 4, 6 to 12), operation = XRender.OpClear))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 16))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x0000_0000, pixelAt(image, imageWidth = 20, x = 7, y = 5))
+                assertEquals(0x6000_0060, pixelAt(image, imageWidth = 20, x = 13, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 20, x = 14, y = 4))
                 assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
             }
             server.close()
@@ -1016,6 +1151,32 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER tri strip honors A1 mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 36, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTriStrip(SolidPictureId, PictureId, points = listOf(8 to 6, 22 to 6, 8 to 18, 22 to 18), maskFormat = XRender.A1Format))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 36, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 36, x = 10, y = 8))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 36, x = 19, y = 15))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 7, y = 6))
+                assertContains(httpGet(server.localPort, "/text.txt"), "TriStrip")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER tri strip samples generated source using src origin`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1079,6 +1240,32 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 15, y = 10))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 10, y = 16))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 16, y = 18))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 6, y = 18))
+                assertContains(httpGet(server.localPort, "/text.txt"), "TriFan")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER tri fan honors A1 mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 36, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTriFan(SolidPictureId, PictureId, points = listOf(15 to 7, 7 to 18, 15 to 20, 25 to 18), maskFormat = XRender.A1Format))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 36, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 15, y = 10))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 16, y = 18))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 6, y = 18))
                 assertContains(httpGet(server.localPort, "/text.txt"), "TriFan")
@@ -1470,12 +1657,13 @@ class XRenderProtocolTest {
         height: Int,
         sourceX: Int = 0,
         sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
     ): ByteArray {
         val body = ByteArray(60)
         body[0] = XRender.OpSrc.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
-        put32le(body, 12, XRender.A8Format)
+        put32le(body, 12, maskFormat)
         put16le(body, 16, sourceX)
         put16le(body, 18, sourceY)
         putFixed(body, 20, y)
@@ -1578,13 +1766,14 @@ class XRenderProtocolTest {
         operation: Int = XRender.OpSrc,
         sourceX: Int = 0,
         sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
     ): ByteArray {
         require(points.size == 3)
         val body = ByteArray(44)
         body[0] = operation.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
-        put32le(body, 12, XRender.A8Format)
+        put32le(body, 12, maskFormat)
         put16le(body, 16, sourceX)
         put16le(body, 18, sourceY)
         var offset = 20
@@ -1601,6 +1790,7 @@ class XRenderProtocolTest {
         points: List<Pair<Int, Int>>,
         sourceX: Int = 0,
         sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
     ): ByteArray =
         renderTrianglePointList(
             minorOpcode = 12,
@@ -1609,6 +1799,7 @@ class XRenderProtocolTest {
             points = points,
             sourceX = sourceX,
             sourceY = sourceY,
+            maskFormat = maskFormat,
         )
 
     private fun renderTriFan(
@@ -1617,6 +1808,7 @@ class XRenderProtocolTest {
         points: List<Pair<Int, Int>>,
         sourceX: Int = 0,
         sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
     ): ByteArray =
         renderTrianglePointList(
             minorOpcode = 13,
@@ -1625,6 +1817,7 @@ class XRenderProtocolTest {
             points = points,
             sourceX = sourceX,
             sourceY = sourceY,
+            maskFormat = maskFormat,
         )
 
     private fun renderTrianglePointList(
@@ -1634,12 +1827,13 @@ class XRenderProtocolTest {
         points: List<Pair<Int, Int>>,
         sourceX: Int,
         sourceY: Int,
+        maskFormat: Int,
     ): ByteArray {
         val body = ByteArray(20 + points.size * 8)
         body[0] = XRender.OpSrc.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
-        put32le(body, 12, XRender.A8Format)
+        put32le(body, 12, maskFormat)
         put16le(body, 16, sourceX)
         put16le(body, 18, sourceY)
         var offset = 20

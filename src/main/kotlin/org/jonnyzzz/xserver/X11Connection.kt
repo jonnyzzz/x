@@ -451,7 +451,7 @@ internal class X11Connection(
         val source = state.picture(byteOrder.u32(body, 4)) ?: return
         val destination = state.picture(byteOrder.u32(body, 8)) ?: return
         val maskFormat = byteOrder.u32(body, 12)
-        if (maskFormat != XRender.A8Format) return
+        if (!XRender.isAlphaMaskFormat(maskFormat)) return
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
@@ -461,6 +461,7 @@ internal class X11Connection(
             operation = operation,
             source = source,
             destination = destination,
+            maskFormat = maskFormat,
             sourceX = sourceX,
             sourceY = sourceY,
             trapezoids = trapezoids,
@@ -490,7 +491,7 @@ internal class X11Connection(
         val source = state.picture(byteOrder.u32(body, 4)) ?: return
         val destination = state.picture(byteOrder.u32(body, 8)) ?: return
         val maskFormat = byteOrder.u32(body, 12)
-        if (maskFormat != XRender.A8Format) return
+        if (!XRender.isAlphaMaskFormat(maskFormat)) return
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
@@ -500,6 +501,7 @@ internal class X11Connection(
             operation = operation,
             source = source,
             destination = destination,
+            maskFormat = maskFormat,
             sourceX = sourceX,
             sourceY = sourceY,
             triangles = triangles,
@@ -541,7 +543,7 @@ internal class X11Connection(
         val source = state.picture(byteOrder.u32(body, 4)) ?: return
         val destination = state.picture(byteOrder.u32(body, 8)) ?: return
         val maskFormat = byteOrder.u32(body, 12)
-        if (maskFormat != XRender.A8Format) return
+        if (!XRender.isAlphaMaskFormat(maskFormat)) return
         val destinationDrawableId = destination.drawableId ?: return
         val sourceX = byteOrder.i16(body, 16)
         val sourceY = byteOrder.i16(body, 18)
@@ -551,6 +553,7 @@ internal class X11Connection(
             operation = operation,
             source = source,
             destination = destination,
+            maskFormat = maskFormat,
             sourceX = sourceX,
             sourceY = sourceY,
             triangles = triangles,

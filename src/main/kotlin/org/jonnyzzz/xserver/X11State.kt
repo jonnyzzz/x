@@ -709,7 +709,25 @@ internal class X11State(
         if (solid != null) {
             return when (operation) {
                 XRender.OpClear -> {
-                    destinationFramebuffer.fill(destinationX, destinationY, width, height, 0, preserveAlpha = true)
+                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles.isEmpty()) {
+                        destinationFramebuffer.fill(destinationX, destinationY, width, height, 0, preserveAlpha = true)
+                    } else {
+                        destinationFramebuffer.copyFrom(
+                            source = XFramebuffer(width, height, painted = true),
+                            sourceX = 0,
+                            sourceY = 0,
+                            destinationX = destinationX,
+                            destinationY = destinationY,
+                            width = width,
+                            height = height,
+                            operation = XRender.OpClear,
+                            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                            mask = maskFramebuffer,
+                            maskX = maskX,
+                            maskY = maskY,
+                            maskAlphaAt = maskAlphaAt,
+                        )
+                    }
                     XImagePixels(width, height, IntArray(width * height))
                 }
                 XRender.OpSrc -> {
@@ -1348,6 +1366,7 @@ internal class X11State(
         operation: Int,
         source: XPicture,
         destination: XPicture,
+        maskFormat: Int,
         sourceX: Int,
         sourceY: Int,
         trapezoids: List<XTrapezoidCommand>,
@@ -1361,6 +1380,7 @@ internal class X11State(
         return framebuffer.compositeTrapezoids(
             operation = operation,
             trapezoids = trapezoids,
+            maskFormat = maskFormat,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
@@ -1385,6 +1405,7 @@ internal class X11State(
         operation: Int,
         source: XPicture,
         destination: XPicture,
+        maskFormat: Int,
         sourceX: Int,
         sourceY: Int,
         triangles: List<XTriangleCommand>,
@@ -1398,6 +1419,7 @@ internal class X11State(
         return framebuffer.compositeTriangles(
             operation = operation,
             triangles = triangles,
+            maskFormat = maskFormat,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
