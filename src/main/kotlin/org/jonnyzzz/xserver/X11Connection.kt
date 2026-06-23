@@ -2206,18 +2206,18 @@ internal class X11Connection(
     }
 
     private fun allocColor(body: ByteArray) {
+        if (body.size != 12) return writeError(error = 16, opcode = 84, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 84, badValue = colormap)
         val red = byteOrder.u16(body, 4)
         val green = byteOrder.u16(body, 6)
         val blue = byteOrder.u16(body, 8)
-        val pixel = ((red and 0xff00) shl 8) or (green and 0xff00) or (blue ushr 8)
+        val color = XNamedColor.fromExact(red, green, blue)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, red)
-        byteOrder.put16(reply, 10, green)
-        byteOrder.put16(reply, 12, blue)
-        byteOrder.put16(reply, 14, red)
-        byteOrder.put16(reply, 16, green)
-        byteOrder.put16(reply, 18, blue)
-        byteOrder.put32(reply, 20, pixel)
+        byteOrder.put16(reply, 8, color.visualRed)
+        byteOrder.put16(reply, 10, color.visualGreen)
+        byteOrder.put16(reply, 12, color.visualBlue)
+        byteOrder.put32(reply, 16, color.pixel)
         write(reply)
     }
 
