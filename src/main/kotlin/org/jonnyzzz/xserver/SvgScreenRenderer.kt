@@ -110,6 +110,32 @@ internal object SvgScreenRenderer {
                     }
                     append("""]}""")
                 }
+                picture.radialGradient?.let { gradient ->
+                    append(""","radialGradient":{"inner":"${gradient.innerHex}","outer":"${gradient.outerHex}","stops":[""")
+                    gradient.stopHex.forEachIndexed { stopIndex, value ->
+                        if (stopIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""],"colors":[""")
+                    gradient.colorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""]}""")
+                }
+                picture.conicalGradient?.let { gradient ->
+                    append(""","conicalGradient":{"center":"${gradient.centerHex}","angle":"${gradient.angleHex}","stops":[""")
+                    gradient.stopHex.forEachIndexed { stopIndex, value ->
+                        if (stopIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""],"colors":[""")
+                    gradient.colorHex.forEachIndexed { colorIndex, value ->
+                        if (colorIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append("""]}""")
+                }
                 append('}')
             }
             append("""],"inputOperations":[""")

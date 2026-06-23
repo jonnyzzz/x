@@ -1,7 +1,10 @@
 package org.jonnyzzz.xserver
 
 import kotlin.math.floor
+import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 internal class X11State(
     val width: Int,
@@ -375,13 +378,34 @@ internal class X11State(
                             pixmaps.containsKey(drawableId) -> "pixmap"
                             else -> "missing"
                         }
-                    } ?: if (picture.linearGradient != null) "linear-gradient" else "solid",
+                    } ?: when {
+                        picture.linearGradient != null -> "linear-gradient"
+                        picture.radialGradient != null -> "radial-gradient"
+                        picture.conicalGradient != null -> "conical-gradient"
+                        else -> "solid"
+                    },
                     format = picture.format,
                     solidPixel = picture.solidPixel,
                     linearGradient = picture.linearGradient?.let { gradient ->
                         XLinearGradientSnapshot(
                             p1 = gradient.p1,
                             p2 = gradient.p2,
+                            stops = gradient.stops,
+                            colors = gradient.colors,
+                        )
+                    },
+                    radialGradient = picture.radialGradient?.let { gradient ->
+                        XRadialGradientSnapshot(
+                            inner = gradient.inner,
+                            outer = gradient.outer,
+                            stops = gradient.stops,
+                            colors = gradient.colors,
+                        )
+                    },
+                    conicalGradient = picture.conicalGradient?.let { gradient ->
+                        XConicalGradientSnapshot(
+                            center = gradient.center,
+                            angle = gradient.angle,
                             stops = gradient.stops,
                             colors = gradient.colors,
                         )
@@ -662,9 +686,8 @@ internal class X11State(
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val maskAlphaAt = mask?.maskAlphaSampler()
-        val linearGradient = source.linearGradient
-        if (linearGradient != null) {
-            val sampleGradient = linearGradient.pixelSampler(source.repeat, source.transform)
+        val gradientSampler = source.gradientSampler()
+        if (gradientSampler != null) {
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -679,7 +702,7 @@ internal class X11State(
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
             ) { x, y ->
-                sampleGradient(x, y)
+                gradientSampler(x, y)
             }
         }
         val solid = source.solidPixel
@@ -871,6 +894,11 @@ internal class X11State(
         return if (offset <= size) offset else period - offset
     }
 
+    private fun XPicture.gradientSampler(): ((x: Int, y: Int) -> Int)? =
+        linearGradient?.pixelSampler(repeat, transform)
+            ?: radialGradient?.pixelSampler(repeat, transform)
+            ?: conicalGradient?.pixelSampler(repeat, transform)
+
     private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
@@ -891,16 +919,75 @@ internal class X11State(
                 val sampleY = sample.second
                 ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
             }
-            val repeatedPosition = repeatPosition(position, fixedStops.first(), fixedStops.last(), repeat)
-            if (repeatedPosition == null) {
-                0
-            } else if (repeat == XRender.RepeatNormal) {
-                normalRepeatPixel(repeatedPosition, pairs, fixedStops)
-            } else {
-                stopPixel(repeatedPosition, pairs, fixedStops)
-            }
+            sampleGradientPosition(position, pairs, fixedStops, repeat)
         }
     }
+
+    private fun XRadialGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
+        val pairs = stops.zip(colors).sortedBy { it.first }
+        if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
+        val x1 = inner.center.x.fixedToDouble()
+        val y1 = inner.center.y.fixedToDouble()
+        val r1 = inner.radius.fixedToDouble()
+        val x2 = outer.center.x.fixedToDouble()
+        val y2 = outer.center.y.fixedToDouble()
+        val r2 = outer.radius.fixedToDouble()
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val dr = r2 - r1
+        val a = dx * dx + dy * dy - dr * dr
+        val fixedStops = pairs.map { it.first.fixedToDouble() }
+        return { x, y ->
+            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+            val pdx = sample.first - x1
+            val pdy = sample.second - y1
+            val b = pdx * dx + pdy * dy + r1 * dr
+            val c = pdx * pdx + pdy * pdy - r1 * r1
+            sampleGradientPosition(radialPosition(a, b, c, r1, dr, repeat), pairs, fixedStops, repeat)
+        }
+    }
+
+    private fun radialPosition(a: Double, b: Double, c: Double, r1: Double, dr: Double, repeat: Int): Double? {
+        fun valid(position: Double): Boolean =
+            if (repeat == XRender.RepeatNone) {
+                position in 0.0..1.0
+            } else {
+                r1 + position * dr >= 0.0
+            }
+        if (a == 0.0) {
+            if (b == 0.0) return null
+            val position = c / (2.0 * b)
+            return position.takeIf(::valid)
+        }
+        val discriminant = b * b - a * c
+        if (discriminant < 0.0) return null
+        val root = sqrt(discriminant)
+        val first = (b + root) / a
+        val second = (b - root) / a
+        return when {
+            valid(first) -> first
+            valid(second) -> second
+            else -> null
+        }
+    }
+
+    private fun XConicalGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
+        val pairs = stops.zip(colors).sortedBy { it.first }
+        if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
+        val centerX = center.x.fixedToDouble()
+        val centerY = center.y.fixedToDouble()
+        val angleRadians = angle.fixedToDouble() / 180.0 * PI
+        val fixedStops = pairs.map { it.first.fixedToDouble() }
+        return { x, y ->
+            val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+            val radians = normalizeRadians(atan2(sample.second - centerY, sample.first - centerX) + angleRadians)
+            val position = 1.0 - radians / (2.0 * PI)
+            sampleGradientPosition(position, pairs, fixedStops, repeat)
+        }
+    }
+
+    private fun normalizeRadians(radians: Double): Double =
+        ((radians % (2.0 * PI)) + (2.0 * PI)) % (2.0 * PI)
 
     private fun transformedPoint(x: Double, y: Double, transform: List<Int>): Pair<Double, Double> {
         if (transform.size != 9 || transform == IdentityTransform) return x to y
@@ -916,6 +1003,17 @@ internal class X11State(
         val w = m20 * x + m21 * y + m22
         if (w == 0.0) return x to y
         return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
+    }
+
+    private fun sampleGradientPosition(position: Double?, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>, repeat: Int): Int {
+        val repeatedPosition = position?.let { repeatPosition(it, fixedStops.first(), fixedStops.last(), repeat) }
+        return if (repeatedPosition == null) {
+            0
+        } else if (repeat == XRender.RepeatNormal) {
+            normalRepeatPixel(repeatedPosition, pairs, fixedStops)
+        } else {
+            stopPixel(repeatedPosition, pairs, fixedStops)
+        }
     }
 
     private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
@@ -1783,6 +1881,8 @@ internal data class XPicture(
     var valueMask: Int = 0,
     val solidPixel: Int? = null,
     val linearGradient: XLinearGradient? = null,
+    val radialGradient: XRadialGradient? = null,
+    val conicalGradient: XConicalGradient? = null,
     var repeat: Int = XRender.RepeatNone,
     var clipRectangles: List<XRectangleCommand> = emptyList(),
     var transform: List<Int> = IdentityTransform,
@@ -1793,6 +1893,25 @@ internal data class XPicture(
 internal data class XLinearGradient(
     val p1: XFixedPoint,
     val p2: XFixedPoint,
+    val stops: List<Int>,
+    val colors: List<Int>,
+)
+
+internal data class XFixedCircle(
+    val center: XFixedPoint,
+    val radius: Int,
+)
+
+internal data class XRadialGradient(
+    val inner: XFixedCircle,
+    val outer: XFixedCircle,
+    val stops: List<Int>,
+    val colors: List<Int>,
+)
+
+internal data class XConicalGradient(
+    val center: XFixedPoint,
+    val angle: Int,
     val stops: List<Int>,
     val colors: List<Int>,
 )
@@ -2002,6 +2121,8 @@ internal data class XRenderPictureSnapshot(
     val format: Int,
     val solidPixel: Int?,
     val linearGradient: XLinearGradientSnapshot?,
+    val radialGradient: XRadialGradientSnapshot?,
+    val conicalGradient: XConicalGradientSnapshot?,
     val repeat: Int,
     val clipRectangles: Int,
     val transform: List<Int>,
@@ -2026,9 +2147,37 @@ internal data class XLinearGradientSnapshot(
     val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
     val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
 
-    private fun pointHex(point: XFixedPoint): String =
-        "0x${point.x.toUInt().toString(16)},0x${point.y.toUInt().toString(16)}"
 }
+
+internal data class XRadialGradientSnapshot(
+    val inner: XFixedCircle,
+    val outer: XFixedCircle,
+    val stops: List<Int>,
+    val colors: List<Int>,
+) {
+    val innerHex: String get() = circleHex(inner)
+    val outerHex: String get() = circleHex(outer)
+    val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
+    val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+
+    private fun circleHex(circle: XFixedCircle): String =
+        "${pointHex(circle.center)},r=0x${circle.radius.toUInt().toString(16)}"
+}
+
+internal data class XConicalGradientSnapshot(
+    val center: XFixedPoint,
+    val angle: Int,
+    val stops: List<Int>,
+    val colors: List<Int>,
+) {
+    val centerHex: String get() = pointHex(center)
+    val angleHex: String get() = "0x${angle.toUInt().toString(16)}"
+    val stopHex: List<String> get() = stops.map { "0x${it.toUInt().toString(16)}" }
+    val colorHex: List<String> get() = colors.map { "0x${it.toUInt().toString(16).padStart(8, '0')}" }
+}
+
+private fun pointHex(point: XFixedPoint): String =
+    "0x${point.x.toUInt().toString(16)},0x${point.y.toUInt().toString(16)}"
 
 internal data class XPixmapSnapshot(
     val id: Int,

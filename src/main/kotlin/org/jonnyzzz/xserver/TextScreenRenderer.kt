@@ -215,6 +215,26 @@ internal object TextScreenRenderer {
                         append(" colors=")
                         append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
                     }
+                    picture.radialGradient?.let { gradient ->
+                        append(" radialGradient=")
+                        append(gradient.innerHex)
+                        append("->")
+                        append(gradient.outerHex)
+                        append(" stops=")
+                        append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" colors=")
+                        append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                    }
+                    picture.conicalGradient?.let { gradient ->
+                        append(" conicalGradient=")
+                        append(gradient.centerHex)
+                        append(" angle=")
+                        append(gradient.angleHex)
+                        append(" stops=")
+                        append(gradient.stopHex.joinToString(",", prefix = "[", postfix = "]"))
+                        append(" colors=")
+                        append(gradient.colorHex.joinToString(",", prefix = "[", postfix = "]"))
+                    }
                     appendLine()
                 }
             }

@@ -265,7 +265,8 @@ internal class X11Connection(
             32 -> renderAddTraps(body)
             33 -> renderCreateSolidFill(body)
             34 -> renderCreateLinearGradient(body)
-            35, 36 -> renderCreateGradientPicture(body)
+            35 -> renderCreateRadialGradient(body)
+            36 -> renderCreateConicalGradient(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RENDER.$operation")
         }
     }
@@ -874,35 +875,75 @@ internal class X11Connection(
         own(id)
     }
 
-    private fun renderCreateGradientPicture(body: ByteArray) {
-        if (body.size < 4) return
+    private fun renderCreateRadialGradient(body: ByteArray) {
+        if (body.size < 32) return
         val id = byteOrder.u32(body, 0)
-        state.putPicture(XPicture(id = id, drawableId = null, format = XRender.Argb32Format, solidPixel = renderGradientAveragePixel(body)))
+        val stops = renderGradientStops(body, countOffset = 28, stopsOffset = 32) ?: return
+        val gradient = XRadialGradient(
+            inner = XFixedCircle(
+                center = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
+                radius = byteOrder.u32(body, 20),
+            ),
+            outer = XFixedCircle(
+                center = XFixedPoint(byteOrder.u32(body, 12), byteOrder.u32(body, 16)),
+                radius = byteOrder.u32(body, 24),
+            ),
+            stops = stops.first,
+            colors = stops.second,
+        )
+        state.putPicture(
+            XPicture(
+                id = id,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                radialGradient = gradient,
+            ),
+        )
         own(id)
     }
 
-    private fun renderGradientAveragePixel(body: ByteArray): Int {
-        if (body.size < 24) return 0xff00_0000.toInt()
-        val stops = byteOrder.u32(body, 20).coerceAtMost(1024)
-        val colorOffset = 24 + stops * 4
-        if (stops <= 0 || body.size < colorOffset + stops * 8) return 0xff00_0000.toInt()
-        var red = 0
-        var green = 0
-        var blue = 0
-        var alpha = 0
-        repeat(stops) { index ->
-            val offset = colorOffset + index * 8
-            red += byteOrder.u16(body, offset)
-            green += byteOrder.u16(body, offset + 2)
-            blue += byteOrder.u16(body, offset + 4)
-            alpha += byteOrder.u16(body, offset + 6)
-        }
-        return XRender.argb32Pixel(
-            red = red / stops,
-            green = green / stops,
-            blue = blue / stops,
-            alpha = alpha / stops,
+    private fun renderCreateConicalGradient(body: ByteArray) {
+        if (body.size < 20) return
+        val id = byteOrder.u32(body, 0)
+        val stops = renderGradientStops(body, countOffset = 16, stopsOffset = 20) ?: return
+        val gradient = XConicalGradient(
+            center = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
+            angle = byteOrder.u32(body, 12),
+            stops = stops.first,
+            colors = stops.second,
         )
+        state.putPicture(
+            XPicture(
+                id = id,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                conicalGradient = gradient,
+            ),
+        )
+        own(id)
+    }
+
+    private fun renderGradientStops(body: ByteArray, countOffset: Int, stopsOffset: Int): Pair<List<Int>, List<Int>>? {
+        val stopsCount = byteOrder.u32(body, countOffset)
+        if (stopsCount < 0) return null
+        val colorOffset = stopsOffset.toLong() + stopsCount.toLong() * 4L
+        val requiredSize = colorOffset + stopsCount.toLong() * 8L
+        if (requiredSize > body.size) return null
+        val stops = ArrayList<Int>(stopsCount)
+        repeat(stopsCount) { index ->
+            stops += byteOrder.u32(body, stopsOffset + index * 4)
+        }
+        val colors = ArrayList<Int>(stopsCount)
+        repeat(stopsCount) { index ->
+            val offset = colorOffset + index * 8
+            colors += XRender.argb32Pixel(
+                red = byteOrder.u16(body, offset.toInt()),
+                green = byteOrder.u16(body, offset.toInt() + 2),
+                blue = byteOrder.u16(body, offset.toInt() + 4),
+                alpha = byteOrder.u16(body, offset.toInt() + 6),
+            )
+        }
+        return stops to colors
     }
 
     private fun glxGetVisualConfigs(body: ByteArray) {

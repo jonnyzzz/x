@@ -692,6 +692,109 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER radial gradient composites sampled source pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateRadialGradient(
+                        GradientRadialPictureId,
+                        innerCenter = 0x0000_8000 to 0x0000_8000,
+                        innerRadius = 0,
+                        outerCenter = 0x0000_8000 to 0x0000_8000,
+                        outerRadius = 0x0008_0000,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderComposite(GradientRadialPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 11, height = 1))
+                out.write(renderChangePicture(GradientRadialPictureId, repeat = XRender.RepeatPad))
+                out.write(renderComposite(GradientRadialPictureId, PictureId, operation = XRender.OpSrc, sourceX = 11, destinationX = 11, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 12, x = 0, y = 0))
+                assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 12, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 8, y = 0))
+                assertEquals(0x0000_0000, pixelAt(image, imageWidth = 12, x = 10, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 11, y = 0))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""radialGradient"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"kind":"radial-gradient"""")
+                assertContains(json, """"inner":"0x8000,0x8000,r=0x0"""")
+                assertContains(json, """"outer":"0x8000,0x8000,r=0x80000"""")
+                assertContains(json, """"stops":["0x0","0x10000"]""")
+                assertContains(json, """"colors":["0xffff0000","0xff0000ff"]""")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "CreateRadialGradient")
+                assertContains(text, "radialGradient=0x8000,0x8000,r=0x0->0x8000,0x8000,r=0x80000")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER conical gradient composites sampled source pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateConicalGradient(
+                        GradientConicalPictureId,
+                        center = 0x0001_8000 to 0x0001_8000,
+                        angle = 90 shl 16,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderComposite(GradientConicalPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 3, height = 3))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 3, height = 3))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 3, x = 0, y = 1))
+                assertEquals(0xff40_00bf.toInt(), pixelAt(image, imageWidth = 3, x = 2, y = 1))
+                assertEquals(0xff80_0080.toInt(), pixelAt(image, imageWidth = 3, x = 1, y = 2))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""conicalGradient"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"kind":"conical-gradient"""")
+                assertContains(json, """"center":"0x18000,0x18000"""")
+                assertContains(json, """"angle":"0x5a0000"""")
+                assertContains(json, """"stops":["0x0","0x10000"]""")
+                assertContains(json, """"colors":["0xffff0000","0xff0000ff"]""")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "CreateConicalGradient")
+                assertContains(text, "conicalGradient=0x18000,0x18000 angle=0x5a0000")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1034,6 +1137,64 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 34, body)
     }
 
+    private fun renderCreateRadialGradient(
+        picture: Int,
+        innerCenter: Pair<Int, Int>,
+        innerRadius: Int,
+        outerCenter: Pair<Int, Int>,
+        outerRadius: Int,
+        stops: List<Int>,
+        colors: List<RenderColor>,
+    ): ByteArray {
+        require(stops.size == colors.size)
+        val body = ByteArray(32 + stops.size * 4 + colors.size * 8)
+        put32le(body, 0, picture)
+        putFixedPointRaw(body, 4, innerCenter.first, innerCenter.second)
+        putFixedPointRaw(body, 12, outerCenter.first, outerCenter.second)
+        put32le(body, 20, innerRadius)
+        put32le(body, 24, outerRadius)
+        put32le(body, 28, stops.size)
+        stops.forEachIndexed { index, stop ->
+            put32le(body, 32 + index * 4, stop)
+        }
+        val colorOffset = 32 + stops.size * 4
+        colors.forEachIndexed { index, color ->
+            val offset = colorOffset + index * 8
+            put16le(body, offset, color.red)
+            put16le(body, offset + 2, color.green)
+            put16le(body, offset + 4, color.blue)
+            put16le(body, offset + 6, color.alpha)
+        }
+        return request(XRender.MajorOpcode, 35, body)
+    }
+
+    private fun renderCreateConicalGradient(
+        picture: Int,
+        center: Pair<Int, Int>,
+        angle: Int,
+        stops: List<Int>,
+        colors: List<RenderColor>,
+    ): ByteArray {
+        require(stops.size == colors.size)
+        val body = ByteArray(20 + stops.size * 4 + colors.size * 8)
+        put32le(body, 0, picture)
+        putFixedPointRaw(body, 4, center.first, center.second)
+        put32le(body, 12, angle)
+        put32le(body, 16, stops.size)
+        stops.forEachIndexed { index, stop ->
+            put32le(body, 20 + index * 4, stop)
+        }
+        val colorOffset = 20 + stops.size * 4
+        colors.forEachIndexed { index, color ->
+            val offset = colorOffset + index * 8
+            put16le(body, offset, color.red)
+            put16le(body, offset + 2, color.green)
+            put16le(body, offset + 4, color.blue)
+            put16le(body, offset + 6, color.alpha)
+        }
+        return request(XRender.MajorOpcode, 36, body)
+    }
+
     private fun renderChangePicture(picture: Int, repeat: Int): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, picture)
@@ -1224,6 +1385,11 @@ class XRenderProtocolTest {
         putFixed(bytes, offset + 4, y)
     }
 
+    private fun putFixedPointRaw(bytes: ByteArray, offset: Int, x: Int, y: Int) {
+        put32le(bytes, offset, x)
+        put32le(bytes, offset + 4, y)
+    }
+
     private fun putFixed(bytes: ByteArray, offset: Int, value: Int) {
         put32le(bytes, offset, value shl 16)
     }
@@ -1255,6 +1421,8 @@ class XRenderProtocolTest {
         const val SolidPictureId = 0x0020_1002
         const val GradientPictureId = 0x0020_1003
         const val GradientNarrowPictureId = 0x0020_1004
+        const val GradientRadialPictureId = 0x0020_1005
+        const val GradientConicalPictureId = 0x0020_1006
         const val MaskPixmapId = 0x0020_2001
         const val MaskPictureId = 0x0020_2002
         const val PixmapId = 0x0020_0100
