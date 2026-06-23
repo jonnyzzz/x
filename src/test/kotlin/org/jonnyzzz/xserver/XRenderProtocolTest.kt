@@ -1590,6 +1590,37 @@ class XRenderProtocolTest {
         }
     }
 
+    @Test
+    fun `RENDER ReferenceGlyphSet rejects duplicate resource id without replacing existing resource`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderReferenceGlyphSet(WindowId, GlyphSetId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(duplicateError, 4))
+                assertEquals(18, u16le(duplicateError, 8))
+                assertEquals(XRender.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -1903,6 +1934,13 @@ class XRenderProtocolTest {
         put32le(body, 0, glyphSet)
         put32le(body, 4, format)
         return request(XRender.MajorOpcode, 17, body)
+    }
+
+    private fun renderReferenceGlyphSet(glyphSet: Int, existing: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, glyphSet)
+        put32le(body, 4, existing)
+        return request(XRender.MajorOpcode, 18, body)
     }
 
     private fun renderAddA8Glyph(
