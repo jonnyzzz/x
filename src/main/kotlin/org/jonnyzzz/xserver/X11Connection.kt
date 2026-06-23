@@ -864,6 +864,7 @@ internal class X11Connection(
     private fun renderCreateLinearGradient(body: ByteArray) {
         if (body.size < 24) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 34, badValue = id)
         val stopsCount = byteOrder.u32(body, 20)
         if (stopsCount < 0) return
         val colorOffset = 24L + stopsCount.toLong() * 4L
