@@ -1482,6 +1482,7 @@ internal class X11Connection(
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 53, badValue = id)
         val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 53, badValue = drawableId)
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
