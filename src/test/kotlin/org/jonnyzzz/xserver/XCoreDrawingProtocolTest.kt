@@ -2943,6 +2943,87 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetCloseDownMode validates mode and length and preserves connection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(setCloseDownModeRequest(0))
+                out.write(setCloseDownModeRequest(1))
+                out.write(setCloseDownModeRequest(2))
+                out.write(setCloseDownModeRequest(3))
+                out.write(request(112, 0, ByteArray(4)))
+                out.write(getScreenSaverRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 112, badValue = 3, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 112, badValue = 0, sequence = 5)
+
+                val screenSaver = readReply(socket.getInputStream())
+                assertEquals(6, u16le(screenSaver, 2))
+                assertEquals(0, u32le(screenSaver, 4))
+                assertEquals(0, u16le(screenSaver, 8))
+                assertEquals(0, u16le(screenSaver, 10))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetCloseDownMode retain modes preserve resources across disconnect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val retainedWindows = listOf(1 to WindowId + 20, 2 to WindowId + 22)
+            val transientWindow = WindowId + 21
+
+            for ((mode, retainedWindow) in retainedWindows) {
+                Socket("127.0.0.1", server.localPort).use { socket ->
+                    socket.soTimeout = 2_000
+                    setup(socket)
+                    val out = socket.getOutputStream()
+                    out.write(createWindowRequest(retainedWindow))
+                    out.write(setCloseDownModeRequest(mode))
+                    out.write(queryTreeRequest(X11Ids.RootWindow))
+                    out.flush()
+
+                    val beforeClose = treeChildren(readReply(socket.getInputStream()))
+                    assertTrue(retainedWindow in beforeClose)
+                    closeClientAndWait(socket)
+                }
+
+                val retainedChildren = waitForRootChildren(server.localPort) { retainedWindow in it }
+                assertTrue(retainedWindow in retainedChildren)
+            }
+
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(transientWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                val beforeClose = treeChildren(readReply(socket.getInputStream()))
+                assertTrue(transientWindow in beforeClose)
+                closeClientAndWait(socket)
+            }
+
+            val finalChildren = waitForRootChildren(server.localPort) {
+                retainedWindows.all { (_, retainedWindow) -> retainedWindow in it } && transientWindow !in it
+            }
+            for ((_, retainedWindow) in retainedWindows) {
+                assertTrue(retainedWindow in finalChildren)
+            }
+            assertFalse(transientWindow in finalChildren)
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetSelectionOwner updates and clears GetSelectionOwner reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3926,6 +4007,12 @@ class XCoreDrawingProtocolTest {
     private fun getInputFocusRequest(): ByteArray =
         request(43, 0, ByteArray(0))
 
+    private fun queryTreeRequest(window: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, window)
+        return request(15, 0, body)
+    }
+
     private fun setScreenSaverRequest(timeout: Int, interval: Int, preferBlanking: Int, allowExposures: Int): ByteArray {
         val body = ByteArray(8)
         put16le(body, 0, timeout)
@@ -3940,6 +4027,9 @@ class XCoreDrawingProtocolTest {
 
     private fun forceScreenSaverRequest(mode: Int): ByteArray =
         request(115, mode, ByteArray(0))
+
+    private fun setCloseDownModeRequest(mode: Int): ByteArray =
+        request(112, mode, ByteArray(0))
 
     private fun bellRequest(percent: Int): ByteArray =
         request(104, percent and 0xff, ByteArray(0))
@@ -4560,6 +4650,35 @@ class XCoreDrawingProtocolTest {
     private fun installedColormaps(reply: ByteArray): List<Int> {
         val count = u16le(reply, 8)
         return (0 until count).map { index -> u32le(reply, 32 + index * 4) }
+    }
+
+    private fun treeChildren(reply: ByteArray): List<Int> {
+        assertEquals(1, reply[0].toInt())
+        val count = u16le(reply, 16)
+        return (0 until count).map { index -> u32le(reply, 32 + index * 4) }
+    }
+
+    private fun waitForRootChildren(port: Int, predicate: (List<Int>) -> Boolean): List<Int> {
+        var latest = emptyList<Int>()
+        repeat(40) {
+            latest = Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                socket.getOutputStream().write(queryTreeRequest(X11Ids.RootWindow))
+                socket.getOutputStream().flush()
+                treeChildren(readReply(socket.getInputStream()))
+            }
+            if (predicate(latest)) return latest
+            Thread.sleep(25)
+        }
+        return latest
+    }
+
+    private fun closeClientAndWait(socket: Socket) {
+        socket.shutdownOutput()
+        while (socket.getInputStream().read() != -1) {
+            // Drain until the server closes the socket after running connection cleanup.
+        }
     }
 
     private fun assertColorTriples(

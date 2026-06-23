@@ -19,6 +19,7 @@ internal class X11Connection(
     private val trace = java.lang.Boolean.getBoolean("x.trace")
     private val writeLock = Any()
     private val ownedResources = linkedSetOf<Int>()
+    private var closeDownMode = XCloseDownMode.Destroy
 
     fun run() {
         try {
@@ -71,7 +72,9 @@ internal class X11Connection(
             }
         } finally {
             state.unregisterEventSink(this)
-            state.removeClientResources(ownedResources)
+            if (closeDownMode == XCloseDownMode.Destroy) {
+                state.removeClientResources(ownedResources)
+            }
         }
     }
 
@@ -193,7 +196,7 @@ internal class X11Connection(
             107 -> setScreenSaver(body)
             108 -> getScreenSaver()
             115 -> forceScreenSaver(minorOpcode, body)
-            112 -> unitReplyless()
+            112 -> setCloseDownMode(minorOpcode, body)
             116 -> setPointerMapping(minorOpcode, body)
             117 -> getPointerMapping(body)
             118 -> setModifierMapping(minorOpcode, body)
@@ -2784,6 +2787,14 @@ internal class X11Connection(
         if (mode !in 0..1) return writeError(error = 2, opcode = 115, badValue = mode)
     }
 
+    private fun setCloseDownMode(mode: Int, body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 112, badValue = 0)
+        if (mode !in XCloseDownMode.Destroy..XCloseDownMode.RetainTemporary) {
+            return writeError(error = 2, opcode = 112, badValue = mode)
+        }
+        closeDownMode = mode
+    }
+
     private fun setPointerMapping(count: Int, body: ByteArray) {
         if (body.size != paddedLength(count)) return writeError(error = 16, opcode = 116, badValue = 0)
         val current = state.pointerMapping()
@@ -4295,6 +4306,12 @@ private data class WindowAttributeValues(
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
 )
+
+private object XCloseDownMode {
+    const val Destroy = 0
+    const val RetainPermanent = 1
+    const val RetainTemporary = 2
+}
 
 private data class XRenderPictureAttributes(
     val repeat: Int? = null,
