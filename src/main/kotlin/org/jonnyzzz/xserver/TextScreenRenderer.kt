@@ -191,6 +191,14 @@ internal object TextScreenRenderer {
                     append("0x${picture.format.toUInt().toString(16)}")
                     append(" clips=")
                     append(picture.clipRectangles)
+                    append(" transform=")
+                    append(picture.transformHex.joinToString(",", prefix = "[", postfix = "]"))
+                    if (picture.filterName != null) {
+                        append(" filter=")
+                        append(picture.filterName)
+                        append(" values=")
+                        append(picture.filterValueHex.joinToString(",", prefix = "[", postfix = "]"))
+                    }
                     if (picture.solidPixel != null) {
                         append(" solid=")
                         append(pixelHex(picture.solidPixel))

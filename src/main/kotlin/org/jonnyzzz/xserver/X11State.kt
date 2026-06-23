@@ -378,6 +378,9 @@ internal class X11State(
                     format = picture.format,
                     solidPixel = picture.solidPixel,
                     clipRectangles = picture.clipRectangles.size,
+                    transform = picture.transform,
+                    filterName = picture.filterName,
+                    filterValues = picture.filterValues,
                 )
             },
             requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
@@ -463,6 +466,17 @@ internal class X11State(
     @Synchronized
     fun updatePictureClip(id: Int, rectangles: List<XRectangleCommand>) {
         pictures[id]?.clipRectangles = rectangles
+    }
+
+    @Synchronized
+    fun updatePictureTransform(id: Int, transform: List<Int>) {
+        pictures[id]?.transform = transform
+    }
+
+    @Synchronized
+    fun updatePictureFilter(id: Int, name: String, values: List<Int>) {
+        pictures[id]?.filterName = name
+        pictures[id]?.filterValues = values
     }
 
     @Synchronized
@@ -1463,6 +1477,21 @@ internal data class XPicture(
     var valueMask: Int = 0,
     val solidPixel: Int? = null,
     var clipRectangles: List<XRectangleCommand> = emptyList(),
+    var transform: List<Int> = IdentityTransform,
+    var filterName: String? = null,
+    var filterValues: List<Int> = emptyList(),
+)
+
+internal val IdentityTransform: List<Int> = listOf(
+    0x0001_0000,
+    0,
+    0,
+    0,
+    0x0001_0000,
+    0,
+    0,
+    0,
+    0x0001_0000,
 )
 
 internal data class XGlyphSet(
@@ -1655,9 +1684,14 @@ internal data class XRenderPictureSnapshot(
     val format: Int,
     val solidPixel: Int?,
     val clipRectangles: Int,
+    val transform: List<Int>,
+    val filterName: String?,
+    val filterValues: List<Int>,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
+    val transformHex: List<String> get() = transform.map { "0x${it.toUInt().toString(16)}" }
+    val filterValueHex: List<String> get() = filterValues.map { "0x${it.toUInt().toString(16)}" }
 }
 
 internal data class XPixmapSnapshot(

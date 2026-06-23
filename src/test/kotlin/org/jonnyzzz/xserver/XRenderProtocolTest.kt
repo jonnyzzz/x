@@ -82,6 +82,53 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER picture transform and filter are retained in semantic snapshot`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderSetPictureTransform(
+                        PictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            0x0002_0000,
+                            0,
+                            0x0001_0000,
+                            0x0003_0000,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderSetPictureFilter(PictureId, "bilinear", values = listOf(0x0001_0000)))
+                out.flush()
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""renderOperations":3""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"renderPictures":[{""")
+                assertContains(json, """"filter":"bilinear"""")
+                assertContains(json, """"filterValues":["0x10000"]""")
+                assertContains(json, """"transform":["0x10000","0x0","0x20000","0x0","0x10000","0x30000","0x0","0x0","0x10000"]""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "SetPictureTransform")
+                assertContains(text, "SetPictureFilter")
+                assertContains(text, "filter=bilinear values=[0x10000]")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER composite applies A8 mask pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -430,6 +477,29 @@ class XRenderProtocolTest {
         put16le(body, 28, width)
         put16le(body, 30, height)
         return request(XRender.MajorOpcode, 8, body)
+    }
+
+    private fun renderSetPictureTransform(picture: Int, transform: List<Int>): ByteArray {
+        require(transform.size == 9)
+        val body = ByteArray(40)
+        put32le(body, 0, picture)
+        transform.forEachIndexed { index, value ->
+            put32le(body, 4 + index * 4, value)
+        }
+        return request(XRender.MajorOpcode, 28, body)
+    }
+
+    private fun renderSetPictureFilter(picture: Int, name: String, values: List<Int>): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val valuesOffset = (8 + nameBytes.size + 3) and -4
+        val body = ByteArray(valuesOffset + values.size * 4)
+        put32le(body, 0, picture)
+        put16le(body, 4, nameBytes.size)
+        nameBytes.copyInto(body, 8)
+        values.forEachIndexed { index, value ->
+            put32le(body, valuesOffset + index * 4, value)
+        }
+        return request(XRender.MajorOpcode, 30, body)
     }
 
     private fun renderTrapezoids(source: Int, destination: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {

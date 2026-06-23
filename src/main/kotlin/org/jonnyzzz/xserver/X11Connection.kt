@@ -256,8 +256,9 @@ internal class X11Connection(
             23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
             26 -> renderFillRectangles(body)
             27 -> renderCreateCursor(body)
-            28, 30 -> Unit
+            28 -> renderSetPictureTransform(body)
             29 -> renderQueryFilters()
+            30 -> renderSetPictureFilter(body)
             31 -> renderCreateAnimCursor(body)
             32 -> renderAddTraps(body)
             33 -> renderCreateSolidFill(body)
@@ -707,11 +708,33 @@ internal class X11Connection(
         own(id)
     }
 
+    private fun renderSetPictureTransform(body: ByteArray) {
+        if (body.size < 40) return
+        val picture = byteOrder.u32(body, 0)
+        state.updatePictureTransform(picture, (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) })
+    }
+
     private fun renderQueryFilters() {
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, 0)
         byteOrder.put32(reply, 12, 0)
         write(reply)
+    }
+
+    private fun renderSetPictureFilter(body: ByteArray) {
+        if (body.size < 8) return
+        val picture = byteOrder.u32(body, 0)
+        val filterLength = byteOrder.u16(body, 4)
+        if (body.size < 8 + filterLength) return
+        val name = body.copyOfRange(8, 8 + filterLength).decodeToString()
+        val valuesOffset = paddedLength(8 + filterLength)
+        val values = mutableListOf<Int>()
+        var offset = valuesOffset
+        while (offset + 4 <= body.size) {
+            values += byteOrder.u32(body, offset)
+            offset += 4
+        }
+        state.updatePictureFilter(picture, name, values)
     }
 
     private fun renderCreateAnimCursor(body: ByteArray) {
@@ -948,6 +971,7 @@ internal class X11Connection(
             23, 24, 25 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} glyphSet=${hex(16)} bytes=${(body.size - 24).coerceAtLeast(0)}"
             26 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} color=${u16(8)},${u16(10)},${u16(12)},${u16(14)} rects=${(body.size - 16).coerceAtLeast(0) / 8}"
             27 -> "cursor=${hex(0)} source=${hex(4)} hotspot=${u16(8)},${u16(10)}"
+            28 -> "picture=${hex(0)} transform=${(body.size - 4).coerceAtLeast(0) / 4}"
             29 -> "drawable=${hex(0)}"
             30 -> "picture=${hex(0)} filterLength=${u16(4)}"
             31 -> "cursor=${hex(0)} elements=${(body.size - 4).coerceAtLeast(0) / 8}"

@@ -79,7 +79,27 @@ internal object SvgScreenRenderer {
                 }
                 append("""]}""")
             }
-            append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"inputOperations":[""")
+            append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
+            snapshot.renderPictures.forEachIndexed { index, picture ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"clipRectangles":${picture.clipRectangles},"transform":[""")
+                picture.transformHex.forEachIndexed { transformIndex, value ->
+                    if (transformIndex > 0) append(',')
+                    append('"').append(value).append('"')
+                }
+                append("""]""")
+                if (picture.filterName != null) {
+                    append(""","filter":"${escapeJson(picture.filterName)}","filterValues":[""")
+                    picture.filterValueHex.forEachIndexed { valueIndex, value ->
+                        if (valueIndex > 0) append(',')
+                        append('"').append(value).append('"')
+                    }
+                    append(']')
+                }
+                append('}')
+            }
+            append("""],"inputOperations":[""")
             snapshot.inputOperations.forEachIndexed { index, operation ->
                 if (index > 0) append(',')
                 append('{')
