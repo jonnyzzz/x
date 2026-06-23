@@ -832,14 +832,14 @@ class XCoreDrawingProtocolTest {
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0xffff, blue = 0))
                 out.flush()
 
-                assertError(socket.getInputStream(), error = 11, opcode = 86, badValue = 0)
-                assertError(socket.getInputStream(), error = 12, opcode = 86, badValue = missingColormap)
-                assertError(socket.getInputStream(), error = 2, opcode = 86, badValue = 2)
-                assertError(socket.getInputStream(), error = 16, opcode = 86, badValue = 0)
-                assertError(socket.getInputStream(), error = 11, opcode = 87, badValue = 0)
-                assertError(socket.getInputStream(), error = 12, opcode = 87, badValue = missingColormap)
-                assertError(socket.getInputStream(), error = 2, opcode = 87, badValue = 3)
-                assertError(socket.getInputStream(), error = 16, opcode = 87, badValue = 0)
+                assertError(socket.getInputStream(), error = 11, opcode = 86, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 12, opcode = 86, badValue = missingColormap, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 86, badValue = 2, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 86, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 11, opcode = 87, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 12, opcode = 87, badValue = missingColormap, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 87, badValue = 3, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 87, badValue = 0, sequence = 8)
 
                 val green = readReply(socket.getInputStream())
                 assertEquals(0x0000_ff00, u32le(green, 16))
@@ -864,11 +864,58 @@ class XCoreDrawingProtocolTest {
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0, blue = 0xffff))
                 out.flush()
 
-                assertError(socket.getInputStream(), error = 12, opcode = 88, badValue = missingColormap)
-                assertError(socket.getInputStream(), error = 16, opcode = 88, badValue = 0)
+                assertError(socket.getInputStream(), error = 12, opcode = 88, badValue = missingColormap, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 88, badValue = 0, sequence = 3)
 
                 val blue = readReply(socket.getInputStream())
                 assertEquals(Blue, u32le(blue, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `StoreColors and StoreNamedColor reject TrueColor mutation after validation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 27
+                val out = socket.getOutputStream()
+                out.write(storeColorsRequest(X11Ids.DefaultColormap, listOf(XStoreColorItem(Red, 0xffff, 0, 0, flags = 0x07))))
+                out.write(storeColorsRequest(missingColormap, listOf(XStoreColorItem(Red, 0xffff, 0, 0, flags = 0x07))))
+                out.write(storeColorsRequest(X11Ids.DefaultColormap, listOf(XStoreColorItem(0x0100_0000, 0xffff, 0, 0, flags = 0x07))))
+                out.write(storeColorsRequest(X11Ids.DefaultColormap, listOf(XStoreColorItem(Red, 0xffff, 0, 0, flags = 0x08))))
+                out.write(request(89, 0, ByteArray(8)))
+                out.write(storeNamedColorRequest(X11Ids.DefaultColormap, Red, "red", flags = 0x07))
+                out.write(storeNamedColorRequest(missingColormap, Red, "red", flags = 0x07))
+                out.write(storeNamedColorRequest(X11Ids.DefaultColormap, 0x0100_0000, "red", flags = 0x07))
+                out.write(storeNamedColorRequest(X11Ids.DefaultColormap, Red, "definitely-not-a-color", flags = 0x07))
+                out.write(storeNamedColorRequest(X11Ids.DefaultColormap, Red, "red", flags = 0x08))
+                out.write(request(90, 0x07, ByteArray(8)))
+                out.write(request(90, 0x08, ByteArray(8)))
+                out.write(malformedStoreNamedColorRequest(X11Ids.DefaultColormap, Red, declaredNameLength = 5, actualName = "red"))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0xffff, green = 0, blue = 0))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 10, opcode = 89, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 12, opcode = 89, badValue = missingColormap, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 89, badValue = 0x0100_0000, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 89, badValue = 0x08, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 89, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 10, opcode = 90, badValue = 0, sequence = 6)
+                assertError(socket.getInputStream(), error = 12, opcode = 90, badValue = missingColormap, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = 90, badValue = 0x0100_0000, sequence = 8)
+                assertError(socket.getInputStream(), error = 15, opcode = 90, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 2, opcode = 90, badValue = 0x08, sequence = 10)
+                assertError(socket.getInputStream(), error = 16, opcode = 90, badValue = 0, sequence = 11)
+                assertError(socket.getInputStream(), error = 16, opcode = 90, badValue = 0, sequence = 12)
+                assertError(socket.getInputStream(), error = 16, opcode = 90, badValue = 0, sequence = 13)
+
+                val red = readReply(socket.getInputStream())
+                assertEquals(Red, u32le(red, 16))
             }
             server.close()
             serverThread.join(1_000)
@@ -3467,6 +3514,40 @@ class XCoreDrawingProtocolTest {
         return request(88, 0, body)
     }
 
+    private fun storeColorsRequest(colormap: Int, colors: List<XStoreColorItem>): ByteArray {
+        val body = ByteArray(4 + colors.size * 12)
+        put32le(body, 0, colormap)
+        colors.forEachIndexed { index, color ->
+            val offset = 4 + index * 12
+            put32le(body, offset, color.pixel)
+            put16le(body, offset + 4, color.red)
+            put16le(body, offset + 6, color.green)
+            put16le(body, offset + 8, color.blue)
+            body[offset + 10] = color.flags.toByte()
+        }
+        return request(89, 0, body)
+    }
+
+    private fun storeNamedColorRequest(colormap: Int, pixel: Int, name: String, flags: Int): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(12 + paddedLength(nameBytes.size))
+        put32le(body, 0, colormap)
+        put32le(body, 4, pixel)
+        put16le(body, 8, nameBytes.size)
+        nameBytes.copyInto(body, 12)
+        return request(90, flags, body)
+    }
+
+    private fun malformedStoreNamedColorRequest(colormap: Int, pixel: Int, declaredNameLength: Int, actualName: String): ByteArray {
+        val nameBytes = actualName.encodeToByteArray()
+        val body = ByteArray(12 + paddedLength(nameBytes.size))
+        put32le(body, 0, colormap)
+        put32le(body, 4, pixel)
+        put16le(body, 8, declaredNameLength)
+        nameBytes.copyInto(body, 12)
+        return request(90, 0x07, body)
+    }
+
     private fun allocNamedColorRequest(colormap: Int, name: String): ByteArray =
         namedColorRequest(opcode = 85, colormap = colormap, name = name)
 
@@ -4123,10 +4204,11 @@ class XCoreDrawingProtocolTest {
         assertEquals(visualBlue, u16le(reply, offset + 10))
     }
 
-    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int) {
+    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {
         val reply = input.readExactly(32)
         assertEquals(0, reply[0].toInt())
         assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
         assertEquals(badValue, u32le(reply, 4))
         assertEquals(opcode, reply[10].toInt() and 0xff)
     }
@@ -4204,6 +4286,14 @@ class XCoreDrawingProtocolTest {
             (bytes[offset + 3].toInt() and 0xff)
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
+
+    private data class XStoreColorItem(
+        val pixel: Int,
+        val red: Int,
+        val green: Int,
+        val blue: Int,
+        val flags: Int,
+    )
 
     private companion object {
         const val WindowId = 0x0020_0001

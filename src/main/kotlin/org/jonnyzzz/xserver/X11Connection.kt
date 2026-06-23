@@ -174,6 +174,8 @@ internal class X11Connection(
             86 -> allocColorCells(minorOpcode, body)
             87 -> allocColorPlanes(minorOpcode, body)
             88 -> freeColors(body)
+            89 -> storeColors(body)
+            90 -> storeNamedColor(minorOpcode, body)
             91 -> queryColors(body)
             92 -> lookupColor(body)
             93 -> createCursor(opcode, body)
@@ -2254,6 +2256,37 @@ internal class X11Connection(
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 88, badValue = colormap)
     }
 
+    private fun storeColors(body: ByteArray) {
+        if (body.size < 4 || (body.size - 4) % 12 != 0) return writeError(error = 16, opcode = 89, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 89, badValue = colormap)
+        var offset = 4
+        while (offset < body.size) {
+            val pixel = byteOrder.u32(body, offset)
+            if (!isValidTrueColorPixel(pixel)) return writeError(error = 2, opcode = 89, badValue = pixel)
+            val flags = body[offset + 10].toInt() and 0xff
+            if (flags and XColorFlagMask != flags) return writeError(error = 2, opcode = 89, badValue = flags)
+            offset += 12
+        }
+        if (body.size > 4) writeError(error = 10, opcode = 89, badValue = 0)
+    }
+
+    private fun storeNamedColor(flags: Int, body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = 90, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        val pixel = byteOrder.u32(body, 4)
+        val nameLength = byteOrder.u16(body, 8)
+        if (body.size != 12 + paddedLength(nameLength)) return writeError(error = 16, opcode = 90, badValue = 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 90, badValue = colormap)
+        if (!isValidTrueColorPixel(pixel)) return writeError(error = 2, opcode = 90, badValue = pixel)
+        if (flags and XColorFlagMask != flags) return writeError(error = 2, opcode = 90, badValue = flags)
+        val name = body.copyOfRange(12, 12 + nameLength).decodeToString()
+        if (namedColor(name) == null) return writeError(error = 15, opcode = 90, badValue = 0)
+        writeError(error = 10, opcode = 90, badValue = 0)
+    }
+
+    private fun isValidTrueColorPixel(pixel: Int): Boolean = pixel ushr 24 == 0
+
     private fun lookupColor(body: ByteArray) {
         val color = namedColorRequest(opcode = 92, body = body) ?: return
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -2596,6 +2629,8 @@ internal class X11Connection(
             86 -> "AllocColorCells"
             87 -> "AllocColorPlanes"
             88 -> "FreeColors"
+            89 -> "StoreColors"
+            90 -> "StoreNamedColor"
             91 -> "QueryColors"
             92 -> "LookupColor"
             93 -> "CreateCursor"
@@ -3445,6 +3480,7 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        const val XColorFlagMask = 0x07
         const val D65_X = 0.95047
         const val D65_Z = 1.08883
         const val D65_U_PRIME = 0.19783982482140777
