@@ -24,6 +24,7 @@ internal class X11State(
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
+    private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
@@ -96,8 +97,11 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putWindow(window: XWindow) {
+    fun putWindow(window: XWindow, owner: XEventSink? = null) {
         windows[window.id] = window
+        if (owner != null) {
+            windowOwners[window.id] = owner
+        }
     }
 
     @Synchronized
@@ -106,6 +110,7 @@ internal class X11State(
         if (removed.isEmpty()) return emptySet()
         for (windowId in removed) {
             windows.remove(windowId)
+            windowOwners.remove(windowId)
         }
         selectionOwners.entries.removeIf { it.value.windowId in removed }
         removeEventSelections(removed)
@@ -199,6 +204,7 @@ internal class X11State(
     fun unregisterEventSink(sink: XEventSink) {
         eventSinks.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
+        windowOwners.entries.removeIf { it.value == sink }
     }
 
     @Synchronized
@@ -263,6 +269,52 @@ internal class X11State(
     }
 
     @Synchronized
+    fun pointerWindowId(): Int? = windowAt(pointerX, pointerY)?.id
+
+    @Synchronized
+    fun sendEventInputFocusWindowId(): Int? {
+        val pointerWindowId = pointerWindowId()
+        return when (focusWindowId) {
+            0 -> null
+            1 -> pointerWindowId ?: X11Ids.RootWindow
+            else -> if (pointerWindowId != null && windowIsAncestorOrSelf(focusWindowId, pointerWindowId)) {
+                pointerWindowId
+            } else {
+                focusWindowId
+            }
+        }
+    }
+
+    @Synchronized
+    fun sendEventSinks(destination: Int, eventMask: Int, propagate: Boolean, inputFocusDestination: Boolean): List<XEventSink> {
+        if (!windows.containsKey(destination)) return emptyList()
+        if (eventMask == 0) return windowOwners[destination]?.let { listOf(it) }.orEmpty()
+        val targets = eventSelectionsForWindow(destination, eventMask)
+        if (targets.isNotEmpty() || !propagate) return targets
+
+        var remainingMask = eventMask and windows[destination]!!.doNotPropagateMask.inv()
+        if (remainingMask == 0) return emptyList()
+        var currentId = destination
+        var parentId = windows[currentId]?.parentId ?: return emptyList()
+        val visited = mutableSetOf(destination)
+        while (parentId != 0 && visited.add(parentId)) {
+            val ancestorTargets = eventSelectionsForWindow(parentId, remainingMask)
+            if (ancestorTargets.isNotEmpty()) {
+                if (inputFocusDestination && focusWindowId !in 0..1 && parentId != focusWindowId && windowIsAncestorOrSelf(parentId, focusWindowId)) {
+                    return emptyList()
+                }
+                return ancestorTargets
+            }
+            val parent = windows[parentId] ?: return emptyList()
+            remainingMask = remainingMask and parent.doNotPropagateMask.inv()
+            if (remainingMask == 0) return emptyList()
+            currentId = parentId
+            parentId = windows[currentId]?.parentId ?: return emptyList()
+        }
+        return emptyList()
+    }
+
+    @Synchronized
     fun recordInputOperation(
         kind: String,
         x: Int,
@@ -311,6 +363,7 @@ internal class X11State(
         id: Int,
         backgroundPixel: Int? = null,
         backgroundPixmapId: Int? = null,
+        doNotPropagateMask: Int? = null,
     ): XWindow? {
         val window = windows[id] ?: return null
         backgroundPixel?.let {
@@ -319,6 +372,9 @@ internal class X11State(
         }
         if (backgroundPixmapId != null) {
             window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
+        }
+        doNotPropagateMask?.let {
+            window.doNotPropagateMask = it
         }
         return window
     }
@@ -1949,6 +2005,22 @@ internal class X11State(
         }
     }
 
+    private fun eventSelectionsForWindow(windowId: Int, eventMask: Int): List<XEventSink> =
+        eventSinks.mapNotNull { (sink, selections) ->
+            val selectedMask = selections[windowId] ?: return@mapNotNull null
+            sink.takeIf { (selectedMask and eventMask) != 0 }
+        }
+
+    private fun windowIsAncestorOrSelf(ancestorId: Int, windowId: Int): Boolean {
+        var current = windows[windowId] ?: return false
+        val visited = mutableSetOf<Int>()
+        while (visited.add(current.id)) {
+            if (current.id == ancestorId) return true
+            current = windows[current.parentId] ?: return false
+        }
+        return false
+    }
+
     private fun absolutePosition(window: XWindow): Pair<Int, Int> {
         var x = window.x
         var y = window.y
@@ -2080,6 +2152,7 @@ internal data class XWindow(
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
     var backgroundPixmapId: Int? = null,
+    var doNotPropagateMask: Int = 0,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )

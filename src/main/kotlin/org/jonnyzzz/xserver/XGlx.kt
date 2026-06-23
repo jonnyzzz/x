@@ -2,7 +2,7 @@ package org.jonnyzzz.xserver
 
 internal object XGlx {
     const val MajorOpcode = 128
-    const val FirstEvent = 64
+    const val FirstEvent = 0
     const val FirstError = 128
     const val MajorVersion = 1
     const val MinorVersion = 4

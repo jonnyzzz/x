@@ -110,7 +110,7 @@ internal class X11Connection(
             22 -> setSelectionOwner(body)
             23 -> getSelectionOwner(body)
             24 -> convertSelection(body)
-            25 -> unitReplyless()
+            25 -> sendEvent(minorOpcode, body)
             26 -> grabPointer(minorOpcode, body)
             27 -> unitReplyless()
             28 -> unitReplyless()
@@ -1174,11 +1174,12 @@ internal class X11Connection(
             borderWidth = byteOrder.u16(body, 16),
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
+            doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
         )
         if (attributes.backgroundPixmapId != null) {
             System.err.println("core seq=$sequence CreateWindow window=${id.toHex()} backgroundPixmap=${attributes.backgroundPixmapId.toHex()}")
         }
-        state.putWindow(window)
+        state.putWindow(window, this)
         own(id)
         attributes.eventMask?.let { state.selectEvents(this, id, it) }
     }
@@ -1195,6 +1196,7 @@ internal class X11Connection(
                     " backgroundPixmap=${attributes.backgroundPixmapId?.toHex() ?: "none"}",
             )
         }
+        attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }
 
@@ -1429,6 +1431,31 @@ internal class X11Connection(
             selectionRequest.sink.sendSelectionRequestEvent(selectionRequest.event)
         }
     }
+
+    private fun sendEvent(propagateOpcode: Int, body: ByteArray) {
+        if (body.size != 40) return writeError(error = 16, opcode = 25, badValue = 0)
+        if (propagateOpcode !in 0..1) return writeError(error = 2, opcode = 25, badValue = propagateOpcode)
+        val destination = byteOrder.u32(body, 0)
+        val eventMask = byteOrder.u32(body, 4)
+        if ((eventMask and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 25, badValue = eventMask)
+        val event = body.copyOfRange(8, 40)
+        val eventCode = event[0].toInt() and 0x7f
+        if (!validEventCode(eventCode)) return writeError(error = 2, opcode = 25, badValue = eventCode)
+        val destinationWindow = when (destination) {
+            0 -> state.pointerWindowId() ?: return
+            1 -> state.sendEventInputFocusWindowId() ?: return
+            else -> destination
+        }
+        if (state.window(destinationWindow) == null) return writeError(error = 3, opcode = 25, badValue = destination)
+        event[0] = (event[0].toInt() or 0x80).toByte()
+        val syntheticEvent = XSyntheticEvent(event, byteOrder)
+        for (sink in state.sendEventSinks(destinationWindow, eventMask, propagateOpcode != 0, destination == 1)) {
+            runCatching { sink.sendSyntheticEvent(syntheticEvent) }
+        }
+    }
+
+    private fun validEventCode(eventCode: Int): Boolean =
+        eventCode in 2..34
 
     private fun queryPointer() {
         val reply = reply(extra = 1, payloadUnits = 0)
@@ -2478,6 +2505,147 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendSyntheticEvent(event: XSyntheticEvent) {
+        val bytes = event.bytes.copyOf()
+        if (event.sourceByteOrder != byteOrder) {
+            swapSyntheticEvent(bytes, event.sourceByteOrder, byteOrder)
+        }
+        if ((bytes[0].toInt() and 0x7f) != 11) {
+            byteOrder.put16(bytes, 2, sequence)
+        }
+        write(bytes)
+    }
+
+    private fun swapSyntheticEvent(bytes: ByteArray, source: ByteOrder, target: ByteOrder) {
+        fun word16(offset: Int) = target.put16(bytes, offset, source.u16(bytes, offset))
+        fun word32(offset: Int) = target.put32(bytes, offset, source.u32(bytes, offset))
+
+        when (bytes[0].toInt() and 0x7f) {
+            2, 3, 4, 5, 6, 7, 8 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word16(20)
+                word16(22)
+                word16(24)
+                word16(26)
+                word16(28)
+            }
+            9, 10, 15 -> word32(4)
+            12 -> {
+                word32(4)
+                word16(8)
+                word16(10)
+                word16(12)
+                word16(14)
+                word16(16)
+            }
+            13 -> {
+                word32(4)
+                word16(8)
+                word16(10)
+                word16(12)
+                word16(14)
+                word16(16)
+                word16(18)
+            }
+            14 -> {
+                word32(4)
+                word16(8)
+            }
+            16 -> {
+                word32(4)
+                word32(8)
+                word16(12)
+                word16(14)
+                word16(16)
+                word16(18)
+                word16(20)
+            }
+            21 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word16(16)
+                word16(18)
+            }
+            22 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word16(16)
+                word16(18)
+                word16(20)
+                word16(22)
+                word16(24)
+            }
+            17, 18, 19, 20, 26, 27 -> {
+                word32(4)
+                word32(8)
+            }
+            23 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word16(16)
+                word16(18)
+                word16(20)
+                word16(22)
+                word16(24)
+                word16(26)
+            }
+            24 -> {
+                word32(4)
+                word32(8)
+                word16(12)
+                word16(14)
+            }
+            25 -> {
+                word32(4)
+                word16(8)
+                word16(10)
+            }
+            28 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+            }
+            29 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+            }
+            30 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word32(20)
+                word32(24)
+            }
+            31 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word32(20)
+            }
+            32 -> {
+                word32(4)
+                word32(8)
+            }
+            33 -> {
+                word32(4)
+                word32(8)
+                when (bytes[1].toInt() and 0xff) {
+                    16 -> for (offset in 12 until 32 step 2) word16(offset)
+                    32 -> for (offset in 12 until 32 step 4) word32(offset)
+                }
+            }
+        }
+    }
+
     private fun reply(extra: Int, payloadUnits: Int): ByteArray {
         val bytes = ByteArray(32 + payloadUnits * 4)
         bytes[0] = 1
@@ -2531,6 +2699,7 @@ internal class X11Connection(
         var backgroundPixmapId: Int? = null
         var backgroundPixel: Int? = null
         var eventMask: Int? = null
+        var doNotPropagateMask: Int? = null
         for (bit in 0..14) {
             if ((mask and (1 shl bit)) == 0) continue
             if (offset + 4 > body.size) break
@@ -2539,10 +2708,11 @@ internal class X11Connection(
                 0 -> backgroundPixmapId = value
                 1 -> backgroundPixel = value
                 11 -> eventMask = value
+                12 -> doNotPropagateMask = value
             }
             offset += 4
         }
-        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask)
+        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask, doNotPropagateMask)
     }
 
     private fun validateGcValues(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
@@ -3017,6 +3187,7 @@ private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
     val eventMask: Int? = null,
+    val doNotPropagateMask: Int? = null,
 )
 
 private data class XRenderPictureAttributes(

@@ -2305,23 +2305,511 @@ class XCoreDrawingProtocolTest {
         }
     }
 
-    private fun setup(socket: Socket) {
-        socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    @Test
+    fun `SendEvent with empty mask delivers synthetic SelectionNotify to destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { requestorSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    requestorSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(requestorSocket)
+                    val requestor = WindowId + 1
+                    ownerSocket.getOutputStream().write(createWindowRequest(WindowId))
+                    ownerSocket.getOutputStream().write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    ownerSocket.getOutputStream().flush()
+                    requestorSocket.getOutputStream().write(createWindowRequest(requestor))
+                    requestorSocket.getOutputStream().flush()
+
+                    var observedOwner: ByteArray? = null
+                    var attempts = 0
+                    while (observedOwner == null && attempts < 20) {
+                        attempts += 1
+                        requestorSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                        requestorSocket.getOutputStream().flush()
+                        val reply = readReply(requestorSocket.getInputStream())
+                        if (u32le(reply, 8) == WindowId) {
+                            observedOwner = reply
+                        } else {
+                            Thread.sleep(25)
+                        }
+                    }
+                    assertEquals(WindowId, u32le(observedOwner ?: error("selection owner was not set"), 8))
+
+                    requestorSocket.getOutputStream().write(
+                        convertSelectionRequest(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                    )
+                    requestorSocket.getOutputStream().flush()
+
+                    val selectionRequest = ownerSocket.getInputStream().readExactly(32)
+                    assertEquals(30, selectionRequest[0].toInt() and 0xff)
+                    ownerSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                    ownerSocket.getOutputStream().flush()
+                    val ownerReply = readReply(ownerSocket.getInputStream())
+                    assertEquals(WindowId, u32le(ownerReply, 8))
+                    ownerSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = requestor,
+                            event = selectionNotifyEvent(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                        ),
+                    )
+                    ownerSocket.getOutputStream().flush()
+
+                    val selectionNotify = requestorSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 31, selectionNotify[0].toInt() and 0xff)
+                    assertEquals(attempts + 2, u16le(selectionNotify, 2))
+                    assertEquals(77, u32le(selectionNotify, 4))
+                    assertEquals(requestor, u32le(selectionNotify, 8))
+                    assertEquals(PrimaryAtom, u32le(selectionNotify, 12))
+                    assertEquals(AtomAtom, u32le(selectionNotify, 16))
+                    assertEquals(StringAtom, u32le(selectionNotify, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent swaps synthetic SelectionNotify fields for big endian destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket, byteOrderByte = 0x42)
+                    val requestor = WindowId + 2
+                    recipientSocket.getOutputStream().write(createWindowRequestBigEndian(requestor, width = 31, height = 17))
+                    recipientSocket.getOutputStream().write(getGeometryRequestBigEndian(requestor))
+                    recipientSocket.getOutputStream().flush()
+
+                    val geometry = readReply(recipientSocket.getInputStream(), byteOrderByte = 0x42)
+                    assertEquals(1, geometry[0].toInt())
+                    assertEquals(2, u16be(geometry, 2))
+                    assertEquals(31, u16be(geometry, 16))
+                    assertEquals(17, u16be(geometry, 18))
+
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = requestor,
+                            event = selectionNotifyEvent(requestor, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 31, event[0].toInt() and 0xff)
+                    assertEquals(2, u16be(event, 2))
+                    assertEquals(77, u32be(event, 4))
+                    assertEquals(requestor, u32be(event, 8))
+                    assertEquals(PrimaryAtom, u32be(event, 12))
+                    assertEquals(AtomAtom, u32be(event, 16))
+                    assertEquals(StringAtom, u32be(event, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent swaps synthetic CreateNotify fields for big endian destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket, byteOrderByte = 0x42)
+                    val destination = WindowId + 11
+                    val createdWindow = WindowId + 12
+                    recipientSocket.getOutputStream().write(createWindowRequestBigEndian(destination))
+                    recipientSocket.getOutputStream().write(getGeometryRequestBigEndian(destination))
+                    recipientSocket.getOutputStream().flush()
+                    assertEquals(2, u16be(readReply(recipientSocket.getInputStream(), byteOrderByte = 0x42), 2))
+
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = destination,
+                            event = createNotifyEvent(
+                                parent = destination,
+                                window = createdWindow,
+                                x = 3,
+                                y = 4,
+                                width = 31,
+                                height = 17,
+                                borderWidth = 2,
+                            ),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 16, event[0].toInt() and 0xff)
+                    assertEquals(2, u16be(event, 2))
+                    assertEquals(destination, u32be(event, 4))
+                    assertEquals(createdWindow, u32be(event, 8))
+                    assertEquals(3, u16be(event, 12))
+                    assertEquals(4, u16be(event, 14))
+                    assertEquals(31, u16be(event, 16))
+                    assertEquals(17, u16be(event, 18))
+                    assertEquals(2, u16be(event, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent swaps synthetic ResizeRequest fields for big endian destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket, byteOrderByte = 0x42)
+                    val destination = WindowId + 13
+                    recipientSocket.getOutputStream().write(createWindowRequestBigEndian(destination))
+                    recipientSocket.getOutputStream().write(getGeometryRequestBigEndian(destination))
+                    recipientSocket.getOutputStream().flush()
+                    assertEquals(2, u16be(readReply(recipientSocket.getInputStream(), byteOrderByte = 0x42), 2))
+
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = destination,
+                            event = resizeRequestEvent(window = destination, width = 31, height = 17),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 25, event[0].toInt() and 0xff)
+                    assertEquals(2, u16be(event, 2))
+                    assertEquals(destination, u32be(event, 4))
+                    assertEquals(31, u16be(event, 8))
+                    assertEquals(17, u16be(event, 10))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent routes by destination even when SelectionNotify requestor differs`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { destinationSocket ->
+                    Socket("127.0.0.1", server.localPort).use { payloadSocket ->
+                        senderSocket.soTimeout = 2_000
+                        destinationSocket.soTimeout = 2_000
+                        payloadSocket.soTimeout = 2_000
+                        setup(senderSocket)
+                        setup(destinationSocket)
+                        setup(payloadSocket)
+                        val destination = WindowId + 3
+                        val payloadRequestor = WindowId + 4
+                        destinationSocket.getOutputStream().write(createWindowRequest(destination))
+                        destinationSocket.getOutputStream().write(getGeometryRequest(destination))
+                        destinationSocket.getOutputStream().flush()
+                        val destinationGeometry = readReply(destinationSocket.getInputStream())
+                        assertEquals(2, u16le(destinationGeometry, 2))
+                        payloadSocket.getOutputStream().write(createWindowRequest(payloadRequestor))
+                        payloadSocket.getOutputStream().write(getGeometryRequest(payloadRequestor))
+                        payloadSocket.getOutputStream().flush()
+                        val payloadGeometry = readReply(payloadSocket.getInputStream())
+                        assertEquals(2, u16le(payloadGeometry, 2))
+
+                        senderSocket.getOutputStream().write(
+                            sendEventRequest(
+                                destination = destination,
+                                event = selectionNotifyEvent(payloadRequestor, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                            ),
+                        )
+                        senderSocket.getOutputStream().flush()
+
+                        val event = destinationSocket.getInputStream().readExactly(32)
+                        assertEquals(0x80 or 31, event[0].toInt() and 0xff)
+                        assertEquals(2, u16le(event, 2))
+                        assertEquals(77, u32le(event, 4))
+                        assertEquals(payloadRequestor, u32le(event, 8))
+                        assertEquals(PrimaryAtom, u32le(event, 12))
+                        assertEquals(AtomAtom, u32le(event, 16))
+                        assertEquals(StringAtom, u32le(event, 20))
+
+                        payloadSocket.soTimeout = 250
+                        assertFailsWith<SocketTimeoutException> {
+                            payloadSocket.getInputStream().readExactly(32)
+                        }
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent preserves KeymapNotify bytes without sequence stamping`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket)
+                    val destination = WindowId + 5
+                    recipientSocket.getOutputStream().write(createWindowRequest(destination))
+                    recipientSocket.getOutputStream().write(getGeometryRequest(destination))
+                    recipientSocket.getOutputStream().flush()
+                    val geometry = readReply(recipientSocket.getInputStream())
+                    assertEquals(2, u16le(geometry, 2))
+
+                    val keymap = ByteArray(32)
+                    keymap[0] = 11
+                    for (index in 1 until keymap.size) {
+                        keymap[index] = (0xa0 + index).toByte()
+                    }
+                    senderSocket.getOutputStream().write(sendEventRequest(destination, keymap))
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 11, event[0].toInt() and 0xff)
+                    for (index in 1 until keymap.size) {
+                        assertEquals(keymap[index], event[index], "keymap byte $index")
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent propagation stops at destination do not propagate mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val ancestor = WindowId + 6
+                val intermediate = WindowId + 7
+                val destination = WindowId + 8
+                val buttonPressMask = 1 shl 2
+                socket.getOutputStream().write(createWindowRequest(ancestor, eventMask = buttonPressMask))
+                socket.getOutputStream().write(createWindowRequest(intermediate, parent = ancestor))
+                socket.getOutputStream().write(createWindowRequest(destination, parent = intermediate, doNotPropagateMask = buttonPressMask))
+                socket.getOutputStream().write(
+                    sendEventRequest(
+                        destination = destination,
+                        event = ByteArray(32).also { it[0] = 4 },
+                        eventMask = buttonPressMask,
+                        propagate = true,
+                    ),
+                )
+                socket.getOutputStream().flush()
+
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    socket.getInputStream().readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent InputFocus propagation may deliver to focus window itself`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val focus = WindowId + 9
+                val destination = WindowId + 10
+                val buttonPressMask = 1 shl 2
+                socket.getOutputStream().write(createWindowRequest(focus, eventMask = buttonPressMask))
+                socket.getOutputStream().write(createWindowRequest(destination, parent = focus))
+                socket.getOutputStream().write(mapWindowRequest(focus))
+                socket.getOutputStream().write(mapWindowRequest(destination))
+                socket.getOutputStream().write(setInputFocusRequest(focus, revertTo = 2))
+                socket.getOutputStream().write(
+                    sendEventRequest(
+                        destination = 1,
+                        event = ByteArray(32).also { it[0] = 4 },
+                        eventMask = buttonPressMask,
+                        propagate = true,
+                    ),
+                )
+                socket.getOutputStream().flush()
+
+                assertEquals(19, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
+                assertEquals(12, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
+                assertEquals(19, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
+                assertEquals(12, socket.getInputStream().readExactly(32)[0].toInt() and 0xff)
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(0x80 or 4, event[0].toInt() and 0xff)
+                assertEquals(6, u16le(event, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent to InputFocus resolves PointerRoot focus to pointer window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                socket.getOutputStream().write(createWindowRequest(WindowId))
+                socket.getOutputStream().write(mapWindowRequest(WindowId))
+                socket.getOutputStream().write(setInputFocusRequest(1, revertTo = 2))
+                socket.getOutputStream().write(
+                    sendEventRequest(
+                        destination = 1,
+                        event = selectionNotifyEvent(WindowId, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                    ),
+                )
+                socket.getOutputStream().flush()
+
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt() and 0xff)
+                val expose = socket.getInputStream().readExactly(32)
+                assertEquals(12, expose[0].toInt() and 0xff)
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(0x80 or 31, event[0].toInt() and 0xff)
+                assertEquals(4, u16le(event, 2))
+                assertEquals(77, u32le(event, 4))
+                assertEquals(WindowId, u32le(event, 8))
+                assertEquals(PrimaryAtom, u32le(event, 12))
+                assertEquals(AtomAtom, u32le(event, 16))
+                assertEquals(StringAtom, u32le(event, 20))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent rejects invalid event code`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val invalidEvent = ByteArray(32)
+                invalidEvent[0] = 1
+                socket.getOutputStream().write(createWindowRequest(WindowId))
+                socket.getOutputStream().write(sendEventRequest(WindowId, invalidEvent))
+                socket.getOutputStream().flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(1, u32le(error, 4))
+                assertEquals(25, error[10].toInt() and 0xff)
+
+                val extensionEvent = ByteArray(32)
+                extensionEvent[0] = 64
+                socket.getOutputStream().write(sendEventRequest(WindowId, extensionEvent))
+                socket.getOutputStream().flush()
+                val extensionError = socket.getInputStream().readExactly(32)
+                assertEquals(0, extensionError[0].toInt())
+                assertEquals(2, extensionError[1].toInt() and 0xff)
+                assertEquals(64, u32le(extensionError, 4))
+                assertEquals(25, extensionError[10].toInt() and 0xff)
+
+                socket.getOutputStream().write(
+                    sendEventRequest(
+                        destination = WindowId,
+                        event = selectionNotifyEvent(WindowId, PrimaryAtom, AtomAtom, StringAtom, time = 77),
+                        eventMask = 0xfe00_0000.toInt(),
+                    ),
+                )
+                socket.getOutputStream().flush()
+                val maskError = socket.getInputStream().readExactly(32)
+                assertEquals(0, maskError[0].toInt())
+                assertEquals(2, maskError[1].toInt() and 0xff)
+                assertEquals(0xfe00_0000.toInt(), u32le(maskError, 4))
+                assertEquals(25, maskError[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    private fun setup(socket: Socket, byteOrderByte: Int = 0x6c) {
+        val setup = ByteArray(12)
+        setup[0] = byteOrderByte.toByte()
+        when (byteOrderByte) {
+            0x42 -> put16be(setup, 2, 11)
+            else -> put16le(setup, 2, 11)
+        }
+        socket.getOutputStream().write(setup)
         socket.getOutputStream().flush()
         val prefix = socket.getInputStream().readExactly(8)
         assertEquals(1, prefix[0].toInt())
-        socket.getInputStream().readExactly(u16le(prefix, 6) * 4)
+        val payloadUnits = if (byteOrderByte == 0x42) u16be(prefix, 6) else u16le(prefix, 6)
+        socket.getInputStream().readExactly(payloadUnits * 4)
     }
 
-    private fun createWindowRequest(id: Int, width: Int = 40, height: Int = 30, parent: Int = X11Ids.RootWindow): ByteArray {
-        val body = ByteArray(28)
+    private fun createWindowRequest(
+        id: Int,
+        width: Int = 40,
+        height: Int = 30,
+        parent: Int = X11Ids.RootWindow,
+        eventMask: Int? = null,
+        doNotPropagateMask: Int? = null,
+    ): ByteArray {
+        val extraValues = listOfNotNull(eventMask, doNotPropagateMask)
+        val body = ByteArray(28 + extraValues.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, parent)
         put16le(body, 12, width)
         put16le(body, 14, height)
         put16le(body, 18, 1)
         put32le(body, 20, X11Ids.RootVisual)
+        var valueMask = 0
+        var offset = 28
+        if (eventMask != null) {
+            valueMask = valueMask or (1 shl 11)
+            put32le(body, offset, eventMask)
+            offset += 4
+        }
+        if (doNotPropagateMask != null) {
+            valueMask = valueMask or (1 shl 12)
+            put32le(body, offset, doNotPropagateMask)
+        }
+        put32le(body, 24, valueMask)
         return request(1, 24, body)
+    }
+
+    private fun createWindowRequestBigEndian(
+        id: Int,
+        width: Int = 40,
+        height: Int = 30,
+        parent: Int = X11Ids.RootWindow,
+    ): ByteArray {
+        val body = ByteArray(28)
+        put32be(body, 0, id)
+        put32be(body, 4, parent)
+        put16be(body, 12, width)
+        put16be(body, 14, height)
+        put16be(body, 18, 1)
+        put32be(body, 20, X11Ids.RootVisual)
+        return requestBigEndian(1, 24, body)
     }
 
     private fun createPixmapRequest(id: Int, width: Int, height: Int, depth: Int = 24, drawable: Int = WindowId): ByteArray {
@@ -2337,6 +2825,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(14, 0, body)
+    }
+
+    private fun getGeometryRequestBigEndian(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32be(body, 0, id)
+        return requestBigEndian(14, 0, body)
     }
 
     private fun freePixmapRequest(id: Int): ByteArray {
@@ -2439,6 +2933,47 @@ class XCoreDrawingProtocolTest {
         put32le(body, 12, property)
         put32le(body, 16, time)
         return request(24, 0, body)
+    }
+
+    private fun sendEventRequest(destination: Int, event: ByteArray, eventMask: Int = 0, propagate: Boolean = false): ByteArray {
+        val body = ByteArray(40)
+        put32le(body, 0, destination)
+        put32le(body, 4, eventMask)
+        event.copyInto(body, 8, endIndex = 32)
+        return request(25, if (propagate) 1 else 0, body)
+    }
+
+    private fun selectionNotifyEvent(requestor: Int, selection: Int, target: Int, property: Int, time: Int): ByteArray {
+        val event = ByteArray(32)
+        event[0] = 31
+        put32le(event, 4, time)
+        put32le(event, 8, requestor)
+        put32le(event, 12, selection)
+        put32le(event, 16, target)
+        put32le(event, 20, property)
+        return event
+    }
+
+    private fun createNotifyEvent(parent: Int, window: Int, x: Int, y: Int, width: Int, height: Int, borderWidth: Int): ByteArray {
+        val event = ByteArray(32)
+        event[0] = 16
+        put32le(event, 4, parent)
+        put32le(event, 8, window)
+        put16le(event, 12, x)
+        put16le(event, 14, y)
+        put16le(event, 16, width)
+        put16le(event, 18, height)
+        put16le(event, 20, borderWidth)
+        return event
+    }
+
+    private fun resizeRequestEvent(window: Int, width: Int, height: Int): ByteArray {
+        val event = ByteArray(32)
+        event[0] = 25
+        put32le(event, 4, window)
+        put16le(event, 8, width)
+        put16le(event, 10, height)
+        return event
     }
 
     private fun queryPointerRequest(): ByteArray =
@@ -2922,9 +3457,18 @@ class XCoreDrawingProtocolTest {
         return bytes
     }
 
-    private fun readReply(input: InputStream): ByteArray {
+    private fun requestBigEndian(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
+        val bytes = ByteArray(4 + body.size)
+        bytes[0] = opcode.toByte()
+        bytes[1] = minorOpcode.toByte()
+        put16be(bytes, 2, bytes.size / 4)
+        body.copyInto(bytes, 4)
+        return bytes
+    }
+
+    private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
-        val payloadUnits = u32le(header, 4)
+        val payloadUnits = if (byteOrderByte == 0x42) u32be(header, 4) else u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
     }
 
@@ -2980,6 +3524,18 @@ class XCoreDrawingProtocolTest {
         bytes[offset + 3] = (value ushr 24).toByte()
     }
 
+    private fun put16be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 8).toByte()
+        bytes[offset + 1] = value.toByte()
+    }
+
+    private fun put32be(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = (value ushr 24).toByte()
+        bytes[offset + 1] = (value ushr 16).toByte()
+        bytes[offset + 2] = (value ushr 8).toByte()
+        bytes[offset + 3] = value.toByte()
+    }
+
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
 
@@ -2988,6 +3544,15 @@ class XCoreDrawingProtocolTest {
             ((bytes[offset + 1].toInt() and 0xff) shl 8) or
             ((bytes[offset + 2].toInt() and 0xff) shl 16) or
             ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private fun u16be(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
+
+    private fun u32be(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 24) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+            (bytes[offset + 3].toInt() and 0xff)
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 

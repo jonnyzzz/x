@@ -2,7 +2,7 @@ package org.jonnyzzz.xserver
 
 internal object XRender {
     const val MajorOpcode = 130
-    const val FirstEvent = 96
+    const val FirstEvent = 0
     const val FirstError = 160
     const val MajorVersion = 0
     const val MinorVersion = 11

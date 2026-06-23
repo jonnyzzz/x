@@ -70,6 +70,7 @@ data class XInputResult(
 internal interface XEventSink {
     fun sendPointerEvent(event: XPointerEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
+    fun sendSyntheticEvent(event: XSyntheticEvent)
 }
 
 internal data class XPointerEvent(
@@ -109,7 +110,13 @@ internal data class XSelectionRequestDispatch(
     val event: XSelectionRequestEvent,
 )
 
+internal data class XSyntheticEvent(
+    val bytes: ByteArray,
+    val sourceByteOrder: ByteOrder,
+)
+
 internal object XEventMasks {
+    const val ValidCoreMask = 0x01ff_ffff
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3
     const val PointerMotion = 1 shl 6
