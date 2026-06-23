@@ -2721,6 +2721,46 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetModifierMapping updates GetModifierMapping and validates failures`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getModifierMappingRequest())
+                out.write(setModifierMappingRequest(1, 50, 66, 37, 64, 77, 0, 133, 92))
+                out.write(getModifierMappingRequest())
+                out.write(setModifierMappingRequest(2, 50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0))
+                out.write(getModifierMappingRequest())
+                out.write(setModifierMappingRequest(1, 7, 0, 37, 64, 77, 0, 133, 92))
+                out.write(request(118, 1, ByteArray(4)))
+                out.write(request(118, 1, ByteArray(12)))
+                out.write(request(119, 0, ByteArray(4)))
+                out.write(getModifierMappingRequest())
+                out.flush()
+
+                assertModifierMapping(readReply(socket.getInputStream()), sequence = 1, keycodesPerModifier = 0)
+                assertMappingStatus(readReply(socket.getInputStream()), sequence = 2, status = 0)
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2, request = 0)
+                assertModifierMapping(readReply(socket.getInputStream()), 3, 1, 50, 66, 37, 64, 77, 0, 133, 92)
+                assertMappingStatus(readReply(socket.getInputStream()), sequence = 4, status = 0)
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 4, request = 0)
+                assertModifierMapping(readReply(socket.getInputStream()), 5, 2, 50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+
+                assertError(socket.getInputStream(), error = 2, opcode = 118, badValue = 7, sequence = 6)
+                assertError(socket.getInputStream(), error = 16, opcode = 118, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 118, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 119, badValue = 0, sequence = 9)
+
+                assertModifierMapping(readReply(socket.getInputStream()), 10, 2, 50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangePointerControl updates selected fields and validates booleans and values`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3913,6 +3953,16 @@ class XCoreDrawingProtocolTest {
     private fun getPointerMappingRequest(): ByteArray =
         request(117, 0, ByteArray(0))
 
+    private fun setModifierMappingRequest(keycodesPerModifier: Int, vararg keycodes: Int): ByteArray {
+        assertEquals(8 * keycodesPerModifier, keycodes.size)
+        val body = ByteArray(paddedLength(keycodes.size))
+        keycodes.forEachIndexed { index, value -> body[index] = value.toByte() }
+        return request(118, keycodesPerModifier, body)
+    }
+
+    private fun getModifierMappingRequest(): ByteArray =
+        request(119, 0, ByteArray(0))
+
     private fun changePointerControlRequest(
         numerator: Int,
         denominator: Int,
@@ -4560,6 +4610,20 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 32 + mapping.size, 32 + payloadBytes)
     }
 
+    private fun assertModifierMapping(reply: ByteArray, sequence: Int, keycodesPerModifier: Int, vararg keycodes: Int) {
+        assertEquals(8 * keycodesPerModifier, keycodes.size)
+        assertEquals(1, reply[0].toInt())
+        assertEquals(keycodesPerModifier, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        val payloadBytes = paddedLength(keycodes.size)
+        assertEquals(payloadBytes / 4, u32le(reply, 4))
+        assertZeroBytes(reply, 8, 32)
+        keycodes.forEachIndexed { index, value ->
+            assertEquals(value, reply[32 + index].toInt() and 0xff)
+        }
+        assertZeroBytes(reply, 32 + keycodes.size, 32 + payloadBytes)
+    }
+
     private fun assertMappingStatus(reply: ByteArray, sequence: Int, status: Int) {
         assertEquals(1, reply[0].toInt())
         assertEquals(status, reply[1].toInt() and 0xff)
@@ -4568,11 +4632,11 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 8, 32)
     }
 
-    private fun assertMappingNotify(event: ByteArray, sequence: Int) {
+    private fun assertMappingNotify(event: ByteArray, sequence: Int, request: Int = 2) {
         assertEquals(34, event[0].toInt() and 0xff)
         assertEquals(0, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
-        assertEquals(2, event[4].toInt() and 0xff)
+        assertEquals(request, event[4].toInt() and 0xff)
         assertEquals(0, event[5].toInt() and 0xff)
         assertEquals(0, event[6].toInt() and 0xff)
         assertZeroBytes(event, 7, 32)

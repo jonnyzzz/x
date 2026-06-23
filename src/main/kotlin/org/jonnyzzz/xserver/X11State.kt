@@ -49,6 +49,7 @@ internal class X11State(
     private var screenSaver = XScreenSaverSettings()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
+    private var modifierMapping = XModifierMapping.Default
 
     val extensions = listOf(
         XExtension(
@@ -247,6 +248,14 @@ internal class X11State(
     @Synchronized
     fun pointerLogicalButton(physicalButton: Int): Int =
         pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
+
+    @Synchronized
+    fun modifierMapping(): List<Int> = modifierMapping.toList()
+
+    @Synchronized
+    fun setModifierMapping(mapping: List<Int>) {
+        modifierMapping = mapping.toList()
+    }
 
     @Synchronized
     fun registerEventSink(sink: XEventSink) {
@@ -2257,6 +2266,15 @@ internal data class XPointerControlSettings(
 
 internal object XPointerMapping {
     val Default = listOf(1, 2, 3)
+}
+
+internal object XModifierMapping {
+    val Default = emptyList<Int>()
+}
+
+internal object XKeyboard {
+    const val MinKeycode = 8
+    const val MaxKeycode = 255
 }
 
 internal data class XWindow(

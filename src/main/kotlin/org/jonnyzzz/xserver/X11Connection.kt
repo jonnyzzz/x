@@ -196,8 +196,8 @@ internal class X11Connection(
             112 -> unitReplyless()
             116 -> setPointerMapping(minorOpcode, body)
             117 -> getPointerMapping(body)
-            118 -> getModifierMapping()
-            119 -> getModifierMapping()
+            118 -> setModifierMapping(minorOpcode, body)
+            119 -> getModifierMapping(body)
             127 -> unitReplyless()
             else -> unsupportedRequest(opcode, minorOpcode, requestName(opcode, minorOpcode))
         }
@@ -2813,8 +2813,26 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun getModifierMapping() {
+    private fun setModifierMapping(keycodesPerModifier: Int, body: ByteArray) {
+        val keycodeCount = 8 * keycodesPerModifier
+        if (body.size != paddedLength(keycodeCount)) return writeError(error = 16, opcode = 118, badValue = 0)
+        val keycodes = body.take(keycodeCount).map { it.toInt() and 0xff }
+        val invalidKeycode = keycodes.firstOrNull { it != 0 && it !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode }
+        if (invalidKeycode != null) return writeError(error = 2, opcode = 118, badValue = invalidKeycode)
+        state.setModifierMapping(keycodes)
         val reply = reply(extra = 0, payloadUnits = 0)
+        write(reply)
+        val event = XMappingNotifyEvent(request = 0)
+        for (sink in state.mappingNotifySinks()) {
+            runCatching { sink.sendMappingNotifyEvent(event) }
+        }
+    }
+
+    private fun getModifierMapping(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 119, badValue = 0)
+        val map = state.modifierMapping().map { it.toByte() }.toByteArray()
+        val reply = reply(extra = map.size / 8, payloadUnits = paddedLength(map.size) / 4)
+        map.copyInto(reply, 32)
         write(reply)
     }
 
