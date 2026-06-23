@@ -2943,6 +2943,71 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Access control hosts round trip through ChangeHosts ListHosts and SetAccessControl`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val ipv4 = AccessHost(0, listOf(127, 0, 0, 1))
+                val serverInterpreted = AccessHost(5, "localuser\u0000jonny".encodeToByteArray().map { it.toInt() and 0xff })
+                val ipv6 = AccessHost(6, listOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1))
+
+                out.write(listHostsRequest())
+                out.write(setAccessControlRequest(1))
+                out.write(listHostsRequest())
+                out.write(changeHostsRequest(0, ipv4))
+                out.write(changeHostsRequest(0, serverInterpreted))
+                out.write(changeHostsRequest(0, ipv6))
+                out.write(listHostsRequest())
+                out.write(changeHostsRequest(1, ipv4))
+                out.write(listHostsRequest())
+                out.flush()
+
+                assertListHosts(readReply(socket.getInputStream()), sequence = 1, enabled = false)
+                assertListHosts(readReply(socket.getInputStream()), sequence = 3, enabled = true)
+                assertListHosts(readReply(socket.getInputStream()), sequence = 7, enabled = true, ipv4, serverInterpreted, ipv6)
+                assertListHosts(readReply(socket.getInputStream()), sequence = 9, enabled = true, serverInterpreted, ipv6)
+
+                assertSetupFailure(server.localPort)
+
+                out.write(changeHostsRequest(0, ipv4))
+                out.flush()
+                assertSetupSuccess(server.localPort)
+
+                out.write(setAccessControlRequest(0))
+                out.write(listHostsRequest())
+                out.write(setAccessControlRequest(2))
+                out.write(request(111, 0, ByteArray(4)))
+                out.write(request(110, 0, ByteArray(4)))
+                out.write(changeHostsBadLengthRequest())
+                out.write(changeHostsRequest(2, ipv4))
+                out.write(changeHostsRequest(0, AccessHost(4, listOf(1, 2, 3, 4))))
+                out.write(changeHostsRequest(0, AccessHost(0, listOf(127, 0, 1))))
+                out.write(changeHostsRequest(0, AccessHost(5, "localuser".encodeToByteArray().map { it.toInt() and 0xff })))
+                out.write(listHostsRequest())
+                out.flush()
+
+                assertListHosts(readReply(socket.getInputStream()), sequence = 12, enabled = false, serverInterpreted, ipv6, ipv4)
+
+                assertError(socket.getInputStream(), error = 2, opcode = 111, badValue = 2, sequence = 13)
+                assertError(socket.getInputStream(), error = 16, opcode = 111, badValue = 0, sequence = 14)
+                assertError(socket.getInputStream(), error = 16, opcode = 110, badValue = 0, sequence = 15)
+                assertError(socket.getInputStream(), error = 16, opcode = 109, badValue = 0, sequence = 16)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 2, sequence = 17)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 4, sequence = 18)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 3, sequence = 19)
+                assertError(socket.getInputStream(), error = 2, opcode = 109, badValue = 5, sequence = 20)
+
+                assertListHosts(readReply(socket.getInputStream()), sequence = 21, enabled = false, serverInterpreted, ipv6, ipv4)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetCloseDownMode validates mode and length and preserves connection`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3724,6 +3789,34 @@ class XCoreDrawingProtocolTest {
         socket.getInputStream().readExactly(payloadUnits * 4)
     }
 
+    private fun assertSetupSuccess(port: Int) {
+        Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 2_000
+            setup(socket)
+        }
+    }
+
+    private fun assertSetupFailure(port: Int) {
+        Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 2_000
+            val setup = ByteArray(12)
+            setup[0] = 0x6c
+            put16le(setup, 2, 11)
+            socket.getOutputStream().write(setup)
+            socket.getOutputStream().flush()
+
+            val prefix = socket.getInputStream().readExactly(8)
+            assertEquals(0, prefix[0].toInt())
+            val reasonLength = prefix[1].toInt() and 0xff
+            assertEquals(11, u16le(prefix, 2))
+            assertEquals(0, u16le(prefix, 4))
+            val payloadUnits = u16le(prefix, 6)
+            val reason = socket.getInputStream().readExactly(payloadUnits * 4)
+            assertEquals("Access denied", reason.copyOfRange(0, reasonLength).decodeToString())
+            assertZeroBytes(reason, reasonLength, reason.size)
+        }
+    }
+
     private fun createWindowRequest(
         id: Int,
         width: Int = 40,
@@ -4030,6 +4123,26 @@ class XCoreDrawingProtocolTest {
 
     private fun setCloseDownModeRequest(mode: Int): ByteArray =
         request(112, mode, ByteArray(0))
+
+    private fun setAccessControlRequest(mode: Int): ByteArray =
+        request(111, mode, ByteArray(0))
+
+    private fun listHostsRequest(): ByteArray =
+        request(110, 0, ByteArray(0))
+
+    private fun changeHostsRequest(mode: Int, host: AccessHost): ByteArray {
+        val body = ByteArray(4 + paddedLength(host.address.size))
+        body[0] = host.family.toByte()
+        put16le(body, 2, host.address.size)
+        host.address.forEachIndexed { index, value -> body[4 + index] = value.toByte() }
+        return request(109, mode, body)
+    }
+
+    private fun changeHostsBadLengthRequest(): ByteArray {
+        val body = ByteArray(4)
+        put16le(body, 2, 5)
+        return request(109, 0, body)
+    }
 
     private fun bellRequest(percent: Int): ByteArray =
         request(104, percent and 0xff, ByteArray(0))
@@ -4743,6 +4856,29 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 32 + keycodes.size, 32 + payloadBytes)
     }
 
+    private fun assertListHosts(reply: ByteArray, sequence: Int, enabled: Boolean, vararg hosts: AccessHost) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(if (enabled) 1 else 0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        val payloadBytes = hosts.sumOf { 4 + paddedLength(it.address.size) }
+        assertEquals(payloadBytes / 4, u32le(reply, 4))
+        assertEquals(hosts.size, u16le(reply, 8))
+        assertZeroBytes(reply, 10, 32)
+        var offset = 32
+        for (host in hosts) {
+            assertEquals(host.family, reply[offset].toInt() and 0xff)
+            assertEquals(0, reply[offset + 1].toInt() and 0xff)
+            assertEquals(host.address.size, u16le(reply, offset + 2))
+            host.address.forEachIndexed { index, value ->
+                assertEquals(value, reply[offset + 4 + index].toInt() and 0xff)
+            }
+            val nextOffset = offset + 4 + paddedLength(host.address.size)
+            assertZeroBytes(reply, offset + 4 + host.address.size, nextOffset)
+            offset = nextOffset
+        }
+        assertEquals(32 + payloadBytes, reply.size)
+    }
+
     private fun assertMappingStatus(reply: ByteArray, sequence: Int, status: Int) {
         assertEquals(1, reply[0].toInt())
         assertEquals(status, reply[1].toInt() and 0xff)
@@ -4864,6 +5000,11 @@ class XCoreDrawingProtocolTest {
         val green: Int,
         val blue: Int,
         val flags: Int,
+    )
+
+    private data class AccessHost(
+        val family: Int,
+        val address: List<Int>,
     )
 
     private companion object {

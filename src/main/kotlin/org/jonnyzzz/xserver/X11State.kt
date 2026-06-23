@@ -50,6 +50,8 @@ internal class X11State(
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
     private var modifierMapping = XModifierMapping.Default
+    private var accessControlEnabled = false
+    private val accessHosts = linkedSetOf<XAccessHost>()
 
     val extensions = listOf(
         XExtension(
@@ -255,6 +257,42 @@ internal class X11State(
     @Synchronized
     fun setModifierMapping(mapping: List<Int>) {
         modifierMapping = mapping.toList()
+    }
+
+    @Synchronized
+    fun accessControlEnabled(): Boolean = accessControlEnabled
+
+    @Synchronized
+    fun setAccessControlEnabled(enabled: Boolean) {
+        accessControlEnabled = enabled
+    }
+
+    @Synchronized
+    fun accessHosts(): List<XAccessHost> = accessHosts.toList()
+
+    @Synchronized
+    fun insertAccessHost(host: XAccessHost) {
+        accessHosts += host
+    }
+
+    @Synchronized
+    fun deleteAccessHost(host: XAccessHost) {
+        accessHosts -= host
+    }
+
+    @Synchronized
+    fun acceptsHostAddress(address: ByteArray): Boolean {
+        if (!accessControlEnabled) return true
+        val family = when (address.size) {
+            4 -> XAccessHost.FamilyInternet
+            16 -> XAccessHost.FamilyInternetV6
+            else -> return false
+        }
+        val host = XAccessHost(
+            family = family,
+            address = address.map { it.toInt() and 0xff },
+        )
+        return host in accessHosts
     }
 
     @Synchronized
@@ -569,6 +607,10 @@ internal class X11State(
                     filterValues = picture.filterValues,
                 )
             },
+            accessControl = XAccessControlSnapshot(
+                enabled = accessControlEnabled,
+                hosts = accessHosts.toList(),
+            ),
             requestCounts = requestCounts.toList().map { XRequestCount(it.first, it.second) },
             extensionQueries = extensionQueries.toList(),
             unsupportedRequests = unsupportedRequests.toList(),
@@ -2277,6 +2319,19 @@ internal object XKeyboard {
     const val MaxKeycode = 255
 }
 
+internal data class XAccessHost(
+    val family: Int,
+    val address: List<Int>,
+) {
+    companion object {
+        const val FamilyInternet = 0
+        const val FamilyDECnet = 1
+        const val FamilyChaos = 2
+        const val FamilyServerInterpreted = 5
+        const val FamilyInternetV6 = 6
+    }
+}
+
 internal data class XWindow(
     val id: Int,
     var parentId: Int,
@@ -2586,9 +2641,15 @@ internal data class XScreenSnapshot(
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
     val renderPictures: List<XRenderPictureSnapshot>,
+    val accessControl: XAccessControlSnapshot,
     val requestCounts: List<XRequestCount>,
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
+)
+
+internal data class XAccessControlSnapshot(
+    val enabled: Boolean,
+    val hosts: List<XAccessHost>,
 )
 
 internal data class XRequestCount(

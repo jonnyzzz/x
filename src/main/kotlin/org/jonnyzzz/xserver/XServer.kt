@@ -55,7 +55,7 @@ class XServer(private val options: ServerOptions) : Closeable {
                 if (read >= 3 && prefix.isHttpMethodPrefix()) {
                     HttpScreenConnection(input, output, state, this.input).run()
                 } else {
-                    X11Connection(input, output, state).run()
+                    X11Connection(input, output, state, socket.inetAddress.address).run()
                 }
             }
         } catch (_: SocketException) {

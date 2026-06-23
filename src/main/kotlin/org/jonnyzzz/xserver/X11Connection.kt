@@ -13,6 +13,7 @@ internal class X11Connection(
     private val input: InputStream,
     private val output: OutputStream,
     private val state: X11State,
+    private val remoteAddress: ByteArray? = null,
 ) : XEventSink {
     private lateinit var byteOrder: ByteOrder
     private var sequence = 0
@@ -34,6 +35,19 @@ internal class X11Connection(
             val authDataPad = paddedLength(authDataLength)
             if (authNamePad > 0) input.readExactly(authNamePad)
             if (authDataPad > 0) input.readExactly(authDataPad)
+
+            val address = remoteAddress
+            if (address != null && !state.acceptsHostAddress(address)) {
+                write(
+                    SetupReply.failure(
+                        byteOrder = byteOrder,
+                        clientMajor = major,
+                        clientMinor = minor,
+                        reason = "Access denied",
+                    ),
+                )
+                return
+            }
 
             val reply = SetupReply.success(
                 byteOrder = byteOrder,
@@ -195,8 +209,11 @@ internal class X11Connection(
             106 -> getPointerControl(body)
             107 -> setScreenSaver(body)
             108 -> getScreenSaver()
-            115 -> forceScreenSaver(minorOpcode, body)
+            109 -> changeHosts(minorOpcode, body)
+            110 -> listHosts(body)
+            111 -> setAccessControl(minorOpcode, body)
             112 -> setCloseDownMode(minorOpcode, body)
+            115 -> forceScreenSaver(minorOpcode, body)
             116 -> setPointerMapping(minorOpcode, body)
             117 -> getPointerMapping(body)
             118 -> setModifierMapping(minorOpcode, body)
@@ -2782,6 +2799,51 @@ internal class X11Connection(
         state.setScreenSaver(timeout, interval, preferBlanking, allowExposures)
     }
 
+    private fun changeHosts(mode: Int, body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 109, badValue = 0)
+        if (mode !in 0..1) return writeError(error = 2, opcode = 109, badValue = mode)
+        val family = body[0].toInt() and 0xff
+        val addressLength = byteOrder.u16(body, 2)
+        if (body.size != 4 + paddedLength(addressLength)) {
+            return writeError(error = 16, opcode = 109, badValue = 0)
+        }
+        val address = body.copyOfRange(4, 4 + addressLength).map { it.toInt() and 0xff }
+        val invalidValue = invalidHostValue(family, address)
+        if (invalidValue != null) return writeError(error = 2, opcode = 109, badValue = invalidValue)
+
+        val host = XAccessHost(family = family, address = address)
+        if (mode == 0) {
+            state.insertAccessHost(host)
+        } else {
+            state.deleteAccessHost(host)
+        }
+    }
+
+    private fun listHosts(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 110, badValue = 0)
+        val hosts = state.accessHosts()
+        val payloadBytes = hosts.sumOf { 4 + paddedLength(it.address.size) }
+        val reply = reply(
+            extra = if (state.accessControlEnabled()) 1 else 0,
+            payloadUnits = payloadBytes / 4,
+        )
+        byteOrder.put16(reply, 8, hosts.size)
+        var offset = 32
+        for (host in hosts) {
+            reply[offset] = host.family.toByte()
+            byteOrder.put16(reply, offset + 2, host.address.size)
+            host.address.forEachIndexed { index, value -> reply[offset + 4 + index] = value.toByte() }
+            offset += 4 + paddedLength(host.address.size)
+        }
+        write(reply)
+    }
+
+    private fun setAccessControl(mode: Int, body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 111, badValue = 0)
+        if (mode !in 0..1) return writeError(error = 2, opcode = 111, badValue = mode)
+        state.setAccessControlEnabled(mode == 1)
+    }
+
     private fun forceScreenSaver(mode: Int, body: ByteArray) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = 115, badValue = 0)
         if (mode !in 0..1) return writeError(error = 2, opcode = 115, badValue = mode)
@@ -3602,6 +3664,19 @@ internal class X11Connection(
     }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
+
+    private fun invalidHostValue(family: Int, address: List<Int>): Int? =
+        when (family) {
+            XAccessHost.FamilyInternet -> if (address.size == 4) null else address.size
+            XAccessHost.FamilyDECnet -> if (address.size == 2) null else address.size
+            XAccessHost.FamilyChaos -> if (address.size == 2) null else address.size
+            XAccessHost.FamilyServerInterpreted -> {
+                val separator = address.indexOf(0)
+                if (separator >= 0 && address.all { it in 0..0x7f }) null else family
+            }
+            XAccessHost.FamilyInternetV6 -> if (address.size == 16) null else address.size
+            else -> family
+        }
 
     private fun own(id: Int) {
         ownedResources += id

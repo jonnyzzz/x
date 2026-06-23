@@ -159,6 +159,26 @@ internal object SetupReply {
         return reply
     }
 
+    fun failure(
+        byteOrder: ByteOrder,
+        clientMajor: Int,
+        clientMinor: Int,
+        reason: String,
+    ): ByteArray {
+        val reasonBytes = reason.encodeToByteArray().let { if (it.size <= 255) it else it.copyOf(255) }
+        val reasonPaddedLength = paddedLength(reasonBytes.size)
+        val reply = ByteArray(8 + reasonPaddedLength)
+
+        reply[0] = 0
+        reply[1] = reasonBytes.size.toByte()
+        byteOrder.put16(reply, 2, clientMajor)
+        byteOrder.put16(reply, 4, clientMinor)
+        byteOrder.put16(reply, 6, reasonPaddedLength / 4)
+        reasonBytes.copyInto(reply, 8)
+
+        return reply
+    }
+
     private fun paddedLength(length: Int): Int = (length + 3) and -4
 }
 
