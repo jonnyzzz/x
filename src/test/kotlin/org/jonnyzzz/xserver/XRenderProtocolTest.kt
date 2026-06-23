@@ -402,6 +402,85 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER linear gradient applies source picture transform`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderSetPictureTransform(
+                        GradientPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            0x0002_0000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, sourceX = 2, destinationX = 1, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 1, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val offsetImage = readReply(socket.getInputStream())
+                assertEquals(0xff8c_0073.toInt(), pixelAt(offsetImage, imageWidth = 1, x = 0, y = 0))
+
+                out.write(renderSetPictureTransform(GradientPictureId, List(9) { 0 }))
+                out.flush()
+
+                val transformError = socket.getInputStream().readExactly(32)
+                assertEquals(0, transformError[0].toInt())
+                assertEquals(2, transformError[1].toInt() and 0xff)
+                assertEquals(0, u32le(transformError, 4))
+                assertEquals(28, u16le(transformError, 8))
+                assertEquals(XRender.MajorOpcode, transformError[10].toInt() and 0xff)
+
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, destinationX = 2, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 2, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val afterRejectedTransformImage = readReply(socket.getInputStream())
+                assertEquals(0xffbf_0040.toInt(), pixelAt(afterRejectedTransformImage, imageWidth = 1, x = 0, y = 0))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""transform":["0x10000","0x0","0x20000"""")
+                }
+                assertContains(httpGet(server.localPort, "/text.txt"), "SetPictureTransform")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER trapezoids composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

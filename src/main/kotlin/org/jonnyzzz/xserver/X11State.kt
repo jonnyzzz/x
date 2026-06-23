@@ -662,7 +662,7 @@ internal class X11State(
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val linearGradient = source.linearGradient
         if (linearGradient != null) {
-            val sampleGradient = linearGradient.pixelSampler(source.repeat)
+            val sampleGradient = linearGradient.pixelSampler(source.repeat, source.transform)
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -741,7 +741,7 @@ internal class X11State(
         )
     }
 
-    private fun XLinearGradient.pixelSampler(repeat: Int): (x: Int, y: Int) -> Int {
+    private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = p1.x.fixedToDouble()
@@ -756,8 +756,9 @@ internal class X11State(
             val position = if (denominator == 0.0) {
                 0.0
             } else {
-                val sampleX = x + 0.5
-                val sampleY = y + 0.5
+                val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+                val sampleX = sample.first
+                val sampleY = sample.second
                 ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
             }
             val repeatedPosition = repeatPosition(position, fixedStops.first(), fixedStops.last(), repeat)
@@ -769,6 +770,22 @@ internal class X11State(
                 stopPixel(repeatedPosition, pairs, fixedStops)
             }
         }
+    }
+
+    private fun transformedPoint(x: Double, y: Double, transform: List<Int>): Pair<Double, Double> {
+        if (transform.size != 9 || transform == IdentityTransform) return x to y
+        val m00 = transform[0].fixedToDouble()
+        val m01 = transform[1].fixedToDouble()
+        val m02 = transform[2].fixedToDouble()
+        val m10 = transform[3].fixedToDouble()
+        val m11 = transform[4].fixedToDouble()
+        val m12 = transform[5].fixedToDouble()
+        val m20 = transform[6].fixedToDouble()
+        val m21 = transform[7].fixedToDouble()
+        val m22 = transform[8].fixedToDouble()
+        val w = m20 * x + m21 * y + m22
+        if (w == 0.0) return x to y
+        return ((m00 * x + m01 * y + m02) / w) to ((m10 * x + m11 * y + m12) / w)
     }
 
     private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {

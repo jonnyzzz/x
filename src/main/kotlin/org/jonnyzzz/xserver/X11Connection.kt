@@ -3,6 +3,7 @@ package org.jonnyzzz.xserver
 import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
+import java.math.BigInteger
 
 internal class X11Connection(
     private val input: InputStream,
@@ -732,7 +733,27 @@ internal class X11Connection(
     private fun renderSetPictureTransform(body: ByteArray) {
         if (body.size < 40) return
         val picture = byteOrder.u32(body, 0)
-        state.updatePictureTransform(picture, (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) })
+        val transform = (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) }
+        if (!isInvertibleTransform(transform)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 28, badValue = 0)
+        }
+        state.updatePictureTransform(picture, transform)
+    }
+
+    private fun isInvertibleTransform(transform: List<Int>): Boolean {
+        if (transform.size != 9) return false
+        fun fixed(index: Int) = BigInteger.valueOf(transform[index].toLong())
+        val a = fixed(0)
+        val b = fixed(1)
+        val c = fixed(2)
+        val d = fixed(3)
+        val e = fixed(4)
+        val f = fixed(5)
+        val g = fixed(6)
+        val h = fixed(7)
+        val i = fixed(8)
+        val determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+        return determinant != BigInteger.ZERO
     }
 
     private fun renderQueryFilters(body: ByteArray) {
