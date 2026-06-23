@@ -850,6 +850,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `FreeColors validates colormap and length while preserving stateless colors`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 26
+                val out = socket.getOutputStream()
+                out.write(freeColorsRequest(X11Ids.DefaultColormap, planeMask = 0, pixels = listOf(Red, 0x0000_ff00)))
+                out.write(freeColorsRequest(missingColormap, planeMask = 0, pixels = listOf(Red)))
+                out.write(request(88, 0, ByteArray(4)))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0, blue = 0xffff))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 12, opcode = 88, badValue = missingColormap)
+                assertError(socket.getInputStream(), error = 16, opcode = 88, badValue = 0)
+
+                val blue = readReply(socket.getInputStream())
+                assertEquals(Blue, u32le(blue, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `AllocNamedColor returns pixel and exact visual color triples`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3429,6 +3455,16 @@ class XCoreDrawingProtocolTest {
         put16le(body, 8, greens)
         put16le(body, 10, blues)
         return request(87, contiguous, body)
+    }
+
+    private fun freeColorsRequest(colormap: Int, planeMask: Int, pixels: List<Int>): ByteArray {
+        val body = ByteArray(8 + pixels.size * 4)
+        put32le(body, 0, colormap)
+        put32le(body, 4, planeMask)
+        pixels.forEachIndexed { index, pixel ->
+            put32le(body, 8 + index * 4, pixel)
+        }
+        return request(88, 0, body)
     }
 
     private fun allocNamedColorRequest(colormap: Int, name: String): ByteArray =

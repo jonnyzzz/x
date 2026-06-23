@@ -173,6 +173,7 @@ internal class X11Connection(
             85 -> allocNamedColor(body)
             86 -> allocColorCells(minorOpcode, body)
             87 -> allocColorPlanes(minorOpcode, body)
+            88 -> freeColors(body)
             91 -> queryColors(body)
             92 -> lookupColor(body)
             93 -> createCursor(opcode, body)
@@ -2247,6 +2248,12 @@ internal class X11Connection(
         writeError(error = 11, opcode = 87, badValue = 0)
     }
 
+    private fun freeColors(body: ByteArray) {
+        if (body.size < 8 || (body.size - 8) % 4 != 0) return writeError(error = 16, opcode = 88, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 88, badValue = colormap)
+    }
+
     private fun lookupColor(body: ByteArray) {
         val color = namedColorRequest(opcode = 92, body = body) ?: return
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -2588,6 +2595,7 @@ internal class X11Connection(
             85 -> "AllocNamedColor"
             86 -> "AllocColorCells"
             87 -> "AllocColorPlanes"
+            88 -> "FreeColors"
             91 -> "QueryColors"
             92 -> "LookupColor"
             93 -> "CreateCursor"
