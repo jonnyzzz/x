@@ -233,6 +233,69 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER transformed mask picture samples mask coordinates`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 4, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 2, height = 1, alphas = byteArrayOf(0x00, 0xff.toByte())))
+                out.write(
+                    renderSetPictureTransform(
+                        MaskPictureId,
+                        listOf(
+                            0x0001_0000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0x0001_0000,
+                            0,
+                            0,
+                            0,
+                            0x0001_0000,
+                        ),
+                    ),
+                )
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 2, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 0))
+                out.write(renderChangePicture(MaskPictureId, repeat = XRender.RepeatPad))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 2, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 1))
+                out.write(renderChangePicture(MaskPictureId, repeat = XRender.RepeatNormal))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, maskX = 1, width = 3, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 2))
+                out.write(renderChangePicture(MaskPictureId, repeat = XRender.RepeatNone))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 2, height = 1, operation = XRender.OpOver, destinationX = 1, destinationY = 3))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 3))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER fill rectangles over blends with existing pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

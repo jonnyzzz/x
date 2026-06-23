@@ -314,10 +314,11 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
     ): Boolean {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
         return compositeBounds(bounds, clipRectangles) { x, y ->
-            val maskAlpha = mask?.alphaAt(maskX + x - destinationX, maskY + y - destinationY) ?: 255
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
             over(pixel, pixels[y * this.width + x], maskAlpha)
         }
     }
@@ -335,6 +336,7 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
     ): XImagePixels? {
         val bounds = clippedCopyBounds(
             sourceWidth = source.width,
@@ -359,7 +361,7 @@ internal class XFramebuffer(
                 copied[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
-                val maskAlpha = mask?.alphaAt(maskX + dx - destinationX, maskY + dy - destinationY) ?: 255
+                val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
                 pixels[index] = when (operation) {
                     XRender.OpClear -> 0
                     XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
@@ -385,6 +387,7 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -401,7 +404,7 @@ internal class XFramebuffer(
                 generated[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
-                val maskAlpha = mask?.alphaAt(maskX + dx - destinationX, maskY + dy - destinationY) ?: 255
+                val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
                 pixels[index] = when (operation) {
                     XRender.OpClear -> 0
                     XRender.OpSrc -> withMask(sourcePixel, maskAlpha)
@@ -885,6 +888,14 @@ internal class XFramebuffer(
             XRender.OpOver -> over(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
+
+    private fun sampledMaskAlpha(
+        mask: XFramebuffer?,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)?,
+        x: Int,
+        y: Int,
+    ): Int =
+        maskAlphaAt?.invoke(x, y) ?: mask?.alphaAt(x, y) ?: 255
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
         (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)

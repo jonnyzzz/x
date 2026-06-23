@@ -661,6 +661,7 @@ internal class X11State(
         val destinationDrawableId = destination.drawableId ?: return null
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
+        val maskAlphaAt = mask?.maskAlphaSampler()
         val linearGradient = source.linearGradient
         if (linearGradient != null) {
             val sampleGradient = linearGradient.pixelSampler(source.repeat, source.transform)
@@ -676,6 +677,7 @@ internal class X11State(
                 mask = maskFramebuffer,
                 maskX = maskX,
                 maskY = maskY,
+                maskAlphaAt = maskAlphaAt,
             ) { x, y ->
                 sampleGradient(x, y)
             }
@@ -688,7 +690,7 @@ internal class X11State(
                     XImagePixels(width, height, IntArray(width * height))
                 }
                 XRender.OpSrc -> {
-                    if (maskFramebuffer == null && destination.clipRectangles.isEmpty()) {
+                    if (maskFramebuffer == null && maskAlphaAt == null && destination.clipRectangles.isEmpty()) {
                         destinationFramebuffer.fill(destinationX, destinationY, width, height, solid, preserveAlpha = true)
                     } else {
                         destinationFramebuffer.copyFrom(
@@ -704,6 +706,7 @@ internal class X11State(
                             mask = maskFramebuffer,
                             maskX = maskX,
                             maskY = maskY,
+                            maskAlphaAt = maskAlphaAt,
                         )
                     }
                     XImagePixels(width, height, IntArray(width * height) { solid })
@@ -719,6 +722,7 @@ internal class X11State(
                         mask = maskFramebuffer,
                         maskX = maskX,
                         maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
                     )
                     XImagePixels(width, height, IntArray(width * height) { solid })
                 }
@@ -739,6 +743,7 @@ internal class X11State(
                 mask = maskFramebuffer,
                 maskX = maskX,
                 maskY = maskY,
+                maskAlphaAt = maskAlphaAt,
             ) { x, y ->
                 sourceFramebuffer.transformedPixelAt(x, y, source.repeat, source.transform)
             }
@@ -756,7 +761,14 @@ internal class X11State(
             mask = maskFramebuffer,
             maskX = maskX,
             maskY = maskY,
+            maskAlphaAt = maskAlphaAt,
         )
+    }
+
+    private fun XPicture.maskAlphaSampler(): ((x: Int, y: Int) -> Int)? {
+        if (transform == IdentityTransform && repeat == XRender.RepeatNone) return null
+        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        return { x, y -> framebuffer.transformedAlphaAt(x, y, repeat, transform) }
     }
 
     private fun XFramebuffer.transformedPixelAt(x: Int, y: Int, repeat: Int, transform: List<Int>): Int {
@@ -765,6 +777,9 @@ internal class X11State(
         val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return 0
         return pixelAt(sampleX, sampleY) ?: 0
     }
+
+    private fun XFramebuffer.transformedAlphaAt(x: Int, y: Int, repeat: Int, transform: List<Int>): Int =
+        (transformedPixelAt(x, y, repeat, transform) ushr 24) and 0xff
 
     private fun repeatedPixelCoordinate(coordinate: Double, size: Int, repeat: Int): Int? {
         if (size <= 0) return null
