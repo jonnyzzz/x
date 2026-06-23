@@ -243,7 +243,8 @@ internal class X11Connection(
             6 -> renderSetPictureClipRectangles(body)
             7 -> renderFreePicture(body)
             8 -> renderComposite(body)
-            10, 11, 12, 13 -> Unit
+            10 -> renderTrapezoids(body)
+            11, 12, 13 -> Unit
             17 -> renderCreateGlyphSet(body)
             18 -> renderReferenceGlyphSet(body)
             19 -> renderFreeGlyphSet(body)
@@ -411,6 +412,41 @@ internal class X11Connection(
                 rectangles = listOf(rectangle),
                 imageDataUri = XFramebuffer.imageDataUri(image),
                 sourceDrawableId = source.drawableId,
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun renderTrapezoids(body: ByteArray) {
+        if (body.size < 20) return
+        val operation = body[0].toInt() and 0xff
+        val source = state.picture(byteOrder.u32(body, 4)) ?: return
+        val destination = state.picture(byteOrder.u32(body, 8)) ?: return
+        val maskFormat = byteOrder.u32(body, 12)
+        if (maskFormat != XRender.A8Format) return
+        val destinationDrawableId = destination.drawableId ?: return
+        val trapezoids = trapezoids(body, 20)
+        if (trapezoids.isEmpty()) return
+        val painted = state.renderTrapezoids(
+            operation = operation,
+            source = source,
+            destination = destination,
+            trapezoids = trapezoids,
+        )
+        if (!painted) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.FillPoly,
+                foreground = source.solidPixel ?: 0,
+                points = trapezoids.flatMap { trapezoid ->
+                    listOf(
+                        XPoint(trapezoid.left.p1.x.fixedToInt(), trapezoid.left.p1.y.fixedToInt()),
+                        XPoint(trapezoid.right.p1.x.fixedToInt(), trapezoid.right.p1.y.fixedToInt()),
+                        XPoint(trapezoid.right.p2.x.fixedToInt(), trapezoid.right.p2.y.fixedToInt()),
+                        XPoint(trapezoid.left.p2.x.fixedToInt(), trapezoid.left.p2.y.fixedToInt()),
+                    )
+                },
                 framebufferBacked = true,
             ),
         )
@@ -805,7 +841,8 @@ internal class X11Connection(
             6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"
             7 -> "picture=${hex(0)}"
             8 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} mask=${hex(8)} dst=${hex(12)} dst=${i16(24)},${i16(26)} ${u16(28)}x${u16(30)}"
-            10, 11, 12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)}"
+            10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
+            11, 12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)}"
             17 -> "glyphSet=${hex(0)} format=${hex(4)}"
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
             19 -> "glyphSet=${hex(0)}"
@@ -2155,6 +2192,29 @@ internal class X11Connection(
         }
         return arcs
     }
+
+    private fun trapezoids(body: ByteArray, startOffset: Int): List<XTrapezoidCommand> {
+        val trapezoids = mutableListOf<XTrapezoidCommand>()
+        var offset = startOffset
+        while (offset + 40 <= body.size) {
+            trapezoids += XTrapezoidCommand(
+                top = byteOrder.u32(body, offset),
+                bottom = byteOrder.u32(body, offset + 4),
+                left = XFixedLine(
+                    p1 = XFixedPoint(byteOrder.u32(body, offset + 8), byteOrder.u32(body, offset + 12)),
+                    p2 = XFixedPoint(byteOrder.u32(body, offset + 16), byteOrder.u32(body, offset + 20)),
+                ),
+                right = XFixedLine(
+                    p1 = XFixedPoint(byteOrder.u32(body, offset + 24), byteOrder.u32(body, offset + 28)),
+                    p2 = XFixedPoint(byteOrder.u32(body, offset + 32), byteOrder.u32(body, offset + 36)),
+                ),
+            )
+            offset += 40
+        }
+        return trapezoids
+    }
+
+    private fun Int.fixedToInt(): Int = this / 65_536
 
     private fun decodeText16(bytes: ByteArray): String =
         buildString {

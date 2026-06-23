@@ -925,6 +925,24 @@ internal class X11State(
     }
 
     @Synchronized
+    fun renderTrapezoids(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        trapezoids: List<XTrapezoidCommand>,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val pixel = source.solidPixel ?: return false
+        return framebuffer.compositeTrapezoids(
+            pixel = pixel,
+            operation = operation,
+            trapezoids = trapezoids,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
     fun compositeGlyphs(
         operation: Int,
         source: XPicture,
@@ -1466,6 +1484,23 @@ internal data class XArcCommand(
     val height: Int,
     val angle1: Int,
     val angle2: Int,
+)
+
+internal data class XFixedPoint(
+    val x: Int,
+    val y: Int,
+)
+
+internal data class XFixedLine(
+    val p1: XFixedPoint,
+    val p2: XFixedPoint,
+)
+
+internal data class XTrapezoidCommand(
+    val top: Int,
+    val bottom: Int,
+    val left: XFixedLine,
+    val right: XFixedLine,
 )
 
 internal data class XProperty(

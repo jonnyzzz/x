@@ -8,6 +8,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -515,6 +516,20 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
+    fun compositeTrapezoids(
+        pixel: Int,
+        operation: Int,
+        trapezoids: List<XTrapezoidCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var painted = false
+        for (trapezoid in trapezoids) {
+            painted = compositeTrapezoid(pixel, operation, trapezoid, clipRectangles) || painted
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun tileTo(
         destination: XFramebuffer,
         destinationX: Int,
@@ -677,6 +692,68 @@ internal class XFramebuffer(
         return painted
     }
 
+    private fun compositeTrapezoid(
+        pixel: Int,
+        operation: Int,
+        trapezoid: XTrapezoidCommand,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val top = trapezoid.top.fixedToDouble()
+        val bottom = trapezoid.bottom.fixedToDouble()
+        if (bottom <= top) return false
+        val startY = maxOf(0, floor(top).toInt())
+        val endY = minOf(height, ceil(bottom).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            val sampleY = y + 0.5
+            if (sampleY < top || sampleY >= bottom) continue
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            val minX = minOf(left, right)
+            val maxX = maxOf(left, right)
+            val startX = maxOf(0, floor(minX).toInt())
+            val endX = minOf(width, ceil(maxX).toInt())
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                if (coverage == 0) continue
+                val maskAlpha = coverage * 255 / TrapezoidSamples
+                val index = y * width + x
+                pixels[index] = when (operation) {
+                    XRender.OpClear -> if (coverage == TrapezoidSamples) 0 else over(0, pixels[index], maskAlpha)
+                    XRender.OpSrc -> if (coverage == TrapezoidSamples) pixel else withMask(pixel, maskAlpha)
+                    XRender.OpOver -> over(pixel, pixels[index], maskAlpha)
+                    else -> over(pixel, pixels[index], maskAlpha)
+                }
+                painted = true
+            }
+        }
+        return painted
+    }
+
+    private fun trapezoidCoverage(
+        x: Int,
+        y: Int,
+        trapezoid: XTrapezoidCommand,
+        top: Double,
+        bottom: Double,
+    ): Int {
+        var covered = 0
+        for (sampleYIndex in 0 until TrapezoidSampleGrid) {
+            val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
+            if (sampleY < top || sampleY >= bottom) continue
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            val minX = minOf(left, right)
+            val maxX = maxOf(left, right)
+            for (sampleXIndex in 0 until TrapezoidSampleGrid) {
+                val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGrid
+                if (sampleX >= minX && sampleX < maxX) covered += 1
+            }
+        }
+        return covered
+    }
+
     private fun sampledArcPoints(arc: XArcCommand): List<XPoint> {
         if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return emptyList()
         val radiusX = arc.width / 2.0
@@ -785,6 +862,17 @@ internal class XFramebuffer(
         return if (result < 0) result + modulus else result
     }
 
+    private fun Int.fixedToDouble(): Double = this / FixedOne
+
+    private fun XFixedLine.xAt(y: Double): Double {
+        val y1 = p1.y.fixedToDouble()
+        val y2 = p2.y.fixedToDouble()
+        val x1 = p1.x.fixedToDouble()
+        val x2 = p2.x.fixedToDouble()
+        if (y1 == y2) return x1
+        return x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+    }
+
     private fun corePixel(source: Int, destination: Int, function: Int, planeMask: Int): Int {
         val mask = planeMask and CorePixelMask
         val sourcePixel = source and CorePixelMask
@@ -825,6 +913,9 @@ internal class XFramebuffer(
         private const val FullCircleAngle = 360 * 64
         private const val ArcChord = 0
         private const val CorePixelMask = 0x00ff_ffff
+        private const val FixedOne = 65_536.0
+        private const val TrapezoidSampleGrid = 4
+        private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
         const val TextCellWidth = 8
         const val TextAscent = 12
         const val TextDescent = 4
