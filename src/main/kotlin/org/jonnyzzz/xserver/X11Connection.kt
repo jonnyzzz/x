@@ -111,7 +111,7 @@ internal class X11Connection(
             23 -> getSelectionOwner()
             24 -> unitReplyless()
             25 -> unitReplyless()
-            26 -> unitReplyless()
+            26 -> grabPointer(minorOpcode, body)
             27 -> unitReplyless()
             28 -> unitReplyless()
             29 -> unitReplyless()
@@ -1408,6 +1408,21 @@ internal class X11Connection(
         byteOrder.put16(reply, 22, 0)
         byteOrder.put16(reply, 24, 0)
         write(reply)
+    }
+
+    private fun grabPointer(ownerEvents: Int, body: ByteArray) {
+        if (body.size < 20) return writeError(error = 16, opcode = 26, badValue = 0)
+        if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 26, badValue = ownerEvents)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 26, badValue = grabWindow)
+        val pointerMode = body[6].toInt() and 0xff
+        if (pointerMode !in 0..1) return writeError(error = 2, opcode = 26, badValue = pointerMode)
+        val keyboardMode = body[7].toInt() and 0xff
+        if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 26, badValue = keyboardMode)
+        val confineTo = byteOrder.u32(body, 8)
+        if (confineTo != 0 && state.window(confineTo) == null) return writeError(error = 3, opcode = 26, badValue = confineTo)
+
+        write(reply(extra = 0, payloadUnits = 0))
     }
 
     private fun translateCoordinates(body: ByteArray) {

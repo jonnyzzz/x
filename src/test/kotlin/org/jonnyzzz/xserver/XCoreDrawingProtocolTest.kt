@@ -1910,6 +1910,33 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `GrabPointer replies success status for valid window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+                assertEquals(0, u32le(grab, 4))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(1, pointer[1].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -1986,6 +2013,21 @@ class XCoreDrawingProtocolTest {
         put32le(body, 8, X11Ids.RootVisual)
         return request(78, 0, body)
     }
+
+    private fun grabPointerRequest(window: Int): ByteArray {
+        val body = ByteArray(20)
+        put32le(body, 0, window)
+        put16le(body, 4, 0)
+        body[6] = 0
+        body[7] = 0
+        put32le(body, 8, 0)
+        put32le(body, 12, 0)
+        put32le(body, 16, 0)
+        return request(26, 0, body)
+    }
+
+    private fun queryPointerRequest(): ByteArray =
+        request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
 
     private fun mapWindowRequest(id: Int): ByteArray {
         val body = ByteArray(4)
