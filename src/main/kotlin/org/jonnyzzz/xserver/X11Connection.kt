@@ -453,12 +453,16 @@ internal class X11Connection(
         val maskFormat = byteOrder.u32(body, 12)
         if (maskFormat != XRender.A8Format) return
         val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 16)
+        val sourceY = byteOrder.i16(body, 18)
         val trapezoids = trapezoids(body, 20)
         if (trapezoids.isEmpty()) return
         val painted = state.renderTrapezoids(
             operation = operation,
             source = source,
             destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
             trapezoids = trapezoids,
         )
         if (!painted) return

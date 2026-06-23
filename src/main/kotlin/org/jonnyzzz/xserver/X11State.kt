@@ -899,6 +899,22 @@ internal class X11State(
             ?: radialGradient?.pixelSampler(repeat, transform)
             ?: conicalGradient?.pixelSampler(repeat, transform)
 
+    private fun XPicture.sourcePixelSampler(): ((x: Int, y: Int) -> Int)? {
+        solidPixel?.let { pixel -> return { _, _ -> pixel } }
+        gradientSampler()?.let { return it }
+        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        return { x, y -> framebuffer.transformedPixelAt(x, y, repeat, transform, filterName) }
+    }
+
+    private fun XFixedLine.xAt(y: Double): Double {
+        val y1 = p1.y.fixedToDouble()
+        val y2 = p2.y.fixedToDouble()
+        val x1 = p1.x.fixedToDouble()
+        val x2 = p2.x.fixedToDouble()
+        if (y2 == y1) return x1
+        return x1 + (x2 - x1) * ((y - y1) / (y2 - y1))
+    }
+
     private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
@@ -1332,17 +1348,23 @@ internal class X11State(
         operation: Int,
         source: XPicture,
         destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
         trapezoids: List<XTrapezoidCommand>,
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val pixel = source.solidPixel ?: return false
+        val sourcePixelAt = source.sourcePixelSampler() ?: return false
+        val first = trapezoids.firstOrNull() ?: return false
+        val originY = floor(first.top.fixedToDouble()).toInt()
+        val originX = floor(first.left.xAt(first.top.fixedToDouble())).toInt()
         return framebuffer.compositeTrapezoids(
-            pixel = pixel,
             operation = operation,
             trapezoids = trapezoids,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
-        )
+        ) { x, y ->
+            sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+        }
     }
 
     @Synchronized

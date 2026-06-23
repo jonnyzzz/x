@@ -572,10 +572,22 @@ internal class XFramebuffer(
         operation: Int,
         trapezoids: List<XTrapezoidCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean =
+        compositeTrapezoids(
+            operation = operation,
+            trapezoids = trapezoids,
+            clipRectangles = clipRectangles,
+        ) { _, _ -> pixel }
+
+    fun compositeTrapezoids(
+        operation: Int,
+        trapezoids: List<XTrapezoidCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = compositeTrapezoid(pixel, operation, trapezoid, clipRectangles) || painted
+            painted = compositeTrapezoid(operation, trapezoid, clipRectangles, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -758,10 +770,10 @@ internal class XFramebuffer(
     }
 
     private fun compositeTrapezoid(
-        pixel: Int,
         operation: Int,
         trapezoid: XTrapezoidCommand,
         clipRectangles: List<XRectangleCommand>?,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         val top = trapezoid.top.fixedToDouble()
         val bottom = trapezoid.bottom.fixedToDouble()
@@ -784,6 +796,7 @@ internal class XFramebuffer(
                 if (coverage == 0) continue
                 val maskAlpha = coverage * 255 / TrapezoidSamples
                 val index = y * width + x
+                val pixel = sourcePixelAt(x, y)
                 pixels[index] = when (operation) {
                     XRender.OpClear -> if (coverage == TrapezoidSamples) 0 else over(0, pixels[index], maskAlpha)
                     XRender.OpSrc -> if (coverage == TrapezoidSamples) pixel else withMask(pixel, maskAlpha)

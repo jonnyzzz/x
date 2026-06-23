@@ -822,6 +822,45 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER trapezoids sample generated source using src origin`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 18, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 10,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderTrapezoids(GradientPictureId, PictureId, x = 4, y = 3, width = 10, height = 5, sourceX = 2, sourceY = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 18, height = 12))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 18, x = 4, y = 3))
+                assertEquals(0xff73_008c.toInt(), pixelAt(image, imageWidth = 18, x = 9, y = 5))
+                assertEquals(0xff26_00d9.toInt(), pixelAt(image, imageWidth = 18, x = 13, y = 7))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 18, x = 3, y = 5))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Trapezoids")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER AddTraps builds A8 mask used by composite`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1232,12 +1271,23 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 29, body)
     }
 
-    private fun renderTrapezoids(source: Int, destination: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
+    private fun renderTrapezoids(
+        source: Int,
+        destination: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray {
         val body = ByteArray(60)
         body[0] = XRender.OpSrc.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
         put32le(body, 12, XRender.A8Format)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
         putFixed(body, 20, y)
         putFixed(body, 24, y + height)
         putFixedPoint(body, 28, x, y)
