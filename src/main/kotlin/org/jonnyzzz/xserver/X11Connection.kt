@@ -342,6 +342,7 @@ internal class X11Connection(
     private fun renderCreatePicture(body: ByteArray) {
         if (body.size < 16) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = id)
         val valueMask = byteOrder.u32(body, 12)
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 16)
         state.putPicture(
