@@ -2630,6 +2630,97 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetPointerMapping updates GetPointerMapping and validates failures`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getPointerMappingRequest())
+                out.write(setPointerMappingRequest(3, 2, 1))
+                out.write(getPointerMappingRequest())
+                out.write(setPointerMappingRequest(0, 2, 4))
+                out.write(getPointerMappingRequest())
+                out.write(setPointerMappingRequest(2, 2, 0))
+                out.write(setPointerMappingRequest(1, 2))
+                out.write(request(116, 3, ByteArray(8)))
+                out.write(request(117, 0, ByteArray(4)))
+                out.write(getPointerMappingRequest())
+                out.flush()
+
+                assertPointerMapping(readReply(socket.getInputStream()), 1, 1, 2, 3)
+                assertMappingStatus(readReply(socket.getInputStream()), sequence = 2, status = 0)
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2)
+                assertPointerMapping(readReply(socket.getInputStream()), 3, 3, 2, 1)
+                assertMappingStatus(readReply(socket.getInputStream()), sequence = 4, status = 0)
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 4)
+                assertPointerMapping(readReply(socket.getInputStream()), 5, 0, 2, 4)
+
+                assertError(socket.getInputStream(), error = 2, opcode = 116, badValue = 2, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 116, badValue = 2, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 116, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 117, badValue = 0, sequence = 9)
+
+                assertPointerMapping(readReply(socket.getInputStream()), 10, 0, 2, 4)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `Pointer mapping remaps button events and reports busy while altered button is down`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val buttonMask = (1 shl 2) or (1 shl 3)
+                out.write(createWindowRequest(WindowId, eventMask = buttonMask))
+                out.write(mapWindowRequest(WindowId))
+                out.write(setPointerMappingRequest(3, 2, 1))
+                out.flush()
+
+                assertEquals(19, input.readExactly(32)[0].toInt() and 0xff)
+                assertEquals(12, input.readExactly(32)[0].toInt() and 0xff)
+                assertMappingStatus(readReply(input), sequence = 3, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 3)
+
+                val down = server.input.pointerDown(10, 10, button = 1)
+                assertEquals(1, down.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 3)
+
+                out.write(setPointerMappingRequest(1, 2, 3))
+                out.write(getPointerMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 4, status = 1)
+                assertPointerMapping(readReply(input), 5, 3, 2, 1)
+
+                val up = server.input.pointerUp(10, 10, button = 1)
+                assertEquals(1, up.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 3)
+
+                out.write(setPointerMappingRequest(0, 2, 1))
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 6, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 6)
+
+                val disabled = server.input.click(10, 10, button = 1)
+                assertEquals(0, disabled.deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangePointerControl updates selected fields and validates booleans and values`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3813,6 +3904,15 @@ class XCoreDrawingProtocolTest {
     private fun bellRequest(percent: Int): ByteArray =
         request(104, percent and 0xff, ByteArray(0))
 
+    private fun setPointerMappingRequest(vararg mapping: Int): ByteArray {
+        val body = ByteArray(paddedLength(mapping.size))
+        mapping.forEachIndexed { index, value -> body[index] = value.toByte() }
+        return request(116, mapping.size, body)
+    }
+
+    private fun getPointerMappingRequest(): ByteArray =
+        request(117, 0, ByteArray(0))
+
     private fun changePointerControlRequest(
         numerator: Int,
         denominator: Int,
@@ -4447,13 +4547,58 @@ class XCoreDrawingProtocolTest {
         assertEquals(threshold, u16le(reply, 12))
     }
 
+    private fun assertPointerMapping(reply: ByteArray, sequence: Int, vararg mapping: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(mapping.size, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        val payloadBytes = paddedLength(mapping.size)
+        assertEquals(payloadBytes / 4, u32le(reply, 4))
+        assertZeroBytes(reply, 8, 32)
+        mapping.forEachIndexed { index, value ->
+            assertEquals(value, reply[32 + index].toInt() and 0xff)
+        }
+        assertZeroBytes(reply, 32 + mapping.size, 32 + payloadBytes)
+    }
+
+    private fun assertMappingStatus(reply: ByteArray, sequence: Int, status: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(status, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(0, u32le(reply, 4))
+        assertZeroBytes(reply, 8, 32)
+    }
+
+    private fun assertMappingNotify(event: ByteArray, sequence: Int) {
+        assertEquals(34, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(2, event[4].toInt() and 0xff)
+        assertEquals(0, event[5].toInt() and 0xff)
+        assertEquals(0, event[6].toInt() and 0xff)
+        assertZeroBytes(event, 7, 32)
+    }
+
+    private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {
+        assertEquals(type, event[0].toInt() and 0xff)
+        assertEquals(detail, event[1].toInt() and 0xff)
+    }
+
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {
         val reply = input.readExactly(32)
         assertEquals(0, reply[0].toInt())
         assertEquals(error, reply[1].toInt() and 0xff)
         assertEquals(sequence, u16le(reply, 2))
         assertEquals(badValue, u32le(reply, 4))
+        assertEquals(0, u16le(reply, 8))
         assertEquals(opcode, reply[10].toInt() and 0xff)
+        assertEquals(0, reply[11].toInt() and 0xff)
+        assertZeroBytes(reply, 12, 32)
+    }
+
+    private fun assertZeroBytes(bytes: ByteArray, from: Int, until: Int) {
+        for (index in from until until) {
+            assertEquals(0, bytes[index].toInt() and 0xff, "byte $index")
+        }
     }
 
     private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {

@@ -11,6 +11,16 @@ class XInputController internal constructor(
     fun click(x: Int, y: Int, button: String): XInputResult =
         clickResolved(x = x, y = y, button = buttonNumber(button), buttonName = button)
 
+    fun pointerDown(x: Int, y: Int, button: Int = 1): XInputResult {
+        require(button in 1..5) { "X11 pointer button must be in 1..5" }
+        return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = true)
+    }
+
+    fun pointerUp(x: Int, y: Int, button: Int = 1): XInputResult {
+        require(button in 1..5) { "X11 pointer button must be in 1..5" }
+        return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = false)
+    }
+
     private fun clickResolved(x: Int, y: Int, button: Int, buttonName: String): XInputResult {
         val press = state.pointerButton(
             x = x,
@@ -30,6 +40,28 @@ class XInputController internal constructor(
         )
         state.recordInputOperation(
             kind = "click",
+            x = x,
+            y = y,
+            button = buttonName,
+            targetWindowId = result.targetWindowId,
+            deliveredEvents = result.deliveredEvents,
+        )
+        return result
+    }
+
+    private fun pointerResolved(x: Int, y: Int, button: Int, buttonName: String, pressed: Boolean): XInputResult {
+        val dispatch = state.pointerButton(
+            x = x,
+            y = y,
+            button = button,
+            pressed = pressed,
+        )
+        val result = XInputResult(
+            targetWindowId = dispatch.targetWindowId,
+            deliveredEvents = dispatch.deliveredEvents,
+        )
+        state.recordInputOperation(
+            kind = if (pressed) "pointer-down" else "pointer-up",
             x = x,
             y = y,
             button = buttonName,
@@ -69,6 +101,7 @@ data class XInputResult(
 
 internal interface XEventSink {
     fun sendPointerEvent(event: XPointerEvent)
+    fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
 }
@@ -94,6 +127,12 @@ internal enum class XPointerEventType(val code: Int) {
 internal data class XPointerDispatch(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
+)
+
+internal data class XMappingNotifyEvent(
+    val request: Int,
+    val firstKeycode: Int = 0,
+    val count: Int = 0,
 )
 
 internal data class XSelectionRequestEvent(

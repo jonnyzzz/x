@@ -194,8 +194,8 @@ internal class X11Connection(
             108 -> getScreenSaver()
             115 -> forceScreenSaver(minorOpcode, body)
             112 -> unitReplyless()
-            116 -> getPointerMapping()
-            117 -> getPointerMapping()
+            116 -> setPointerMapping(minorOpcode, body)
+            117 -> getPointerMapping(body)
             118 -> getModifierMapping()
             119 -> getModifierMapping()
             127 -> unitReplyless()
@@ -2784,9 +2784,31 @@ internal class X11Connection(
         if (mode !in 0..1) return writeError(error = 2, opcode = 115, badValue = mode)
     }
 
-    private fun getPointerMapping() {
-        val map = byteArrayOf(1, 2, 3)
-        val reply = reply(extra = map.size, payloadUnits = 1)
+    private fun setPointerMapping(count: Int, body: ByteArray) {
+        if (body.size != paddedLength(count)) return writeError(error = 16, opcode = 116, badValue = 0)
+        val current = state.pointerMapping()
+        if (count != current.size) return writeError(error = 2, opcode = 116, badValue = count)
+        val mapping = body.take(count).map { it.toInt() and 0xff }
+        val nonZero = mapping.filter { it != 0 }
+        if (nonZero.size != nonZero.toSet().size) {
+            val duplicate = nonZero.first { value -> nonZero.count { it == value } > 1 }
+            return writeError(error = 2, opcode = 116, badValue = duplicate)
+        }
+        val success = state.setPointerMappingIfIdle(mapping)
+        val reply = reply(extra = if (success) 0 else 1, payloadUnits = 0)
+        write(reply)
+        if (success) {
+            val event = XMappingNotifyEvent(request = 2)
+            for (sink in state.mappingNotifySinks()) {
+                runCatching { sink.sendMappingNotifyEvent(event) }
+            }
+        }
+    }
+
+    private fun getPointerMapping(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 117, badValue = 0)
+        val map = state.pointerMapping().map { it.toByte() }.toByteArray()
+        val reply = reply(extra = map.size, payloadUnits = paddedLength(map.size) / 4)
         map.copyInto(reply, 32)
         write(reply)
     }
@@ -2862,6 +2884,16 @@ internal class X11Connection(
         byteOrder.put16(bytes, 26, event.eventY)
         byteOrder.put16(bytes, 28, event.state)
         bytes[30] = 1
+        write(bytes)
+    }
+
+    override fun sendMappingNotifyEvent(event: XMappingNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 34
+        byteOrder.put16(bytes, 2, sequence)
+        bytes[4] = event.request.toByte()
+        bytes[5] = event.firstKeycode.toByte()
+        bytes[6] = event.count.toByte()
         write(bytes)
     }
 

@@ -48,6 +48,7 @@ internal class X11State(
     private var nextUnsupportedRequestId: Int = 1
     private var screenSaver = XScreenSaverSettings()
     private var pointerControl = XPointerControlSettings()
+    private var pointerMapping = XPointerMapping.Default
 
     val extensions = listOf(
         XExtension(
@@ -228,6 +229,26 @@ internal class X11State(
     }
 
     @Synchronized
+    fun pointerMapping(): List<Int> = pointerMapping.toList()
+
+    @Synchronized
+    fun setPointerMappingIfIdle(mapping: List<Int>): Boolean {
+        val alteredDownButton = pointerMapping
+            .zip(mapping)
+            .any { (current, updated) -> current != updated && current != 0 && (pointerState and buttonMask(current)) != 0 }
+        if (alteredDownButton) return false
+        pointerMapping = mapping.toList()
+        return true
+    }
+
+    @Synchronized
+    fun mappingNotifySinks(): List<XEventSink> = eventSinks.keys.toList()
+
+    @Synchronized
+    fun pointerLogicalButton(physicalButton: Int): Int =
+        pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
+
+    @Synchronized
     fun registerEventSink(sink: XEventSink) {
         eventSinks.putIfAbsent(sink, linkedMapOf())
     }
@@ -257,6 +278,7 @@ internal class X11State(
             pointerX = x.coerceIn(0, width - 1)
             pointerY = y.coerceIn(0, height - 1)
             val previousState = pointerState
+            val logicalButton = pointerLogicalButton(button)
             val type = if (pressed) XPointerEventType.ButtonPress else XPointerEventType.ButtonRelease
             val mask = XEventMasks.forPointerType(type)
             targetId = windowAt(pointerX, pointerY)?.id
@@ -265,31 +287,35 @@ internal class X11State(
             val childByAncestor = childByAncestor(path)
             val time = inputTime++
 
-            for ((sink, selections) in eventSinks) {
-                for (window in path) {
-                    val selectedMask = selections[window.id] ?: continue
-                    if ((selectedMask and mask) == 0) continue
-                    val absolute = absoluteById.getValue(window.id)
-                    deliveries += sink to XPointerEvent(
-                        type = type,
-                        button = button,
-                        rootX = pointerX,
-                        rootY = pointerY,
-                        eventWindowId = window.id,
-                        childWindowId = childByAncestor[window.id] ?: 0,
-                        eventX = pointerX - absolute.first,
-                        eventY = pointerY - absolute.second,
-                        state = previousState,
-                        time = time,
-                    )
+            if (logicalButton != 0) {
+                for ((sink, selections) in eventSinks) {
+                    for (window in path) {
+                        val selectedMask = selections[window.id] ?: continue
+                        if ((selectedMask and mask) == 0) continue
+                        val absolute = absoluteById.getValue(window.id)
+                        deliveries += sink to XPointerEvent(
+                            type = type,
+                            button = logicalButton,
+                            rootX = pointerX,
+                            rootY = pointerY,
+                            eventWindowId = window.id,
+                            childWindowId = childByAncestor[window.id] ?: 0,
+                            eventX = pointerX - absolute.first,
+                            eventY = pointerY - absolute.second,
+                            state = previousState,
+                            time = time,
+                        )
+                    }
                 }
             }
 
-            val buttonMask = buttonMask(button)
-            pointerState = if (pressed) {
-                pointerState or buttonMask
-            } else {
-                pointerState and buttonMask.inv()
+            if (logicalButton != 0) {
+                val buttonMask = buttonMask(logicalButton)
+                pointerState = if (pressed) {
+                    pointerState or buttonMask
+                } else {
+                    pointerState and buttonMask.inv()
+                }
             }
             if (targetId != null) focusWindowId = targetId
         }
@@ -2227,6 +2253,10 @@ internal data class XPointerControlSettings(
         const val DefaultAccelerationDenominator = 1
         const val DefaultThreshold = 4
     }
+}
+
+internal object XPointerMapping {
+    val Default = listOf(1, 2, 3)
 }
 
 internal data class XWindow(
