@@ -598,10 +598,22 @@ internal class XFramebuffer(
         operation: Int,
         triangles: List<XTriangleCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean =
+        compositeTriangles(
+            operation = operation,
+            triangles = triangles,
+            clipRectangles = clipRectangles,
+        ) { _, _ -> pixel }
+
+    fun compositeTriangles(
+        operation: Int,
+        triangles: List<XTriangleCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeTriangle(pixel, operation, triangle, clipRectangles) || painted
+            painted = compositeTriangle(operation, triangle, clipRectangles, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -833,10 +845,10 @@ internal class XFramebuffer(
     }
 
     private fun compositeTriangle(
-        pixel: Int,
         operation: Int,
         triangle: XTriangleCommand,
         clipRectangles: List<XRectangleCommand>?,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
     ): Boolean {
         val x1 = triangle.p1.x.fixedToDouble()
         val y1 = triangle.p1.y.fixedToDouble()
@@ -858,6 +870,7 @@ internal class XFramebuffer(
                 if (coverage == 0) continue
                 val maskAlpha = coverage * 255 / TrapezoidSamples
                 val index = y * width + x
+                val pixel = sourcePixelAt(x, y)
                 pixels[index] = renderPixel(pixel, pixels[index], operation, coverage, maskAlpha)
                 painted = true
             }

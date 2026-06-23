@@ -1385,17 +1385,23 @@ internal class X11State(
         operation: Int,
         source: XPicture,
         destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
         triangles: List<XTriangleCommand>,
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val pixel = source.solidPixel ?: return false
+        val sourcePixelAt = source.sourcePixelSampler() ?: return false
+        val first = triangles.firstOrNull() ?: return false
+        val originX = floor(first.p1.x.fixedToDouble()).toInt()
+        val originY = floor(first.p1.y.fixedToDouble()).toInt()
         return framebuffer.compositeTriangles(
-            pixel = pixel,
             operation = operation,
             triangles = triangles,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
-        )
+        ) { x, y ->
+            sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
+        }
     }
 
     @Synchronized

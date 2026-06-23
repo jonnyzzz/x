@@ -492,12 +492,16 @@ internal class X11Connection(
         val maskFormat = byteOrder.u32(body, 12)
         if (maskFormat != XRender.A8Format) return
         val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 16)
+        val sourceY = byteOrder.i16(body, 18)
         val triangles = triangles(body, 20)
         if (triangles.isEmpty()) return
         val painted = state.renderTriangles(
             operation = operation,
             source = source,
             destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
             triangles = triangles,
         )
         if (!painted) return
@@ -539,12 +543,16 @@ internal class X11Connection(
         val maskFormat = byteOrder.u32(body, 12)
         if (maskFormat != XRender.A8Format) return
         val destinationDrawableId = destination.drawableId ?: return
+        val sourceX = byteOrder.i16(body, 16)
+        val sourceY = byteOrder.i16(body, 18)
         val triangles = trianglesFrom(fixedPoints(body, 20))
         if (triangles.isEmpty()) return
         val painted = state.renderTriangles(
             operation = operation,
             source = source,
             destination = destination,
+            sourceX = sourceX,
+            sourceY = sourceY,
             triangles = triangles,
         )
         if (!painted) return

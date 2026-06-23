@@ -944,6 +944,52 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER triangles sample generated source using src origin`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 32, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 10,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderTriangles(
+                        GradientPictureId,
+                        PictureId,
+                        points = listOf(4 to 3, 18 to 3, 4 to 17),
+                        sourceX = 2,
+                        sourceY = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 32, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff99_0066.toInt(), pixelAt(image, imageWidth = 32, x = 6, y = 5))
+                assertEquals(0xff40_00bf.toInt(), pixelAt(image, imageWidth = 32, x = 10, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 3, y = 5))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER tri strip composites solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -970,6 +1016,52 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER tri strip samples generated source using src origin`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 36, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 20 to 20,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderTriStrip(
+                        GradientPictureId,
+                        PictureId,
+                        points = listOf(4 to 3, 18 to 3, 4 to 17, 18 to 17),
+                        sourceX = 1,
+                        sourceY = 2,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 36, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 36, x = 6, y = 5))
+                assertEquals(0xff66_0099.toInt(), pixelAt(image, imageWidth = 36, x = 15, y = 12))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 3, y = 5))
+                assertContains(httpGet(server.localPort, "/text.txt"), "TriStrip")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER tri fan composites solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -988,6 +1080,52 @@ class XRenderProtocolTest {
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 15, y = 10))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 10, y = 16))
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 36, x = 16, y = 18))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 6, y = 18))
+                assertContains(httpGet(server.localPort, "/text.txt"), "TriFan")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER tri fan samples generated source using src origin`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 36, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 10,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(
+                    renderTriFan(
+                        GradientPictureId,
+                        PictureId,
+                        points = listOf(15 to 7, 7 to 18, 15 to 20, 25 to 18),
+                        sourceX = 3,
+                        sourceY = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 36, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff8c_0073.toInt(), pixelAt(image, imageWidth = 36, x = 10, y = 16))
+                assertEquals(0xff26_00d9.toInt(), pixelAt(image, imageWidth = 36, x = 16, y = 18))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 36, x = 6, y = 18))
                 assertContains(httpGet(server.localPort, "/text.txt"), "TriFan")
             }
@@ -1311,13 +1449,22 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 32, body)
     }
 
-    private fun renderTriangles(source: Int, destination: Int, points: List<Pair<Int, Int>>, operation: Int = XRender.OpSrc): ByteArray {
+    private fun renderTriangles(
+        source: Int,
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        operation: Int = XRender.OpSrc,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray {
         require(points.size == 3)
         val body = ByteArray(44)
         body[0] = operation.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
         put32le(body, 12, XRender.A8Format)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
         var offset = 20
         for ((x, y) in points) {
             putFixedPoint(body, offset, x, y)
@@ -1326,18 +1473,53 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 11, body)
     }
 
-    private fun renderTriStrip(source: Int, destination: Int, points: List<Pair<Int, Int>>): ByteArray =
-        renderTrianglePointList(minorOpcode = 12, source = source, destination = destination, points = points)
+    private fun renderTriStrip(
+        source: Int,
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray =
+        renderTrianglePointList(
+            minorOpcode = 12,
+            source = source,
+            destination = destination,
+            points = points,
+            sourceX = sourceX,
+            sourceY = sourceY,
+        )
 
-    private fun renderTriFan(source: Int, destination: Int, points: List<Pair<Int, Int>>): ByteArray =
-        renderTrianglePointList(minorOpcode = 13, source = source, destination = destination, points = points)
+    private fun renderTriFan(
+        source: Int,
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray =
+        renderTrianglePointList(
+            minorOpcode = 13,
+            source = source,
+            destination = destination,
+            points = points,
+            sourceX = sourceX,
+            sourceY = sourceY,
+        )
 
-    private fun renderTrianglePointList(minorOpcode: Int, source: Int, destination: Int, points: List<Pair<Int, Int>>): ByteArray {
+    private fun renderTrianglePointList(
+        minorOpcode: Int,
+        source: Int,
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        sourceX: Int,
+        sourceY: Int,
+    ): ByteArray {
         val body = ByteArray(20 + points.size * 8)
         body[0] = XRender.OpSrc.toByte()
         put32le(body, 4, source)
         put32le(body, 8, destination)
         put32le(body, 12, XRender.A8Format)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
         var offset = 20
         for ((x, y) in points) {
             putFixedPoint(body, offset, x, y)
