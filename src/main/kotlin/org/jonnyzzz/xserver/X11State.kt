@@ -745,7 +745,7 @@ internal class X11State(
                 maskY = maskY,
                 maskAlphaAt = maskAlphaAt,
             ) { x, y ->
-                sourceFramebuffer.transformedPixelAt(x, y, source.repeat, source.transform)
+                sourceFramebuffer.transformedPixelAt(x, y, source.repeat, source.transform, source.filterName)
             }
         }
         return destinationFramebuffer.copyFrom(
@@ -768,18 +768,84 @@ internal class X11State(
     private fun XPicture.maskAlphaSampler(): ((x: Int, y: Int) -> Int)? {
         if (transform == IdentityTransform && repeat == XRender.RepeatNone) return null
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
-        return { x, y -> framebuffer.transformedAlphaAt(x, y, repeat, transform) }
+        return { x, y -> framebuffer.transformedAlphaAt(x, y, repeat, transform, filterName) }
     }
 
-    private fun XFramebuffer.transformedPixelAt(x: Int, y: Int, repeat: Int, transform: List<Int>): Int {
+    private fun XFramebuffer.transformedPixelAt(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int {
         val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+        if (isBilinearFilter(filterName)) {
+            return bilinearPixelAt(sample.first, sample.second, repeat)
+        }
         val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return 0
         val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return 0
         return pixelAt(sampleX, sampleY) ?: 0
     }
 
-    private fun XFramebuffer.transformedAlphaAt(x: Int, y: Int, repeat: Int, transform: List<Int>): Int =
-        (transformedPixelAt(x, y, repeat, transform) ushr 24) and 0xff
+    private fun XFramebuffer.transformedAlphaAt(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int =
+        (transformedPixelAt(x, y, repeat, transform, filterName) ushr 24) and 0xff
+
+    private fun XFramebuffer.bilinearPixelAt(x: Double, y: Double, repeat: Int): Int {
+        val sourceX = x - 0.5
+        val sourceY = y - 0.5
+        val x0 = floor(sourceX).toInt()
+        val y0 = floor(sourceY).toInt()
+        val fx = sourceX - x0
+        val fy = sourceY - y0
+        val p00 = repeatedPixelAt(x0, y0, repeat)
+        val p10 = repeatedPixelAt(x0 + 1, y0, repeat)
+        val p01 = repeatedPixelAt(x0, y0 + 1, repeat)
+        val p11 = repeatedPixelAt(x0 + 1, y0 + 1, repeat)
+        return bilinearPixel(p00, p10, p01, p11, fx, fy)
+    }
+
+    private fun XFramebuffer.repeatedPixelAt(x: Int, y: Int, repeat: Int): Int {
+        val sampleX = repeatedPixelIndex(x, width, repeat) ?: return 0
+        val sampleY = repeatedPixelIndex(y, height, repeat) ?: return 0
+        return pixelAt(sampleX, sampleY) ?: 0
+    }
+
+    private fun repeatedPixelIndex(index: Int, size: Int, repeat: Int): Int? {
+        if (size <= 0) return null
+        if (repeat == XRender.RepeatNone) return index.takeIf { it in 0 until size }
+        return when (repeat) {
+            XRender.RepeatPad -> index.coerceIn(0, size - 1)
+            XRender.RepeatNormal -> ((index % size) + size) % size
+            XRender.RepeatReflect -> {
+                val period = size * 2
+                val offset = ((index % period) + period) % period
+                if (offset < size) offset else period - offset - 1
+            }
+            else -> index.takeIf { it in 0 until size }
+        }
+    }
+
+    private fun bilinearPixel(p00: Int, p10: Int, p01: Int, p11: Int, fx: Double, fy: Double): Int {
+        fun interpolate(value00: Double, value10: Double, value01: Double, value11: Double): Double {
+            val top = value00 + (value10 - value00) * fx
+            val bottom = value01 + (value11 - value01) * fx
+            return top + (bottom - top) * fy
+        }
+        fun alpha(pixel: Int): Int = (pixel ushr 24) and 0xff
+        fun premultiplied(pixel: Int, shift: Int): Double = ((pixel ushr shift) and 0xff) * alpha(pixel) / 255.0
+        val outAlpha = interpolate(alpha(p00).toDouble(), alpha(p10).toDouble(), alpha(p01).toDouble(), alpha(p11).toDouble())
+            .roundToInt()
+            .coerceIn(0, 255)
+        if (outAlpha == 0) return 0
+        fun channel(shift: Int): Int {
+            val premultipliedChannel = interpolate(
+                premultiplied(p00, shift),
+                premultiplied(p10, shift),
+                premultiplied(p01, shift),
+                premultiplied(p11, shift),
+            )
+            return (premultipliedChannel * 255.0 / outAlpha).roundToInt().coerceIn(0, 255)
+        }
+        return (outAlpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    // XRender exposes good/best as higher-quality filters; use bilinear until convolution filters are implemented.
+    private fun isBilinearFilter(filterName: String?): Boolean =
+        filterName == "bilinear" || filterName == "good" || filterName == "best"
 
     private fun repeatedPixelCoordinate(coordinate: Double, size: Int, repeat: Int): Int? {
         if (size <= 0) return null
