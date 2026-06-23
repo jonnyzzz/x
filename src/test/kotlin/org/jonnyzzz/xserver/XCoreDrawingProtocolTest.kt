@@ -1078,6 +1078,66 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryTextExtents reports synthetic fixed metrics for even and odd CHAR2B strings`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(queryTextExtentsRequest(GcId, char2b = listOf(0x00 to 'O'.code, 0x00 to 'K'.code)))
+                out.write(queryTextExtentsRequest(GcId, char2b = listOf(0x00 to 'A'.code, 0x01 to 0x80, 0x00 to 'B'.code)))
+                out.flush()
+
+                val even = readReply(socket.getInputStream())
+                assertEquals(1, even[0].toInt())
+                assertEquals(0, even[1].toInt())
+                assertEquals(0, u32le(even, 4))
+                assertEquals(12, u16le(even, 8))
+                assertEquals(4, u16le(even, 10))
+                assertEquals(12, u16le(even, 12))
+                assertEquals(4, u16le(even, 14))
+                assertEquals(16, u32le(even, 16))
+                assertEquals(0, u32le(even, 20))
+                assertEquals(16, u32le(even, 24))
+
+                val odd = readReply(socket.getInputStream())
+                assertEquals(24, u32le(odd, 16))
+                assertEquals(24, u32le(odd, 24))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `QueryTextExtents keeps font metrics and zero overall bounds for empty string`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(queryTextExtentsRequest(GcId, char2b = emptyList()))
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(12, u16le(reply, 8))
+                assertEquals(4, u16le(reply, 10))
+                assertEquals(0, u16le(reply, 12))
+                assertEquals(0, u16le(reply, 14))
+                assertEquals(0, u32le(reply, 16))
+                assertEquals(0, u32le(reply, 20))
+                assertEquals(0, u32le(reply, 24))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyText8 paints pixmap framebuffer content and honors item delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1470,6 +1530,19 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, fontable)
         return request(47, 0, body)
+    }
+
+    private fun queryTextExtentsRequest(fontable: Int, char2b: List<Pair<Int, Int>>): ByteArray {
+        val oddLength = char2b.size % 2
+        val body = ByteArray(4 + char2b.size * 2 + if (oddLength != 0) 2 else 0)
+        put32le(body, 0, fontable)
+        var offset = 4
+        for ((byte1, byte2) in char2b) {
+            body[offset] = byte1.toByte()
+            body[offset + 1] = byte2.toByte()
+            offset += 2
+        }
+        return request(48, oddLength, body)
     }
 
     private fun getImageRequest(

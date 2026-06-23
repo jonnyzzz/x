@@ -130,6 +130,7 @@ internal class X11Connection(
             45 -> openFont(body)
             46 -> closeResource(body)
             47 -> queryFont(body)
+            48 -> queryTextExtents(minorOpcode, body)
             49 -> listFonts()
             52 -> getFontPath()
             53 -> createPixmap(minorOpcode, body)
@@ -1125,6 +1126,24 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun queryTextExtents(oddLength: Int, body: ByteArray) {
+        if (body.size < 4) return writeError(error = 2, opcode = 48, badValue = 0)
+        val padBytes = if (oddLength != 0) 2 else 0
+        val stringBytes = (body.size - 4 - padBytes).coerceAtLeast(0)
+        val charCount = stringBytes / 2
+        val overallWidth = charCount * XFramebuffer.TextCellWidth
+        val hasText = charCount > 0
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XFramebuffer.TextAscent)
+        byteOrder.put16(reply, 10, XFramebuffer.TextDescent)
+        byteOrder.put16(reply, 12, if (hasText) XFramebuffer.TextAscent else 0)
+        byteOrder.put16(reply, 14, if (hasText) XFramebuffer.TextDescent else 0)
+        byteOrder.put32(reply, 16, overallWidth)
+        byteOrder.put32(reply, 20, 0)
+        byteOrder.put32(reply, 24, overallWidth)
+        write(reply)
+    }
+
     private fun listFonts() {
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 8, 0)
@@ -1749,6 +1768,7 @@ internal class X11Connection(
             45 -> "OpenFont"
             46 -> "CloseFont"
             47 -> "QueryFont"
+            48 -> "QueryTextExtents"
             49 -> "ListFonts"
             52 -> "GetFontPath"
             53 -> "CreatePixmap"
