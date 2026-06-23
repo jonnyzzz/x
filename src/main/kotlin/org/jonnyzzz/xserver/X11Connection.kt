@@ -2476,17 +2476,27 @@ internal class X11Connection(
         if (value > 6.0 / 29.0) value * value * value else 3.0 * (6.0 / 29.0).pow(2.0) * (value - 4.0 / 29.0)
 
     private fun queryColors(body: ByteArray) {
+        if (body.size < 4 || (body.size - 4) % 4 != 0) return writeError(error = 16, opcode = 91, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 91, badValue = colormap)
         val count = (body.size - 4) / 4
+        var sourceOffset = 4
+        repeat(count) {
+            val pixel = byteOrder.u32(body, sourceOffset)
+            if (!isValidTrueColorPixel(pixel)) return writeError(error = 2, opcode = 91, badValue = pixel)
+            sourceOffset += 4
+        }
         val reply = reply(extra = 0, payloadUnits = count * 2)
         byteOrder.put16(reply, 8, count)
-        var sourceOffset = 4
+        sourceOffset = 4
         var targetOffset = 32
         repeat(count) {
             val pixel = byteOrder.u32(body, sourceOffset)
+            val color = XNamedColor.fromPixel(pixel)
             sourceOffset += 4
-            byteOrder.put16(reply, targetOffset, ((pixel ushr 16) and 0xff) * 257)
-            byteOrder.put16(reply, targetOffset + 2, ((pixel ushr 8) and 0xff) * 257)
-            byteOrder.put16(reply, targetOffset + 4, (pixel and 0xff) * 257)
+            byteOrder.put16(reply, targetOffset, color.visualRed)
+            byteOrder.put16(reply, targetOffset + 2, color.visualGreen)
+            byteOrder.put16(reply, targetOffset + 4, color.visualBlue)
             targetOffset += 8
         }
         write(reply)

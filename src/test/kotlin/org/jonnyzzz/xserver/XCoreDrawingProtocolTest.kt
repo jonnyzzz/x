@@ -923,6 +923,45 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryColors validates colormap pixels and length before returning color triples`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 28
+                val out = socket.getOutputStream()
+                out.write(queryColorsRequest(X11Ids.DefaultColormap, listOf(Red, 0x0012_569a)))
+                out.write(queryColorsRequest(missingColormap, listOf(Red)))
+                out.write(queryColorsRequest(X11Ids.DefaultColormap, listOf(0x0100_0000)))
+                out.write(request(91, 0, ByteArray(0)))
+                out.write(queryColorsRequest(X11Ids.DefaultColormap, emptyList()))
+                out.flush()
+
+                val colors = readReply(socket.getInputStream())
+                assertEquals(1, colors[0].toInt())
+                assertEquals(1, u16le(colors, 2))
+                assertEquals(4, u32le(colors, 4))
+                assertEquals(2, u16le(colors, 8))
+                assertQueriedColor(colors, index = 0, red = 0xffff, green = 0, blue = 0)
+                assertQueriedColor(colors, index = 1, red = 0x1212, green = 0x5656, blue = 0x9a9a)
+
+                assertError(socket.getInputStream(), error = 12, opcode = 91, badValue = missingColormap, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 91, badValue = 0x0100_0000, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 91, badValue = 0, sequence = 4)
+
+                val empty = readReply(socket.getInputStream())
+                assertEquals(1, empty[0].toInt())
+                assertEquals(5, u16le(empty, 2))
+                assertEquals(0, u32le(empty, 4))
+                assertEquals(0, u16le(empty, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `AllocNamedColor returns pixel and exact visual color triples`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3548,6 +3587,15 @@ class XCoreDrawingProtocolTest {
         return request(90, 0x07, body)
     }
 
+    private fun queryColorsRequest(colormap: Int, pixels: List<Int>): ByteArray {
+        val body = ByteArray(4 + pixels.size * 4)
+        put32le(body, 0, colormap)
+        pixels.forEachIndexed { index, pixel ->
+            put32le(body, 4 + index * 4, pixel)
+        }
+        return request(91, 0, body)
+    }
+
     private fun allocNamedColorRequest(colormap: Int, name: String): ByteArray =
         namedColorRequest(opcode = 85, colormap = colormap, name = name)
 
@@ -4202,6 +4250,14 @@ class XCoreDrawingProtocolTest {
         assertEquals(visualRed, u16le(reply, offset + 6))
         assertEquals(visualGreen, u16le(reply, offset + 8))
         assertEquals(visualBlue, u16le(reply, offset + 10))
+    }
+
+    private fun assertQueriedColor(reply: ByteArray, index: Int, red: Int, green: Int, blue: Int) {
+        val offset = 32 + index * 8
+        assertEquals(red, u16le(reply, offset))
+        assertEquals(green, u16le(reply, offset + 2))
+        assertEquals(blue, u16le(reply, offset + 4))
+        assertEquals(0, u16le(reply, offset + 6))
     }
 
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {
