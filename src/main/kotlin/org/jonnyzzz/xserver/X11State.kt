@@ -19,6 +19,7 @@ internal class X11State(
     private val fonts = linkedSetOf<Int>()
     private val cursors = linkedSetOf<Int>()
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
+    private val installedColormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val pictures = linkedMapOf<Int, XPicture>()
     private val glyphSets = linkedMapOf<Int, XGlyphSet>()
     private val atomIds = linkedMapOf<String, Int>()
@@ -134,11 +135,15 @@ internal class X11State(
             gcs.remove(id)
             fonts.remove(id)
             cursors.remove(id)
-            if (id != X11Ids.DefaultColormap) colormaps.remove(id)
+            if (id != X11Ids.DefaultColormap) {
+                colormaps.remove(id)
+                installedColormaps.remove(id)
+            }
             glxContexts.remove(id)
             pictures.remove(id)
             glyphSets.remove(id)
         }
+        ensureDefaultColormapInstalled()
     }
 
     @Synchronized
@@ -1835,15 +1840,42 @@ internal class X11State(
     }
 
     @Synchronized
+    fun hasColormap(id: Int): Boolean = colormaps.contains(id)
+
+    @Synchronized
+    fun installColormap(id: Int) {
+        if (!colormaps.contains(id)) return
+        installedColormaps.clear()
+        installedColormaps += id
+    }
+
+    @Synchronized
+    fun uninstallColormap(id: Int) {
+        if (id != X11Ids.DefaultColormap) installedColormaps.remove(id)
+        ensureDefaultColormapInstalled()
+    }
+
+    @Synchronized
+    fun installedColormaps(): List<Int> = installedColormaps.toList()
+
+    @Synchronized
     fun removeResource(id: Int) {
         pixmaps.remove(id)
         gcs.remove(id)
         fonts.remove(id)
         cursors.remove(id)
-        colormaps.remove(id)
+        if (id != X11Ids.DefaultColormap) {
+            colormaps.remove(id)
+            installedColormaps.remove(id)
+        }
         glxContexts.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
+        ensureDefaultColormapInstalled()
+    }
+
+    private fun ensureDefaultColormapInstalled() {
+        if (installedColormaps.isEmpty()) installedColormaps += X11Ids.DefaultColormap
     }
 
     @Synchronized

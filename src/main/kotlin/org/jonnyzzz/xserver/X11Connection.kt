@@ -161,8 +161,9 @@ internal class X11Connection(
             77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(body)
             79 -> closeResource(body)
-            81 -> unitReplyless()
-            83 -> listInstalledColormaps()
+            81 -> installColormap(body)
+            82 -> uninstallColormap(body)
+            83 -> listInstalledColormaps(body)
             84 -> allocColor(body)
             85 -> lookupColor()
             91 -> queryColors(body)
@@ -2161,10 +2162,30 @@ internal class X11Connection(
         }
     }
 
-    private fun listInstalledColormaps() {
-        val reply = reply(extra = 0, payloadUnits = 1)
-        byteOrder.put16(reply, 8, 1)
-        byteOrder.put32(reply, 32, X11Ids.DefaultColormap)
+    private fun installColormap(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 81, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 81, badValue = colormap)
+        state.installColormap(colormap)
+    }
+
+    private fun uninstallColormap(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 82, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 82, badValue = colormap)
+        state.uninstallColormap(colormap)
+    }
+
+    private fun listInstalledColormaps(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 83, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = 83, badValue = window)
+        val colormaps = state.installedColormaps()
+        val reply = reply(extra = 0, payloadUnits = colormaps.size)
+        byteOrder.put16(reply, 8, colormaps.size)
+        colormaps.forEachIndexed { index, colormap ->
+            byteOrder.put32(reply, 32 + index * 4, colormap)
+        }
         write(reply)
     }
 
@@ -2341,6 +2362,7 @@ internal class X11Connection(
             78 -> "CreateColormap"
             79 -> "FreeColormap"
             81 -> "InstallColormap"
+            82 -> "UninstallColormap"
             83 -> "ListInstalledColormaps"
             84 -> "AllocColor"
             85 -> "AllocNamedColor"

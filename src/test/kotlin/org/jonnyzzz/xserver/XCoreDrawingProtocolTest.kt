@@ -633,6 +633,79 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `InstallColormap and UninstallColormap update installed colormap list`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(installColormapRequest(ColormapId))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.write(uninstallColormapRequest(ColormapId))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.write(createColormapRequest(ColormapId + 2, window = X11Ids.RootWindow))
+                out.write(installColormapRequest(ColormapId + 2))
+                out.write(freeColormapRequest(ColormapId + 2))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertEquals(listOf(X11Ids.DefaultColormap), installedColormaps(readReply(socket.getInputStream())))
+                assertEquals(listOf(ColormapId), installedColormaps(readReply(socket.getInputStream())))
+                assertEquals(listOf(X11Ids.DefaultColormap), installedColormaps(readReply(socket.getInputStream())))
+                assertEquals(listOf(X11Ids.DefaultColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `InstallColormap and ListInstalledColormaps validate resource ids without mutating installed state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingColormap = ColormapId + 1
+                val missingWindow = WindowId + 100
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(installColormapRequest(ColormapId))
+                out.write(installColormapRequest(missingColormap))
+                out.write(uninstallColormapRequest(missingColormap))
+                out.write(listInstalledColormapsRequest(missingWindow))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                val installError = socket.getInputStream().readExactly(32)
+                assertEquals(0, installError[0].toInt())
+                assertEquals(12, installError[1].toInt() and 0xff)
+                assertEquals(missingColormap, u32le(installError, 4))
+                assertEquals(81, installError[10].toInt() and 0xff)
+
+                val uninstallError = socket.getInputStream().readExactly(32)
+                assertEquals(0, uninstallError[0].toInt())
+                assertEquals(12, uninstallError[1].toInt() and 0xff)
+                assertEquals(missingColormap, u32le(uninstallError, 4))
+                assertEquals(82, uninstallError[10].toInt() and 0xff)
+
+                val windowError = socket.getInputStream().readExactly(32)
+                assertEquals(0, windowError[0].toInt())
+                assertEquals(3, windowError[1].toInt() and 0xff)
+                assertEquals(missingWindow, u32le(windowError, 4))
+                assertEquals(83, windowError[10].toInt() and 0xff)
+
+                assertEquals(listOf(ColormapId), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2973,6 +3046,30 @@ class XCoreDrawingProtocolTest {
         return request(78, 0, body)
     }
 
+    private fun freeColormapRequest(colormap: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, colormap)
+        return request(79, 0, body)
+    }
+
+    private fun installColormapRequest(colormap: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, colormap)
+        return request(81, 0, body)
+    }
+
+    private fun uninstallColormapRequest(colormap: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, colormap)
+        return request(82, 0, body)
+    }
+
+    private fun listInstalledColormapsRequest(window: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, window)
+        return request(83, 0, body)
+    }
+
     private fun grabPointerRequest(window: Int): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
@@ -3591,6 +3688,11 @@ class XCoreDrawingProtocolTest {
     private fun pixelAt(reply: ByteArray, imageWidth: Int, x: Int, y: Int): Int =
         u32le(reply, 32 + (y * imageWidth + x) * 4)
 
+    private fun installedColormaps(reply: ByteArray): List<Int> {
+        val count = u16le(reply, 8)
+        return (0 until count).map { index -> u32le(reply, 32 + index * 4) }
+    }
+
     private fun countPixels(reply: ByteArray, imageWidth: Int, imageHeight: Int, pixel: Int): Int {
         var count = 0
         for (y in 0 until imageHeight) {
@@ -3669,6 +3771,7 @@ class XCoreDrawingProtocolTest {
         const val WindowId = 0x0020_0001
         const val PixmapId = 0x0020_0100
         const val GcId = 0x0020_1001
+        const val ColormapId = 0x0020_2001
         const val PrimaryAtom = 1
         const val AtomAtom = 4
         const val StringAtom = 31
