@@ -161,6 +161,7 @@ internal class X11Connection(
             77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(body)
             79 -> closeResource(body)
+            80 -> copyColormapAndFree(body)
             81 -> installColormap(body)
             82 -> uninstallColormap(body)
             83 -> listInstalledColormaps(body)
@@ -2162,6 +2163,16 @@ internal class X11Connection(
         }
     }
 
+    private fun copyColormapAndFree(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = 80, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        val source = byteOrder.u32(body, 4)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 80, badValue = id)
+        if (!state.hasColormap(source)) return writeError(error = 12, opcode = 80, badValue = source)
+        state.putColormap(id)
+        own(id)
+    }
+
     private fun installColormap(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 81, badValue = 0)
         val colormap = byteOrder.u32(body, 0)
@@ -2361,6 +2372,7 @@ internal class X11Connection(
             77 -> "ImageText16"
             78 -> "CreateColormap"
             79 -> "FreeColormap"
+            80 -> "CopyColormapAndFree"
             81 -> "InstallColormap"
             82 -> "UninstallColormap"
             83 -> "ListInstalledColormaps"

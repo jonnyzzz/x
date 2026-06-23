@@ -633,6 +633,71 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CopyColormapAndFree creates an installable colormap from an existing source`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val copiedColormap = ColormapId + 10
+                val out = socket.getOutputStream()
+                out.write(copyColormapAndFreeRequest(copiedColormap, X11Ids.DefaultColormap))
+                out.write(installColormapRequest(copiedColormap))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertEquals(listOf(copiedColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyColormapAndFree validates ids and length before creating resource`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val copiedColormap = ColormapId + 11
+                val missingSource = ColormapId + 12
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(copyColormapAndFreeRequest(ColormapId, X11Ids.DefaultColormap))
+                out.write(copyColormapAndFreeRequest(copiedColormap, missingSource))
+                out.write(request(80, 0, ByteArray(4)))
+                out.write(copyColormapAndFreeRequest(copiedColormap, ColormapId))
+                out.write(installColormapRequest(copiedColormap))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(ColormapId, u32le(duplicateError, 4))
+                assertEquals(80, duplicateError[10].toInt() and 0xff)
+
+                val sourceError = socket.getInputStream().readExactly(32)
+                assertEquals(0, sourceError[0].toInt())
+                assertEquals(12, sourceError[1].toInt() and 0xff)
+                assertEquals(missingSource, u32le(sourceError, 4))
+                assertEquals(80, sourceError[10].toInt() and 0xff)
+
+                val lengthError = socket.getInputStream().readExactly(32)
+                assertEquals(0, lengthError[0].toInt())
+                assertEquals(16, lengthError[1].toInt() and 0xff)
+                assertEquals(0, u32le(lengthError, 4))
+                assertEquals(80, lengthError[10].toInt() and 0xff)
+
+                assertEquals(listOf(copiedColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `InstallColormap and UninstallColormap update installed colormap list`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3050,6 +3115,13 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, colormap)
         return request(79, 0, body)
+    }
+
+    private fun copyColormapAndFreeRequest(colormap: Int, source: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, colormap)
+        put32le(body, 4, source)
+        return request(80, 0, body)
     }
 
     private fun installColormapRequest(colormap: Int): ByteArray {
