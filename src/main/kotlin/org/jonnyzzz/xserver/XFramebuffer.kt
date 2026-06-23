@@ -515,6 +515,28 @@ internal class XFramebuffer(
         return XImagePixels(bounds.width, bounds.height, copied)
     }
 
+    fun tileTo(
+        destination: XFramebuffer,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        if (this.width <= 0 || this.height <= 0) return false
+        val bounds = destination.clippedBounds(destinationX, destinationY, width, height) ?: return false
+        var painted = false
+        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
+            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
+                val sourceX = column.floorMod(this.width)
+                val sourceY = row.floorMod(this.height)
+                destination.pixels[row * destination.width + column] = pixels[sourceY * this.width + sourceX]
+                painted = true
+            }
+        }
+        if (painted) destination.markPainted()
+        return painted
+    }
+
     fun pixelAt(x: Int, y: Int): Int? =
         if (x in 0 until width && y in 0 until height) {
             pixels[y * width + x]
@@ -757,6 +779,11 @@ internal class XFramebuffer(
 
     private fun usesCoreRaster(function: Int, planeMask: Int): Boolean =
         function != XGraphicsContext.GXcopy || planeMask != -1
+
+    private fun Int.floorMod(modulus: Int): Int {
+        val result = this % modulus
+        return if (result < 0) result + modulus else result
+    }
 
     private fun corePixel(source: Int, destination: Int, function: Int, planeMask: Int): Int {
         val mask = planeMask and CorePixelMask

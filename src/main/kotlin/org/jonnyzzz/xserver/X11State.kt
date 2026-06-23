@@ -296,15 +296,13 @@ internal class X11State(
         val target = rectangle ?: XRectangleCommand(0, 0, window.width, window.height)
         val backgroundPixmap = window.backgroundPixmapId?.let { pixmaps[it] }
         if (backgroundPixmap != null) {
-            return backgroundPixmap.framebuffer.copyAreaTo(
+            return backgroundPixmap.framebuffer.tileTo(
                 destination = window.framebuffer,
-                sourceX = 0,
-                sourceY = 0,
                 destinationX = target.x,
                 destinationY = target.y,
                 width = target.width,
                 height = target.height,
-            ) != null
+            )
         }
         return window.framebuffer.fill(target.x, target.y, target.width, target.height, window.backgroundPixel)
     }

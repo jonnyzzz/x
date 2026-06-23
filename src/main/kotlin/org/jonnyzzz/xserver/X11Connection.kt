@@ -857,7 +857,6 @@ internal class X11Connection(
                     " backgroundPixel=${attributes.backgroundPixel?.toHex() ?: "none"}" +
                     " backgroundPixmap=${attributes.backgroundPixmapId?.toHex() ?: "none"}",
             )
-            state.paintWindowBackground(windowId)
         }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }

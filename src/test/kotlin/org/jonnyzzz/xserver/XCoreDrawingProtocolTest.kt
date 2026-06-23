@@ -69,6 +69,124 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `window background pixmap tiles on ClearArea without immediate attribute repaint`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 5, height = 4))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24Request(WindowId, width = 5, height = 4, pixel = 0x0012_3456))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0000_0000),
+                    ),
+                )
+                out.write(changeWindowBackgroundPixmapRequest(WindowId, PixmapId))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.write(clearAreaRequest(WindowId, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 4))
+                out.flush()
+
+                val unchanged = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(unchanged, 1, 0, 0))
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 2, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 5, 0, 1))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 5, 1, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 3, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 5, 4, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ClearArea with background pixmap preserves window-origin tile phase`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 5, height = 4))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24Request(WindowId, width = 5, height = 4, pixel = 0x0012_3456))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0000_0000),
+                    ),
+                )
+                out.write(changeWindowBackgroundPixmapRequest(WindowId, PixmapId))
+                out.write(putImage24Request(WindowId, width = 5, height = 4, pixel = 0x0012_3456))
+                out.write(clearAreaRequest(WindowId, x = 1, y = 1, width = 3, height = 2))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 5, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 5, 2, 1))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 5, 3, 1))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 1, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 2, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 3, 2))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 5, 4, 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `clipped negative ClearArea with background pixmap preserves window-origin tile phase`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 5, height = 4))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(Red, Green, Blue, 0x0000_0000),
+                    ),
+                )
+                out.write(changeWindowBackgroundPixmapRequest(WindowId, PixmapId))
+                out.write(putImage24Request(WindowId, width = 5, height = 4, pixel = 0x0012_3456))
+                out.write(clearAreaRequest(WindowId, x = -1, y = -1, width = 3, height = 3))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 5, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 5, 1, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 5, 0, 1))
+                assertEquals(0xff00_0000.toInt(), pixelAt(image, 5, 1, 1))
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 5, 2, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing applies GC plane mask to framebuffer pixels`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1017,6 +1135,24 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(8, 0, body)
+    }
+
+    private fun changeWindowBackgroundPixmapRequest(id: Int, pixmap: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put32le(body, 4, 0x0000_0001)
+        put32le(body, 8, pixmap)
+        return request(2, 0, body)
+    }
+
+    private fun clearAreaRequest(id: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, id)
+        put16le(body, 4, x)
+        put16le(body, 6, y)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        return request(61, 0, body)
     }
 
     private fun createGcRequest(id: Int, foreground: Int, background: Int? = null, drawable: Int = WindowId): ByteArray {
