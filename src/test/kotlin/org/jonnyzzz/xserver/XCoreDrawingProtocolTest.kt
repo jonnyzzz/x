@@ -575,6 +575,35 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `RecolorCursor validates cursor id and length without replacing cursor resource`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val cursor = PixmapId + 80
+                val missingCursor = cursor + 1
+                val out = socket.getOutputStream()
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(recolorCursorRequest(cursor))
+                out.write(recolorCursorRequest(missingCursor))
+                out.write(request(96, 0, ByteArray(12)))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0xffff, green = 0, blue = 0))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 6, opcode = 96, badValue = missingCursor, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 96, badValue = 0, sequence = 4)
+
+                val red = readReply(socket.getInputStream())
+                assertEquals(5, u16le(red, 2))
+                assertEquals(Red, u32le(red, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3459,6 +3488,14 @@ class XCoreDrawingProtocolTest {
         put16le(body, 16, 0xffff)
         put16le(body, 22, 0xffff)
         return request(94, 0, body)
+    }
+
+    private fun recolorCursorRequest(cursor: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, cursor)
+        put16le(body, 4, 0xffff)
+        put16le(body, 10, 0xffff)
+        return request(96, 0, body)
     }
 
     private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {

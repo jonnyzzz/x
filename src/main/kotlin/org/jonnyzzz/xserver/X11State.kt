@@ -1835,6 +1835,9 @@ internal class X11State(
     }
 
     @Synchronized
+    fun hasCursor(id: Int): Boolean = cursors.contains(id)
+
+    @Synchronized
     fun putColormap(id: Int) {
         colormaps += id
     }
