@@ -1001,6 +1001,28 @@ internal class X11State(
     fun hasGc(id: Int): Boolean = gcs.containsKey(id)
 
     @Synchronized
+    fun copyGc(sourceId: Int, destinationId: Int, mask: Int) {
+        val source = gcs[sourceId] ?: return
+        val destination = gcs[destinationId] ?: return
+        for (bit in 0..22) {
+            if ((mask and (1 shl bit)) == 0) continue
+            when (bit) {
+                0 -> destination.function = source.function
+                1 -> destination.planeMask = source.planeMask
+                2 -> destination.foreground = source.foreground
+                3 -> destination.background = source.background
+                4 -> destination.lineWidth = source.lineWidth
+                9 -> destination.fillRule = source.fillRule
+                14 -> destination.fontId = source.fontId
+                17 -> destination.clipXOrigin = source.clipXOrigin
+                18 -> destination.clipYOrigin = source.clipYOrigin
+                19 -> destination.clipRectangles = source.clipRectangles?.toList()
+                22 -> destination.arcMode = source.arcMode
+            }
+        }
+    }
+
+    @Synchronized
     fun hasResource(id: Int): Boolean =
         windows.containsKey(id) ||
             pixmaps.containsKey(id) ||

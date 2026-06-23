@@ -310,6 +310,71 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CopyGC copies selected foreground and clip mask into destination GC`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(1, 0, 2, 1))))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0008_0004))
+                out.write(polyPointRequest(WindowId, GcId + 1, coordMode = 0, points = listOf(0 to 0, 1 to 0, 2 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyGC reports errors for unknown GC and invalid mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(copyGcRequest(GcId + 1, GcId, mask = 0x0000_0004))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0000_0004))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0080_0000))
+                out.flush()
+
+                val missingSource = socket.getInputStream().readExactly(32)
+                assertEquals(0, missingSource[0].toInt())
+                assertEquals(13, missingSource[1].toInt() and 0xff)
+                assertEquals(GcId + 1, u32le(missingSource, 4))
+                assertEquals(57, missingSource[10].toInt() and 0xff)
+
+                val missingDestination = socket.getInputStream().readExactly(32)
+                assertEquals(0, missingDestination[0].toInt())
+                assertEquals(13, missingDestination[1].toInt() and 0xff)
+                assertEquals(GcId + 1, u32le(missingDestination, 4))
+                assertEquals(57, missingDestination[10].toInt() and 0xff)
+
+                val invalidMask = socket.getInputStream().readExactly(32)
+                assertEquals(0, invalidMask[0].toInt())
+                assertEquals(2, invalidMask[1].toInt() and 0xff)
+                assertEquals(0x0080_0000, u32le(invalidMask, 4))
+                assertEquals(57, invalidMask[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1299,6 +1364,14 @@ class XCoreDrawingProtocolTest {
             put32le(body, 8 + index * 4, value)
         }
         return request(56, 0, body)
+    }
+
+    private fun copyGcRequest(source: Int, destination: Int, mask: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        put32le(body, 8, mask)
+        return request(57, 0, body)
     }
 
     private fun polyPointRequest(drawable: Int, gc: Int, coordMode: Int, points: List<Pair<Int, Int>>): ByteArray {

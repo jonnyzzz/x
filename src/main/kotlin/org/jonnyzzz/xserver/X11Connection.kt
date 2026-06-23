@@ -137,6 +137,7 @@ internal class X11Connection(
             54 -> closeResource(body)
             55 -> createGc(body)
             56 -> changeGc(body)
+            57 -> copyGc(body)
             59 -> setClipRectangles(minorOpcode, body)
             60 -> closeResource(body)
             61 -> clearArea(body)
@@ -1314,6 +1315,17 @@ internal class X11Connection(
         applyGcValues(id, byteOrder.u32(body, 4), body, 8, opcode = 56)
     }
 
+    private fun copyGc(body: ByteArray) {
+        if (body.size < 12) return
+        val sourceId = byteOrder.u32(body, 0)
+        val destinationId = byteOrder.u32(body, 4)
+        val mask = byteOrder.u32(body, 8)
+        if (!state.hasGc(sourceId)) return writeError(error = 13, opcode = 57, badValue = sourceId)
+        if (!state.hasGc(destinationId)) return writeError(error = 13, opcode = 57, badValue = destinationId)
+        if ((mask and GcValueMask.inv()) != 0) return writeError(error = 2, opcode = 57, badValue = mask)
+        state.copyGc(sourceId, destinationId, mask)
+    }
+
     private fun setClipRectangles(ordering: Int, body: ByteArray) {
         if (body.size < 8) return
         if (ordering !in 0..3) return writeError(error = 2, opcode = 59, badValue = ordering)
@@ -1896,6 +1908,7 @@ internal class X11Connection(
             54 -> "FreePixmap"
             55 -> "CreateGC"
             56 -> "ChangeGC"
+            57 -> "CopyGC"
             59 -> "SetClipRectangles"
             60 -> "FreeGC"
             61 -> "ClearArea"
