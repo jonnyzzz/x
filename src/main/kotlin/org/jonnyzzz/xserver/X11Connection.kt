@@ -1481,15 +1481,18 @@ internal class X11Connection(
     private fun createPixmap(depth: Int, body: ByteArray) {
         if (body.size < 12) return
         val id = byteOrder.u32(body, 0)
+        val drawableId = byteOrder.u32(body, 4)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 53, badValue = drawableId)
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
-        System.err.println("core seq=$sequence CreatePixmap pixmap=${id.toHex()} depth=$depth ${width}x$height drawable=${byteOrder.u32(body, 4).toHex()}")
+        System.err.println("core seq=$sequence CreatePixmap pixmap=${id.toHex()} depth=$depth ${width}x$height drawable=${drawableId.toHex()}")
         state.putPixmap(
             XPixmap(
                 id = id,
                 width = width,
                 height = height,
                 depth = depth,
+                rootId = drawable.rootId,
             ),
         )
         own(id)

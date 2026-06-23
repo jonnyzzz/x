@@ -406,6 +406,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreatePixmap validates source drawable before creating pixmap resource`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDrawable = 0x0020_9999
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, drawable = missingDrawable))
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId + 1, foreground = Red, drawable = PixmapId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Blue, drawable = PixmapId))
+                out.write(polyPointRequest(PixmapId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val pixmapError = socket.getInputStream().readExactly(32)
+                assertEquals(0, pixmapError[0].toInt())
+                assertEquals(9, pixmapError[1].toInt() and 0xff)
+                assertEquals(missingDrawable, u32le(pixmapError, 4))
+                assertEquals(53, pixmapError[10].toInt() and 0xff)
+
+                val gcError = socket.getInputStream().readExactly(32)
+                assertEquals(0, gcError[0].toInt())
+                assertEquals(9, gcError[1].toInt() and 0xff)
+                assertEquals(PixmapId, u32le(gcError, 4))
+                assertEquals(55, gcError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1704,10 +1742,10 @@ class XCoreDrawingProtocolTest {
         return request(1, 24, body)
     }
 
-    private fun createPixmapRequest(id: Int, width: Int, height: Int, depth: Int = 24): ByteArray {
+    private fun createPixmapRequest(id: Int, width: Int, height: Int, depth: Int = 24, drawable: Int = WindowId): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, id)
-        put32le(body, 4, WindowId)
+        put32le(body, 4, drawable)
         put16le(body, 8, width)
         put16le(body, 10, height)
         return request(53, depth, body)
