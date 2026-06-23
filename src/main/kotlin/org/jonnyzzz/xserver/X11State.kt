@@ -385,6 +385,7 @@ internal class X11State(
                             colors = gradient.colors,
                         )
                     },
+                    repeat = picture.repeat,
                     clipRectangles = picture.clipRectangles.size,
                     transform = picture.transform,
                     filterName = picture.filterName,
@@ -467,8 +468,9 @@ internal class X11State(
     }
 
     @Synchronized
-    fun updatePicture(id: Int, valueMask: Int) {
+    fun updatePicture(id: Int, valueMask: Int, repeat: Int? = null) {
         pictures[id]?.valueMask = valueMask
+        repeat?.let { pictures[id]?.repeat = it }
     }
 
     @Synchronized
@@ -660,7 +662,7 @@ internal class X11State(
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val linearGradient = source.linearGradient
         if (linearGradient != null) {
-            val sampleGradient = linearGradient.pixelSampler()
+            val sampleGradient = linearGradient.pixelSampler(source.repeat)
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -739,7 +741,7 @@ internal class X11State(
         )
     }
 
-    private fun XLinearGradient.pixelSampler(): (x: Int, y: Int) -> Int {
+    private fun XLinearGradient.pixelSampler(repeat: Int): (x: Int, y: Int) -> Int {
         val pairs = stops.zip(colors).sortedBy { it.first }
         if (pairs.isEmpty()) return { _, _ -> 0xff00_0000.toInt() }
         val x1 = p1.x.fixedToDouble()
@@ -752,30 +754,73 @@ internal class X11State(
         val fixedStops = pairs.map { it.first.fixedToDouble() }
         return { x, y ->
             val position = if (denominator == 0.0) {
-                fixedStops.last()
+                0.0
             } else {
-                ((x - x1) * dx + (y - y1) * dy) / denominator
+                val sampleX = x + 0.5
+                val sampleY = y + 0.5
+                ((sampleX - x1) * dx + (sampleY - y1) * dy) / denominator
             }
-            if (position <= fixedStops.first()) {
-                pairs.first().second
+            val repeatedPosition = repeatPosition(position, fixedStops.first(), fixedStops.last(), repeat)
+            if (repeatedPosition == null) {
+                0
+            } else if (repeat == XRender.RepeatNormal) {
+                normalRepeatPixel(repeatedPosition, pairs, fixedStops)
             } else {
-                var pixel = pairs.last().second
-                for (index in 0 until pairs.lastIndex) {
-                    val startStop = fixedStops[index]
-                    val endStop = fixedStops[index + 1]
-                    if (position <= endStop) {
-                        pixel = if (endStop <= startStop) {
-                            pairs[index + 1].second
-                        } else {
-                            val ratio = (position - startStop) / (endStop - startStop)
-                            interpolatePixel(pairs[index].second, pairs[index + 1].second, ratio)
-                        }
-                        break
-                    }
-                }
-                pixel
+                stopPixel(repeatedPosition, pairs, fixedStops)
             }
         }
+    }
+
+    private fun normalRepeatPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
+        if (position < fixedStops.first()) {
+            val startStop = fixedStops.last() - 1.0
+            val endStop = fixedStops.first()
+            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+        }
+        if (position > fixedStops.last()) {
+            val startStop = fixedStops.last()
+            val endStop = fixedStops.first() + 1.0
+            return interpolateStopPixel(position, startStop, endStop, pairs.last().second, pairs.first().second)
+        }
+        return stopPixel(position, pairs, fixedStops)
+    }
+
+    private fun stopPixel(position: Double, pairs: List<Pair<Int, Int>>, fixedStops: List<Double>): Int {
+        if (position <= fixedStops.first()) return pairs.first().second
+        var pixel = pairs.last().second
+        for (index in 0 until pairs.lastIndex) {
+            val startStop = fixedStops[index]
+            val endStop = fixedStops[index + 1]
+            if (position <= endStop) {
+                pixel = interpolateStopPixel(position, startStop, endStop, pairs[index].second, pairs[index + 1].second)
+                break
+            }
+        }
+        return pixel
+    }
+
+    private fun interpolateStopPixel(position: Double, startStop: Double, endStop: Double, startPixel: Int, endPixel: Int): Int {
+        if (endStop <= startStop) return endPixel
+        val ratio = (position - startStop) / (endStop - startStop)
+        return interpolatePixel(startPixel, endPixel, ratio)
+    }
+
+    private fun repeatPosition(position: Double, start: Double, end: Double, repeat: Int): Double? {
+        if (end <= start) return end
+        return when (repeat) {
+            XRender.RepeatPad -> position.coerceIn(start, end)
+            XRender.RepeatNormal -> wrapPosition(position)
+            XRender.RepeatReflect -> reflectPosition(position)
+            else -> position.takeIf { it in start..end }
+        }
+    }
+
+    private fun wrapPosition(position: Double): Double =
+        ((position % 1.0) + 1.0) % 1.0
+
+    private fun reflectPosition(position: Double): Double {
+        val offset = ((position % 2.0) + 2.0) % 2.0
+        return if (offset <= 1.0) offset else 2.0 - offset
     }
 
     private fun interpolatePixel(start: Int, end: Int, ratio: Double): Int {
@@ -1591,6 +1636,7 @@ internal data class XPicture(
     var valueMask: Int = 0,
     val solidPixel: Int? = null,
     val linearGradient: XLinearGradient? = null,
+    var repeat: Int = XRender.RepeatNone,
     var clipRectangles: List<XRectangleCommand> = emptyList(),
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
@@ -1809,6 +1855,7 @@ internal data class XRenderPictureSnapshot(
     val format: Int,
     val solidPixel: Int?,
     val linearGradient: XLinearGradientSnapshot?,
+    val repeat: Int,
     val clipRectangles: Int,
     val transform: List<Int>,
     val filterName: String?,
@@ -1816,6 +1863,7 @@ internal data class XRenderPictureSnapshot(
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val drawableIdHex: String get() = drawableId?.let { "0x${it.toUInt().toString(16)}" } ?: "none"
+    val repeatName: String get() = XRender.repeatName(repeat)
     val transformHex: List<String> get() = transform.map { "0x${it.toUInt().toString(16)}" }
     val filterValueHex: List<String> get() = filterValues.map { "0x${it.toUInt().toString(16)}" }
 }

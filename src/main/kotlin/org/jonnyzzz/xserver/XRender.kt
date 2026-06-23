@@ -16,6 +16,13 @@ internal object XRender {
     const val OpSrc = 1
     const val OpOver = 3
 
+    const val CPRepeat = 1 shl 0
+
+    const val RepeatNone = 0
+    const val RepeatNormal = 1
+    const val RepeatPad = 2
+    const val RepeatReflect = 3
+
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
             0 -> "QueryVersion"
@@ -57,4 +64,13 @@ internal object XRender {
             ((red ushr 8).coerceIn(0, 255) shl 16) or
             ((green ushr 8).coerceIn(0, 255) shl 8) or
             (blue ushr 8).coerceIn(0, 255)
+
+    fun repeatName(repeat: Int): String =
+        when (repeat) {
+            RepeatNone -> "none"
+            RepeatNormal -> "normal"
+            RepeatPad -> "pad"
+            RepeatReflect -> "reflect"
+            else -> "unknown-$repeat"
+        }
 }

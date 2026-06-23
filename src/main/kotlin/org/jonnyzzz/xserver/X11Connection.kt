@@ -340,12 +340,15 @@ internal class X11Connection(
     private fun renderCreatePicture(body: ByteArray) {
         if (body.size < 16) return
         val id = byteOrder.u32(body, 0)
+        val valueMask = byteOrder.u32(body, 12)
+        val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 16)
         state.putPicture(
             XPicture(
                 id = id,
                 drawableId = byteOrder.u32(body, 4),
                 format = byteOrder.u32(body, 8),
-                valueMask = byteOrder.u32(body, 12),
+                valueMask = valueMask,
+                repeat = attributes.repeat ?: XRender.RepeatNone,
             ),
         )
         own(id)
@@ -353,7 +356,23 @@ internal class X11Connection(
 
     private fun renderChangePicture(body: ByteArray) {
         if (body.size < 8) return
-        state.updatePicture(byteOrder.u32(body, 0), byteOrder.u32(body, 4))
+        val valueMask = byteOrder.u32(body, 4)
+        val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 8)
+        state.updatePicture(byteOrder.u32(body, 0), valueMask, repeat = attributes.repeat)
+    }
+
+    private fun renderPictureAttributes(valueMask: Int, body: ByteArray, valuesOffset: Int): XRenderPictureAttributes {
+        var offset = valuesOffset
+        var repeat: Int? = null
+        for (bit in 0..12) {
+            val mask = 1 shl bit
+            if ((valueMask and mask) == 0) continue
+            if (offset + 4 > body.size) break
+            val value = byteOrder.u32(body, offset)
+            if (mask == XRender.CPRepeat) repeat = value
+            offset += 4
+        }
+        return XRenderPictureAttributes(repeat = repeat)
     }
 
     private fun renderSetPictureClipRectangles(body: ByteArray) {
@@ -2717,6 +2736,10 @@ private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
     val eventMask: Int? = null,
+)
+
+private data class XRenderPictureAttributes(
+    val repeat: Int? = null,
 )
 
 private data class XTextRun(

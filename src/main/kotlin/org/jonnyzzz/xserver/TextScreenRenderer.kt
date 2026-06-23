@@ -189,6 +189,8 @@ internal object TextScreenRenderer {
                     append(picture.drawableKind)
                     append(" format=")
                     append("0x${picture.format.toUInt().toString(16)}")
+                    append(" repeat=")
+                    append(picture.repeatName)
                     append(" clips=")
                     append(picture.clipRectangles)
                     append(" transform=")

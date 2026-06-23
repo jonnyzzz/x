@@ -276,6 +276,7 @@ class XRenderProtocolTest {
                         ),
                     ),
                 )
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
                 out.write(
                     renderComposite(
                         GradientPictureId,
@@ -291,8 +292,8 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 11, x = 0, y = 0))
-                assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 11, x = 2, y = 0))
+                assertEquals(0xfff2_000d.toInt(), pixelAt(image, imageWidth = 11, x = 0, y = 0))
+                assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 11, x = 2, y = 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 11, x = 10, y = 0))
 
                 out.write(
@@ -311,7 +312,7 @@ class XRenderProtocolTest {
                 out.flush()
 
                 val shiftedImage = readReply(socket.getInputStream())
-                assertEquals(0xffcc_0033.toInt(), pixelAt(shiftedImage, imageWidth = 1, x = 0, y = 0))
+                assertEquals(0xffbf_0040.toInt(), pixelAt(shiftedImage, imageWidth = 1, x = 0, y = 0))
 
                 waitUntil {
                     httpGet(server.localPort, "/state.json").contains(""""linearGradient"""")
@@ -323,6 +324,77 @@ class XRenderProtocolTest {
                 val text = httpGet(server.localPort, "/text.txt")
                 assertContains(text, "CreateLinearGradient")
                 assertContains(text, "linearGradient=0x0,0x0->0xa0000,0x0")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER linear gradient repeat modes control spread samples`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 0,
+                        stops = listOf(0, 0x0001_0000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, sourceX = 12, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatPad))
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, sourceX = 12, destinationX = 1, destinationY = 0, width = 1, height = 1))
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatNormal))
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, sourceX = 12, destinationX = 2, destinationY = 0, width = 1, height = 1))
+                out.write(renderChangePicture(GradientPictureId, repeat = XRender.RepeatReflect))
+                out.write(renderComposite(GradientPictureId, PictureId, operation = XRender.OpSrc, sourceX = 12, destinationX = 3, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0x0000_0000, pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xffbf_0040.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff40_00bf.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+
+                out.write(
+                    renderCreateLinearGradient(
+                        GradientNarrowPictureId,
+                        p1 = 0 to 0,
+                        p2 = 10 to 0,
+                        stops = listOf(0x0000_4000, 0x0000_c000),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(renderChangePicture(GradientNarrowPictureId, repeat = XRender.RepeatNormal))
+                out.write(renderComposite(GradientNarrowPictureId, PictureId, operation = XRender.OpSrc, sourceX = 11, destinationX = 4, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 4, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val wrappedNarrowStops = readReply(socket.getInputStream())
+                assertEquals(0xffcc_0033.toInt(), pixelAt(wrappedNarrowStops, imageWidth = 1, x = 0, y = 0))
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""repeat":"reflect"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"kind":"linear-gradient"""")
+                assertContains(json, """"repeat":"reflect"""")
+                assertContains(httpGet(server.localPort, "/text.txt"), "repeat=reflect")
             }
             server.close()
             serverThread.join(1_000)
@@ -672,6 +744,14 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 34, body)
     }
 
+    private fun renderChangePicture(picture: Int, repeat: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, picture)
+        put32le(body, 4, XRender.CPRepeat)
+        put32le(body, 8, repeat)
+        return request(XRender.MajorOpcode, 5, body)
+    }
+
     private fun renderSetPictureTransform(picture: Int, transform: List<Int>): ByteArray {
         require(transform.size == 9)
         val body = ByteArray(40)
@@ -884,6 +964,7 @@ class XRenderProtocolTest {
         const val PictureId = 0x0020_1001
         const val SolidPictureId = 0x0020_1002
         const val GradientPictureId = 0x0020_1003
+        const val GradientNarrowPictureId = 0x0020_1004
         const val MaskPixmapId = 0x0020_2001
         const val MaskPictureId = 0x0020_2002
         const val PixmapId = 0x0020_0100
