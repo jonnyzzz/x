@@ -1052,6 +1052,7 @@ internal class X11Connection(
         val context = byteOrder.u32(body, 0)
         val fbConfig = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
+        if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = context)
         state.putGlxContext(
             XGlxContext(
                 id = context,
