@@ -932,6 +932,7 @@ internal class X11Connection(
     private fun renderCreateConicalGradient(body: ByteArray) {
         if (body.size < 20) return
         val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 36, badValue = id)
         val stops = renderGradientStops(body, countOffset = 16, stopsOffset = 20) ?: return
         val gradient = XConicalGradient(
             center = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
