@@ -807,6 +807,9 @@ internal class X11Connection(
         val filterLength = byteOrder.u16(body, 4)
         if (body.size < 8 + filterLength) return
         val name = body.copyOfRange(8, 8 + filterLength).decodeToString()
+        if (name !in RenderFilterNames) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 30, badValue = 0)
+        }
         val valuesOffset = paddedLength(8 + filterLength)
         val values = mutableListOf<Int>()
         var offset = valuesOffset

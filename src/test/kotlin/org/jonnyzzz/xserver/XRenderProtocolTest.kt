@@ -204,6 +204,40 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER SetPictureFilter rejects unsupported filter name without mutating picture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderSetPictureFilter(PictureId, "bilinear", values = listOf(0x0001_0000)))
+                out.write(renderSetPictureFilter(PictureId, "unsupported", values = emptyList()))
+                out.flush()
+
+                val error = socket.getInputStream().readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(8, error[1].toInt() and 0xff)
+                assertEquals(0, u32le(error, 4))
+                assertEquals(30, u16le(error, 8))
+                assertEquals(XRender.MajorOpcode, error[10].toInt() and 0xff)
+
+                waitUntil {
+                    httpGet(server.localPort, "/state.json").contains(""""filter":"bilinear"""")
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"filter":"bilinear"""")
+                assertContains(json, """"filterValues":["0x10000"]""")
+                assertEquals(false, json.contains("unsupported"))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER composite applies A8 mask pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
