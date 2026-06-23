@@ -1486,9 +1486,7 @@ internal class X11State(
         if (destination.format != XRender.A8Format) return false
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.compositeTrapezoids(
-            pixel = -1,
-            operation = XRender.OpOver,
+        return framebuffer.addTrapezoids(
             trapezoids = trapezoids,
             clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
         )

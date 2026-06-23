@@ -949,6 +949,46 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER AddTraps accumulates overlapping A8 coverage`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val halfPixel = 1 shl 15
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 8, height = 8))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000))
+                repeat(2) {
+                    out.write(
+                        renderAddTrapsRaw(
+                            MaskPictureId,
+                            left = 4 * fixedOne,
+                            right = 4 * fixedOne + halfPixel,
+                            top = 3 * fixedOne,
+                            bottom = 7 * fixedOne,
+                        ),
+                    )
+                }
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 8, height = 8))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xfffe_0001.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER triangles composite solid source into destination framebuffer`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1686,6 +1726,28 @@ class XRenderProtocolTest {
         putFixed(body, 20, x)
         putFixed(body, 24, x + width)
         putFixed(body, 28, y + height)
+        return request(XRender.MajorOpcode, 32, body)
+    }
+
+    private fun renderAddTrapsRaw(
+        picture: Int,
+        left: Int,
+        right: Int,
+        top: Int,
+        bottom: Int,
+        xOffset: Int = 0,
+        yOffset: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(32)
+        put32le(body, 0, picture)
+        put16le(body, 4, xOffset)
+        put16le(body, 6, yOffset)
+        put32le(body, 8, left)
+        put32le(body, 12, right)
+        put32le(body, 16, top)
+        put32le(body, 20, left)
+        put32le(body, 24, right)
+        put32le(body, 28, bottom)
         return request(XRender.MajorOpcode, 32, body)
     }
 

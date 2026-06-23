@@ -707,6 +707,18 @@ internal class XFramebuffer(
         return painted
     }
 
+    fun addTrapezoids(
+        trapezoids: List<XTrapezoidCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var painted = false
+        for (trapezoid in trapezoids) {
+            painted = addTrapezoidAlpha(trapezoid, clipRectangles) || painted
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun compositeTriangles(
         pixel: Int,
         operation: Int,
@@ -924,6 +936,41 @@ internal class XFramebuffer(
                 val index = y * width + x
                 val pixel = sourcePixelAt(x, y)
                 pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
+                painted = true
+            }
+        }
+        return painted
+    }
+
+    private fun addTrapezoidAlpha(
+        trapezoid: XTrapezoidCommand,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val top = trapezoid.top.fixedToDouble()
+        val bottom = trapezoid.bottom.fixedToDouble()
+        if (bottom <= top) return false
+        val startY = maxOf(0, floor(top).toInt())
+        val endY = minOf(height, ceil(bottom).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            val sampleY = y + 0.5
+            if (sampleY < top || sampleY >= bottom) continue
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            val minX = minOf(left, right)
+            val maxX = maxOf(left, right)
+            val startX = maxOf(0, floor(minX).toInt())
+            val endX = minOf(width, ceil(maxX).toInt())
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                if (coverage == 0) continue
+                val addedAlpha = maskAlpha(XRender.A8Format, coverage)
+                if (addedAlpha == 0) continue
+                val index = y * width + x
+                val alpha = ((pixels[index] ushr 24) and 0xff)
+                val newAlpha = (alpha + addedAlpha).coerceAtMost(255)
+                pixels[index] = (newAlpha shl 24) or 0x00ff_ffff
                 painted = true
             }
         }
