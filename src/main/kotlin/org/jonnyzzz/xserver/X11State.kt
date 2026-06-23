@@ -943,6 +943,24 @@ internal class X11State(
     }
 
     @Synchronized
+    fun renderTriangles(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        triangles: List<XTriangleCommand>,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val pixel = source.solidPixel ?: return false
+        return framebuffer.compositeTriangles(
+            pixel = pixel,
+            operation = operation,
+            triangles = triangles,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
     fun compositeGlyphs(
         operation: Int,
         source: XPicture,
@@ -1501,6 +1519,12 @@ internal data class XTrapezoidCommand(
     val bottom: Int,
     val left: XFixedLine,
     val right: XFixedLine,
+)
+
+internal data class XTriangleCommand(
+    val p1: XFixedPoint,
+    val p2: XFixedPoint,
+    val p3: XFixedPoint,
 )
 
 internal data class XProperty(

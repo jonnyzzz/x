@@ -530,6 +530,20 @@ internal class XFramebuffer(
         return painted
     }
 
+    fun compositeTriangles(
+        pixel: Int,
+        operation: Int,
+        triangles: List<XTriangleCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var painted = false
+        for (triangle in triangles) {
+            painted = compositeTriangle(pixel, operation, triangle, clipRectangles) || painted
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun tileTo(
         destination: XFramebuffer,
         destinationX: Int,
@@ -753,6 +767,79 @@ internal class XFramebuffer(
         }
         return covered
     }
+
+    private fun compositeTriangle(
+        pixel: Int,
+        operation: Int,
+        triangle: XTriangleCommand,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val x1 = triangle.p1.x.fixedToDouble()
+        val y1 = triangle.p1.y.fixedToDouble()
+        val x2 = triangle.p2.x.fixedToDouble()
+        val y2 = triangle.p2.y.fixedToDouble()
+        val x3 = triangle.p3.x.fixedToDouble()
+        val y3 = triangle.p3.y.fixedToDouble()
+        val area = edge(x1, y1, x2, y2, x3, y3)
+        if (area == 0.0) return false
+        val startX = maxOf(0, floor(minOf(x1, x2, x3)).toInt())
+        val endX = minOf(width, ceil(maxOf(x1, x2, x3)).toInt())
+        val startY = maxOf(0, floor(minOf(y1, y2, y3)).toInt())
+        val endY = minOf(height, ceil(maxOf(y1, y2, y3)).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area)
+                if (coverage == 0) continue
+                val maskAlpha = coverage * 255 / TrapezoidSamples
+                val index = y * width + x
+                pixels[index] = renderPixel(pixel, pixels[index], operation, coverage, maskAlpha)
+                painted = true
+            }
+        }
+        return painted
+    }
+
+    private fun triangleCoverage(
+        x: Int,
+        y: Int,
+        x1: Double,
+        y1: Double,
+        x2: Double,
+        y2: Double,
+        x3: Double,
+        y3: Double,
+        area: Double,
+    ): Int {
+        var covered = 0
+        for (sampleYIndex in 0 until TrapezoidSampleGrid) {
+            val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
+            for (sampleXIndex in 0 until TrapezoidSampleGrid) {
+                val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGrid
+                val e1 = edge(x1, y1, x2, y2, sampleX, sampleY)
+                val e2 = edge(x2, y2, x3, y3, sampleX, sampleY)
+                val e3 = edge(x3, y3, x1, y1, sampleX, sampleY)
+                if (area > 0.0) {
+                    if (e1 >= 0.0 && e2 >= 0.0 && e3 >= 0.0) covered += 1
+                } else if (e1 <= 0.0 && e2 <= 0.0 && e3 <= 0.0) {
+                    covered += 1
+                }
+            }
+        }
+        return covered
+    }
+
+    private fun renderPixel(source: Int, destination: Int, operation: Int, coverage: Int, maskAlpha: Int): Int =
+        when (operation) {
+            XRender.OpClear -> if (coverage == TrapezoidSamples) 0 else over(0, destination, maskAlpha)
+            XRender.OpSrc -> if (coverage == TrapezoidSamples) source else withMask(source, maskAlpha)
+            XRender.OpOver -> over(source, destination, maskAlpha)
+            else -> over(source, destination, maskAlpha)
+        }
+
+    private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
+        (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
 
     private fun sampledArcPoints(arc: XArcCommand): List<XPoint> {
         if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return emptyList()

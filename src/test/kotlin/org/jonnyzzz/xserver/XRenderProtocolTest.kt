@@ -161,6 +161,57 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER triangles composite solid source into destination framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 32, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(8 to 6, 24 to 6, 8 to 20)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 32, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 32, x = 10, y = 8))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 32, x = 12, y = 12))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 7, y = 6))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 24, y = 20))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Triangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER triangles over blends solid source with destination framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 32, height = 24, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0x8000))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(8 to 6, 24 to 6, 8 to 20), operation = XRender.OpOver))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 32, height = 24))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff80_007f.toInt(), pixelAt(image, imageWidth = 32, x = 10, y = 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 32, x = 7, y = 6))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture targeting pixmap is exposed as painted offscreen surface`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -309,6 +360,21 @@ class XRenderProtocolTest {
         putFixedPoint(body, 44, x + width, y)
         putFixedPoint(body, 52, x + width, y + height)
         return request(XRender.MajorOpcode, 10, body)
+    }
+
+    private fun renderTriangles(source: Int, destination: Int, points: List<Pair<Int, Int>>, operation: Int = XRender.OpSrc): ByteArray {
+        require(points.size == 3)
+        val body = ByteArray(44)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, XRender.A8Format)
+        var offset = 20
+        for ((x, y) in points) {
+            putFixedPoint(body, offset, x, y)
+            offset += 8
+        }
+        return request(XRender.MajorOpcode, 11, body)
     }
 
     private fun createPixmapRequest(id: Int, depth: Int, width: Int, height: Int): ByteArray {
