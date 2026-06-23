@@ -513,6 +513,66 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateCursor rejects duplicate resource id without replacing existing resource`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1))
+                out.write(createPixmapRequest(PixmapId + 1, width = 1, height = 1, depth = 1))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(createCursorRequest(WindowId, source = PixmapId, mask = PixmapId + 1))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(duplicateError, 4))
+                assertEquals(93, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateGlyphCursor rejects duplicate resource id with glyph cursor opcode`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(createGlyphCursorRequest(WindowId, sourceFont = GcId, maskFont = GcId))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val duplicateError = socket.getInputStream().readExactly(32)
+                assertEquals(0, duplicateError[0].toInt())
+                assertEquals(14, duplicateError[1].toInt() and 0xff)
+                assertEquals(WindowId, u32le(duplicateError, 4))
+                assertEquals(94, duplicateError[10].toInt() and 0xff)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid CreateGC function reports Value error before usable GC creation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1830,6 +1890,26 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(54, 0, body)
+    }
+
+    private fun createCursorRequest(cursor: Int, source: Int, mask: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, cursor)
+        put32le(body, 4, source)
+        put32le(body, 8, mask)
+        put16le(body, 12, 0xffff)
+        put16le(body, 18, 0xffff)
+        return request(93, 0, body)
+    }
+
+    private fun createGlyphCursorRequest(cursor: Int, sourceFont: Int, maskFont: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, cursor)
+        put32le(body, 4, sourceFont)
+        put32le(body, 8, maskFont)
+        put16le(body, 16, 0xffff)
+        put16le(body, 22, 0xffff)
+        return request(94, 0, body)
     }
 
     private fun mapWindowRequest(id: Int): ByteArray {

@@ -166,8 +166,8 @@ internal class X11Connection(
             84 -> allocColor(body)
             85 -> lookupColor()
             91 -> queryColors(body)
-            93 -> createCursor(body)
-            94 -> createCursor(body)
+            93 -> createCursor(opcode, body)
+            94 -> createCursor(opcode, body)
             95 -> closeResource(body)
             96 -> unitReplyless()
             97 -> queryBestSize(minorOpcode, body)
@@ -2106,9 +2106,10 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun createCursor(body: ByteArray) {
+    private fun createCursor(opcode: Int, body: ByteArray) {
         if (body.size >= 4) {
             val id = byteOrder.u32(body, 0)
+            if (state.hasResource(id)) return writeError(error = 14, opcode = opcode, badValue = id)
             state.putCursor(id)
             own(id)
         }
