@@ -1,5 +1,6 @@
 package org.jonnyzzz.xserver
 
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 internal class X11State(
@@ -725,6 +726,23 @@ internal class X11State(
         }
         val sourceDrawableId = source.drawableId ?: return null
         val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        if (source.transform != IdentityTransform || source.repeat != XRender.RepeatNone) {
+            return destinationFramebuffer.compositeGenerated(
+                sourceX = sourceX,
+                sourceY = sourceY,
+                destinationX = destinationX,
+                destinationY = destinationY,
+                width = width,
+                height = height,
+                operation = operation,
+                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                mask = maskFramebuffer,
+                maskX = maskX,
+                maskY = maskY,
+            ) { x, y ->
+                sourceFramebuffer.transformedPixelAt(x, y, source.repeat, source.transform)
+            }
+        }
         return destinationFramebuffer.copyFrom(
             source = sourceFramebuffer,
             sourceX = sourceX,
@@ -739,6 +757,37 @@ internal class X11State(
             maskX = maskX,
             maskY = maskY,
         )
+    }
+
+    private fun XFramebuffer.transformedPixelAt(x: Int, y: Int, repeat: Int, transform: List<Int>): Int {
+        val sample = transformedPoint(x + 0.5, y + 0.5, transform)
+        val sampleX = repeatedPixelCoordinate(sample.first, width, repeat) ?: return 0
+        val sampleY = repeatedPixelCoordinate(sample.second, height, repeat) ?: return 0
+        return pixelAt(sampleX, sampleY) ?: 0
+    }
+
+    private fun repeatedPixelCoordinate(coordinate: Double, size: Int, repeat: Int): Int? {
+        if (size <= 0) return null
+        if (repeat == XRender.RepeatNone) {
+            val pixel = floor(coordinate).toInt()
+            return pixel.takeIf { it in 0 until size }
+        }
+        val repeated = when (repeat) {
+            XRender.RepeatPad -> coordinate.coerceIn(0.0, size.toDouble())
+            XRender.RepeatNormal -> wrapCoordinate(coordinate, size)
+            XRender.RepeatReflect -> reflectCoordinate(coordinate, size)
+            else -> coordinate
+        }
+        return floor(repeated).toInt().coerceIn(0, size - 1)
+    }
+
+    private fun wrapCoordinate(coordinate: Double, size: Int): Double =
+        ((coordinate % size) + size) % size
+
+    private fun reflectCoordinate(coordinate: Double, size: Int): Double {
+        val period = size * 2.0
+        val offset = ((coordinate % period) + period) % period
+        return if (offset <= size) offset else period - offset
     }
 
     private fun XLinearGradient.pixelSampler(repeat: Int, transform: List<Int>): (x: Int, y: Int) -> Int {
