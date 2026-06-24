@@ -865,6 +865,51 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render query requests validate lengths and indexed format kind`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(renderQueryVersionRequest(bodySize = 4))
+                out.write(renderQueryVersionRequest())
+                out.write(renderRequest(1, ByteArray(4)))
+                out.write(renderRequest(1, ByteArray(0)))
+                out.write(renderRequest(2, ByteArray(0)))
+                out.write(renderQueryPictIndexValuesRequest(0x7fff_0001))
+                out.write(renderRequest(2, ByteArray(8).also { put32le(it, 0, 0x7fff_0002) }))
+                out.write(renderQueryPictIndexValuesRequest(XRender.Argb32Format))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 0, badValue = 0, sequence = 1)
+                val version = readReply(socket.getInputStream())
+                assertEquals(1, version[0].toInt())
+                assertEquals(2, u16le(version, 2))
+                assertEquals(XRender.MajorVersion, u32le(version, 8))
+                assertEquals(XRender.MinorVersion, u32le(version, 12))
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 1, badValue = 0, sequence = 3)
+                val formats = readReply(socket.getInputStream())
+                assertEquals(1, formats[0].toInt())
+                assertEquals(4, u16le(formats, 2))
+                assertEquals(4, u32le(formats, 8))
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0001, sequence = 6)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0002, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = XRender.Argb32Format, sequence = 8)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(9, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10841,6 +10886,24 @@ class XCoreDrawingProtocolTest {
         return bytes
     }
 
+    private fun renderRequest(minorOpcode: Int, body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, minorOpcode, body)
+
+    private fun renderQueryVersionRequest(bodySize: Int = 8): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 8) {
+            put32le(body, 0, XRender.MajorVersion)
+            put32le(body, 4, XRender.MinorVersion)
+        }
+        return renderRequest(0, body)
+    }
+
+    private fun renderQueryPictIndexValuesRequest(format: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, format)
+        return renderRequest(2, body)
+    }
+
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
         val payloadUnits = if (byteOrderByte == 0x42) u32be(header, 4) else u32le(header, 4)
@@ -11149,13 +11212,13 @@ class XCoreDrawingProtocolTest {
         assertEquals(y, i16le(reply, offset + 6))
     }
 
-    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {
+    private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int = 0) {
         val reply = input.readExactly(32)
         assertEquals(0, reply[0].toInt())
         assertEquals(error, reply[1].toInt() and 0xff)
         assertEquals(sequence, u16le(reply, 2))
         assertEquals(badValue, u32le(reply, 4))
-        assertEquals(0, u16le(reply, 8))
+        assertEquals(minorOpcode, u16le(reply, 8))
         assertEquals(opcode, reply[10].toInt() and 0xff)
         assertEquals(0, reply[11].toInt() and 0xff)
         assertZeroBytes(reply, 12, 32)

@@ -6,11 +6,14 @@ internal object XRender {
     const val FirstError = 160
     const val MajorVersion = 0
     const val MinorVersion = 11
+    const val PictFormatError = FirstError
 
     const val Argb32Format = 0x0000_0029
     const val Rgb24Format = 0x0000_002a
     const val A8Format = 0x0000_002b
     const val A1Format = 0x0000_002c
+    val DirectFormats = setOf(Argb32Format, Rgb24Format, A8Format, A1Format)
+    val PictFormats = DirectFormats
 
     const val OpClear = 0
     const val OpSrc = 1

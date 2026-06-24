@@ -286,9 +286,9 @@ internal class X11Connection(
         System.err.println("render seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
 
         when (minorOpcode) {
-            0 -> renderQueryVersion()
-            1 -> renderQueryPictFormats()
-            2 -> renderQueryPictIndexValues()
+            0 -> renderQueryVersion(body)
+            1 -> renderQueryPictFormats(body)
+            2 -> renderQueryPictIndexValues(body)
             4 -> renderCreatePicture(body)
             5 -> renderChangePicture(body)
             6 -> renderSetPictureClipRectangles(body)
@@ -319,14 +319,16 @@ internal class X11Connection(
         }
     }
 
-    private fun renderQueryVersion() {
+    private fun renderQueryVersion(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 0, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, XRender.MajorVersion)
         byteOrder.put32(reply, 12, XRender.MinorVersion)
         write(reply)
     }
 
-    private fun renderQueryPictFormats() {
+    private fun renderQueryPictFormats(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 1, badValue = 0)
         val formats = ByteArray(28 * 4)
         putPictFormat(formats, 0, XRender.Argb32Format, depth = 32, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 24, alphaMask = 0xff)
         putPictFormat(formats, 28, XRender.Rgb24Format, depth = 24, redShift = 16, greenShift = 8, blueShift = 0, alphaShift = 0, alphaMask = 0)
@@ -381,7 +383,15 @@ internal class X11Connection(
         byteOrder.put16(bytes, offset + 22, alphaMask)
     }
 
-    private fun renderQueryPictIndexValues() {
+    private fun renderQueryPictIndexValues(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0)
+        val format = byteOrder.u32(body, 0)
+        if (format !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = format)
+        }
+        if (format in XRender.DirectFormats) {
+            return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = format)
+        }
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, 0)
         write(reply)
