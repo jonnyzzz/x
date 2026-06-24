@@ -148,6 +148,7 @@ internal class X11Connection(
             36 -> grabServer(body)
             37 -> ungrabServer(body)
             38 -> queryPointer()
+            39 -> getMotionEvents(body)
             40 -> translateCoordinates(body)
             42 -> setInputFocus(minorOpcode, body)
             43 -> getInputFocus()
@@ -1728,6 +1729,15 @@ internal class X11Connection(
     private fun ungrabServer(body: ByteArray) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = 37, badValue = 0)
         state.ungrabServer(this)
+    }
+
+    private fun getMotionEvents(body: ByteArray) {
+        if (body.size != 12) return writeError(error = 16, opcode = 39, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        if (state.window(windowId) == null) return writeError(error = 3, opcode = 39, badValue = windowId)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, 0)
+        write(reply)
     }
 
     private fun translateCoordinates(body: ByteArray) {

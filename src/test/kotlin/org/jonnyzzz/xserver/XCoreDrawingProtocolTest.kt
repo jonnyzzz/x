@@ -2448,6 +2448,60 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetMotionEvents replies with empty motion history for valid window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(getMotionEventsRequest(WindowId, start = 0, stop = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val motion = readReply(socket.getInputStream())
+                assertEquals(1, motion[0].toInt())
+                assertEquals(2, u16le(motion, 2))
+                assertEquals(0, u32le(motion, 4))
+                assertEquals(0, u32le(motion, 8))
+                assertZeroBytes(motion, 12, 32)
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetMotionEvents validates window and request length and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = WindowId + 111
+                out.write(getMotionEventsRequest(missing, start = 0, stop = 0))
+                out.write(getMotionEventsBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 3, opcode = 39, badValue = missing, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 39, badValue = 0, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer replies success status for valid window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5690,6 +5744,17 @@ class XCoreDrawingProtocolTest {
 
     private fun queryPointerRequest(): ByteArray =
         request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
+
+    private fun getMotionEventsRequest(window: Int, start: Int, stop: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, start)
+        put32le(body, 8, stop)
+        return request(39, 0, body)
+    }
+
+    private fun getMotionEventsBadLengthRequest(): ByteArray =
+        request(39, 0, ByteArray(0))
 
     private fun mapWindowRequest(id: Int): ByteArray {
         val body = ByteArray(4)
