@@ -2662,6 +2662,39 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `fixed-size copy and clear requests validate length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(61, 0, ByteArray(8)))
+                out.write(request(61, 0, ByteArray(16)))
+                out.write(request(62, 0, ByteArray(20)))
+                out.write(request(62, 0, ByteArray(28)))
+                out.write(request(63, 0, ByteArray(24)))
+                out.write(request(63, 0, ByteArray(32)))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 61, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 61, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 62, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 62, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 63, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 16, opcode = 63, badValue = 0, sequence = 6)
+
+                val focus = readReply(socket.getInputStream())
+                assertEquals(7, u16le(focus, 2))
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `invalid coordinate mode reports Value error without drawing`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

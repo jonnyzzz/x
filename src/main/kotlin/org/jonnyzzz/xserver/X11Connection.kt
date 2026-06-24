@@ -2153,7 +2153,7 @@ internal class X11Connection(
     }
 
     private fun clearArea(body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size != 12) return writeError(error = 16, opcode = 61, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return
         val x = byteOrder.i16(body, 4)
@@ -2177,7 +2177,7 @@ internal class X11Connection(
     }
 
     private fun copyArea(body: ByteArray) {
-        if (body.size < 24) return
+        if (body.size != 24) return writeError(error = 16, opcode = 62, badValue = 0)
         val gc = state.gc(byteOrder.u32(body, 8))
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
@@ -2226,7 +2226,7 @@ internal class X11Connection(
     }
 
     private fun copyPlane(body: ByteArray) {
-        if (body.size < 28) return
+        if (body.size != 28) return writeError(error = 16, opcode = 63, badValue = 0)
         val gc = state.gc(byteOrder.u32(body, 8))
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
