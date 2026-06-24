@@ -89,7 +89,7 @@ internal class X11Connection(
                         System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
                     }
                     state.recordRequest(requestName(opcode, minorOpcode))
-                    dispatch(opcode, minorOpcode, body)
+                    dispatch(opcode, minorOpcode, body, units)
                 }
             }
         } finally {
@@ -97,14 +97,14 @@ internal class X11Connection(
         }
     }
 
-    private fun dispatch(opcode: Int, minorOpcode: Int, body: ByteArray) {
+    private fun dispatch(opcode: Int, minorOpcode: Int, body: ByteArray, requestUnits: Int) {
         state.extensionByMajorOpcode(opcode)?.let { extension ->
             if (extension.name == "GLX") {
                 glx(minorOpcode, body, opcode)
                 return
             }
             if (extension.name == "BIG-REQUESTS") {
-                bigRequests(minorOpcode, opcode)
+                bigRequests(minorOpcode, body, requestUnits, opcode)
                 return
             }
             if (extension.name == "RENDER") {
@@ -288,10 +288,11 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun bigRequests(minorOpcode: Int, majorOpcode: Int) {
+    private fun bigRequests(minorOpcode: Int, body: ByteArray, requestUnits: Int, majorOpcode: Int) {
         if (minorOpcode != XBigRequests.Enable) {
             return unsupportedRequest(majorOpcode, minorOpcode, "BIG-REQUESTS.$minorOpcode")
         }
+        if (requestUnits != 1 || body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, XBigRequests.MaximumRequestLength)
         write(reply)

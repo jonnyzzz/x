@@ -41,6 +41,30 @@ class XBigRequestsProtocolTest {
         }
     }
 
+    @Test
+    fun `BIG REQUESTS Enable validates fixed request length`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                socket.soTimeout = 2_000
+
+                socket.getOutputStream().write(request(XBigRequests.MajorOpcode, XBigRequests.Enable, u32(0)))
+                socket.getOutputStream().write(extendedRequest(XBigRequests.MajorOpcode, XBigRequests.Enable, ByteArray(0)))
+                socket.getOutputStream().write(request(XBigRequests.MajorOpcode, XBigRequests.Enable, ByteArray(0)))
+                socket.getOutputStream().flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, opcode = XBigRequests.MajorOpcode, minorOpcode = XBigRequests.Enable, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, opcode = XBigRequests.MajorOpcode, minorOpcode = XBigRequests.Enable, sequence = 2)
+                val enabled = readReply(socket.getInputStream())
+                assertEquals(3, u16le(enabled, 2))
+                assertEquals(XBigRequests.MaximumRequestLength, u32le(enabled, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -160,6 +184,19 @@ class XBigRequestsProtocolTest {
         bytes[offset + 2] = (value ushr 16).toByte()
         bytes[offset + 3] = (value ushr 24).toByte()
     }
+
+    private fun assertError(input: InputStream, error: Int, badValue: Int, opcode: Int, minorOpcode: Int, sequence: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(minorOpcode, u16le(reply, 8))
+        assertEquals(opcode, reply[10].toInt() and 0xff)
+    }
+
+    private fun u32(value: Int): ByteArray =
+        byteArrayOf(value.toByte(), (value ushr 8).toByte(), (value ushr 16).toByte(), (value ushr 24).toByte())
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
