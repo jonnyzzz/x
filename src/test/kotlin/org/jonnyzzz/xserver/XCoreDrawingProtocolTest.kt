@@ -5666,6 +5666,37 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateWindow validates value mask parent and dimensions without reserving id`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingParent = WindowId + 406
+                val out = socket.getOutputStream()
+                out.write(request(1, 24, ByteArray(24)))
+                out.write(createWindowRawRequest(WindowId, valueMask = 1 shl 11))
+                out.write(createWindowRawRequest(WindowId, valueMask = 0x0000_8000, values = listOf(0)))
+                out.write(createWindowRawRequest(WindowId, parent = missingParent))
+                out.write(createWindowRawRequest(WindowId, width = 0))
+                out.write(createWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 1, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 1, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0x0000_8000, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 1, badValue = missingParent, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 0, sequence = 5)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(7, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9531,6 +9562,32 @@ class XCoreDrawingProtocolTest {
             put32le(body, offset, doNotPropagateMask)
         }
         put32le(body, 24, valueMask)
+        return request(1, 24, body)
+    }
+
+    private fun createWindowRawRequest(
+        id: Int,
+        x: Int = 0,
+        y: Int = 0,
+        width: Int = 40,
+        height: Int = 30,
+        parent: Int = X11Ids.RootWindow,
+        valueMask: Int = 0,
+        values: List<Int> = emptyList(),
+    ): ByteArray {
+        val body = ByteArray(28 + values.size * 4)
+        put32le(body, 0, id)
+        put32le(body, 4, parent)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        put16le(body, 12, width)
+        put16le(body, 14, height)
+        put16le(body, 18, 1)
+        put32le(body, 20, X11Ids.RootVisual)
+        put32le(body, 24, valueMask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 28 + index * 4, value)
+        }
         return request(1, 24, body)
     }
 

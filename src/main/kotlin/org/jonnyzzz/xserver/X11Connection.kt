@@ -1933,15 +1933,26 @@ internal class X11Connection(
         if (body.size < 28) return writeError(16, 1, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val parent = byteOrder.u32(body, 4)
+        val width = byteOrder.u16(body, 12)
+        val height = byteOrder.u16(body, 14)
+        val mask = byteOrder.u32(body, 24)
+        val expectedSize = 28 + mask.countOneBits() * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = 1, badValue = 0)
+        if ((mask and WindowAttributeValueMask.inv()) != 0) {
+            return writeError(error = 2, opcode = 1, badValue = mask)
+        }
         if (state.hasResource(id)) return writeError(error = 14, opcode = 1, badValue = id)
+        state.window(parent) ?: return writeError(error = 3, opcode = 1, badValue = parent)
+        if (width == 0) return writeError(error = 2, opcode = 1, badValue = width)
+        if (height == 0) return writeError(error = 2, opcode = 1, badValue = height)
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
         val window = XWindow(
             id = id,
             parentId = parent,
             x = byteOrder.i16(body, 8),
             y = byteOrder.i16(body, 10),
-            width = byteOrder.u16(body, 12),
-            height = byteOrder.u16(body, 14),
+            width = width,
+            height = height,
             borderWidth = byteOrder.u16(body, 16),
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
