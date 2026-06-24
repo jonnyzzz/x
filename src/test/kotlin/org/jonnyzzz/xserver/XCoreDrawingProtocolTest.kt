@@ -6376,6 +6376,34 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ListProperties validates length window and returns sorted atoms`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingWindow = WindowId + 411
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(21, 0, ByteArray(0)))
+                out.write(request(21, 0, ByteArray(8)))
+                out.write(listPropertiesRequest(missingWindow))
+                out.write(changePropertyRequest(WindowId, AtomAtom, StringAtom, "two"))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "one"))
+                out.write(listPropertiesRequest(WindowId))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 21, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 21, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 21, badValue = missingWindow, sequence = 4)
+                assertListPropertiesReply(readReply(socket.getInputStream()), sequence = 7, PrimaryAtom, AtomAtom)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RotateProperties rotates property values by positive and negative delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7888,6 +7916,12 @@ class XCoreDrawingProtocolTest {
         return request(19, 0, body)
     }
 
+    private fun listPropertiesRequest(window: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, window)
+        return request(21, 0, body)
+    }
+
     private fun rotatePropertiesRequest(window: Int, delta: Int, vararg properties: Int): ByteArray {
         val body = ByteArray(8 + properties.size * 4)
         put32le(body, 0, window)
@@ -8798,6 +8832,19 @@ class XCoreDrawingProtocolTest {
         assertEquals(0, u32le(event, 12))
         assertEquals(state, event[16].toInt() and 0xff)
         assertZeroBytes(event, 17, 32)
+    }
+
+    private fun assertListPropertiesReply(reply: ByteArray, sequence: Int, vararg atoms: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(atoms.size, u32le(reply, 4))
+        assertEquals(atoms.size, u16le(reply, 8))
+        assertZeroBytes(reply, 10, 32)
+        atoms.forEachIndexed { index, atom ->
+            assertEquals(atom, u32le(reply, 32 + index * 4))
+        }
+        assertEquals(32 + atoms.size * 4, reply.size)
     }
 
     private fun assertPointerMapping(reply: ByteArray, sequence: Int, vararg mapping: Int) {

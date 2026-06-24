@@ -1546,7 +1546,9 @@ internal class X11Connection(
     }
 
     private fun listProperties(body: ByteArray) {
-        val window = state.window(byteOrder.u32(body, 0)) ?: return writeError(3, 21, badValue = byteOrder.u32(body, 0))
+        if (body.size != 4) return writeError(error = 16, opcode = 21, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(3, 21, badValue = windowId)
         val keys = window.properties.keys.sorted()
         val reply = reply(extra = 0, payloadUnits = keys.size)
         byteOrder.put16(reply, 8, keys.size)
