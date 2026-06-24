@@ -1305,9 +1305,9 @@ internal class X11Connection(
 
     private fun glxClientInfo(body: ByteArray) {
         if (body.size < 12) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ClientInfo, badValue = 0)
-        if (body.copyOfRange(12, body.size).none { it == 0.toByte() }) {
-            writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ClientInfo, badValue = 0)
-        }
+        val extensionBytes = Integer.toUnsignedLong(byteOrder.u32(body, 8))
+        val expectedBytes = 12L + paddedLength(extensionBytes)
+        glxCheckBodyLength(body, expectedBytes = expectedBytes, minorOpcode = XGlx.ClientInfo)
     }
 
     private fun glxSetClientInfo(body: ByteArray, minorOpcode: Int, versionWords: Int) {

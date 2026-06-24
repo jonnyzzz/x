@@ -119,7 +119,7 @@ class XGlxProtocolTest {
     fun `GLX client info requests accept framed metadata without replies`() {
         withServer { socket ->
             socket.soTimeout = 2_000
-            writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, glxClientInfoBody("GLX_EXT_visual_info\u0000"))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, glxClientInfoBody("GLX_EXT_visual_info"))
             writeRequest(
                 socket,
                 XGlx.MajorOpcode,
@@ -144,6 +144,7 @@ class XGlxProtocolTest {
         withServer { socket ->
             socket.soTimeout = 2_000
             writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, u32(1) + u32(4) + u32(4))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, u32(1) + u32(4) + u32(1) + padded(byteArrayOf(0)) + u32(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.SetClientInfoARB, u32(1) + u32(1) + u32(1) + u32(4) + u32(6) + padded(byteArrayOf(1, 2)))
             writeRequest(
                 socket,
@@ -154,10 +155,11 @@ class XGlxProtocolTest {
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.ClientInfo, sequence = 1)
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfoARB, sequence = 2)
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfo2ARB, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.ClientInfo, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfoARB, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfo2ARB, sequence = 4)
             val pointer = readReply(socket.getInputStream())
-            assertEquals(4, u16le(pointer, 2))
+            assertEquals(5, u16le(pointer, 2))
         }
     }
 
