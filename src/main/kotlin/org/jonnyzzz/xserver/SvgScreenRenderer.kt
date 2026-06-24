@@ -99,6 +99,11 @@ internal object SvgScreenRenderer {
                 }
                 append("""]}""")
             }
+            append("""],"glxPixmaps":[""")
+            snapshot.glxPixmaps.forEachIndexed { index, pixmap ->
+                if (index > 0) append(',')
+                append("""{"id":"${pixmap.idHex}","pixmap":"${pixmap.pixmapIdHex}","visual":"${pixmap.visualIdHex}","screen":${pixmap.screen},"width":${pixmap.width},"height":${pixmap.height},"depth":${pixmap.depth}}""")
+            }
             append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')

@@ -50,6 +50,7 @@ internal class X11State(
     private var nextInputControlOperationId: Int = 1
     private val inputControlOperations = mutableListOf<XInputControlOperation>()
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
+    private val glxPixmaps = linkedMapOf<Int, XGlxPixmap>()
     private var nextGlxOperationId: Int = 1
     private val glxOperations = mutableListOf<XGlxOperation>()
     private var nextRenderOperationId: Int = 1
@@ -185,6 +186,7 @@ internal class X11State(
                 installedColormaps.remove(id)
             }
             glxContexts.remove(id)
+            glxPixmaps.remove(id)
             pictures.remove(id)
             glyphSets.remove(id)
         }
@@ -1364,6 +1366,17 @@ internal class X11State(
             keyboardControl = keyboardControl.snapshot(),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
+            glxPixmaps = glxPixmaps.values.map { pixmap ->
+                XGlxPixmapSnapshot(
+                    id = pixmap.id,
+                    pixmapId = pixmap.pixmapId,
+                    visualId = pixmap.visualId,
+                    screen = pixmap.screen,
+                    width = pixmap.width,
+                    height = pixmap.height,
+                    depth = pixmap.depth,
+                )
+            },
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
@@ -1483,6 +1496,20 @@ internal class X11State(
 
     @Synchronized
     fun glxContext(id: Int): XGlxContext? = glxContexts[id]
+
+    @Synchronized
+    fun putGlxPixmap(pixmap: XGlxPixmap) {
+        glxPixmaps[pixmap.id] = pixmap
+    }
+
+    @Synchronized
+    fun removeGlxPixmap(id: Int) {
+        glxPixmaps.remove(id)
+        discardRetainedResourceIds(setOf(id))
+    }
+
+    @Synchronized
+    fun hasGlxPixmap(id: Int): Boolean = glxPixmaps.containsKey(id)
 
     @Synchronized
     fun recordGlxOperation(
@@ -2681,7 +2708,8 @@ internal class X11State(
             colormaps.contains(id) ||
             pictures.containsKey(id) ||
             glyphSets.containsKey(id) ||
-            glxContexts.containsKey(id)
+            glxContexts.containsKey(id) ||
+            glxPixmaps.containsKey(id)
 
     @Synchronized
     fun updateGc(
@@ -2806,6 +2834,7 @@ internal class X11State(
             installedColormaps.remove(id)
         }
         glxContexts.remove(id)
+        glxPixmaps.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
         discardRetainedResourceIds(setOf(id))
@@ -3809,6 +3838,7 @@ internal data class XScreenSnapshot(
     val keyboardControl: XKeyboardControlSnapshot,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
+    val glxPixmaps: List<XGlxPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
@@ -4073,6 +4103,30 @@ internal data class XGlxContext(
     val renderType: Int,
     val direct: Boolean,
 )
+
+internal data class XGlxPixmap(
+    val id: Int,
+    val pixmapId: Int,
+    val visualId: Int,
+    val screen: Int,
+    val width: Int,
+    val height: Int,
+    val depth: Int,
+)
+
+internal data class XGlxPixmapSnapshot(
+    val id: Int,
+    val pixmapId: Int,
+    val visualId: Int,
+    val screen: Int,
+    val width: Int,
+    val height: Int,
+    val depth: Int,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val pixmapIdHex: String get() = "0x${pixmapId.toUInt().toString(16)}"
+    val visualIdHex: String get() = "0x${visualId.toUInt().toString(16)}"
+}
 
 internal data class XGlxOperation(
     val id: Int,

@@ -121,6 +121,29 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("GLX pixmaps:")
+            if (snapshot.glxPixmaps.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (pixmap in snapshot.glxPixmaps) {
+                    append("- ")
+                    append(pixmap.idHex)
+                    append(" pixmap=")
+                    append(pixmap.pixmapIdHex)
+                    append(" visual=")
+                    append(pixmap.visualIdHex)
+                    append(" screen=")
+                    append(pixmap.screen)
+                    append(" size=")
+                    append(pixmap.width)
+                    append('x')
+                    append(pixmap.height)
+                    append(" depth=")
+                    append(pixmap.depth)
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Unsupported requests:")
             if (snapshot.unsupportedRequests.isEmpty()) {
                 appendLine("- None.")

@@ -4,12 +4,15 @@ internal object XGlx {
     const val MajorOpcode = 128
     const val FirstEvent = 0
     const val FirstError = 128
+    const val BadPixmap = FirstError + 3
     const val MajorVersion = 1
     const val MinorVersion = 4
 
     const val QueryVersion = 7
     const val IsDirect = 6
+    const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
+    const val DestroyGLXPixmap = 15
     const val QueryExtensionsString = 18
     const val QueryServerString = 19
     const val ClientInfo = 20
@@ -39,9 +42,9 @@ internal object XGlx {
             10 -> "CopyContext"
             11 -> "SwapBuffers"
             12 -> "UseXFont"
-            13 -> "CreateGLXPixmap"
+            CreateGLXPixmap -> "CreateGLXPixmap"
             GetVisualConfigs -> "GetVisualConfigs"
-            15 -> "DestroyGLXPixmap"
+            DestroyGLXPixmap -> "DestroyGLXPixmap"
             16 -> "VendorPrivate"
             17 -> "VendorPrivateWithReply"
             QueryExtensionsString -> "QueryExtensionsString"

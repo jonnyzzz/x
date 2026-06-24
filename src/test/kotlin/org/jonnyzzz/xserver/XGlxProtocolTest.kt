@@ -151,6 +151,112 @@ class XGlxProtocolTest {
         }
     }
 
+    @Test
+    fun `GLX CreateGLXPixmap models pixmap resource and validates duplicate ids`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0200
+            val glxPixmap = 0x0020_0201
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val duplicateError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateError[0].toInt())
+            assertEquals(11, duplicateError[1].toInt() and 0xff)
+            assertEquals(glxPixmap, u32le(duplicateError, 4))
+            assertEquals(XGlx.CreateGLXPixmap, u16le(duplicateError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","screen":0,"width":8,"height":8,"depth":24}]"""),
+                json,
+            )
+        }
+    }
+
+    @Test
+    fun `GLX CreateGLXPixmap distinguishes missing drawable from non pixmap drawable`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val missingPixmap = 0x0020_0300
+            val glxPixmap = 0x0020_0301
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(missingPixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(X11Ids.RootWindow, glxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(9, missingError[1].toInt() and 0xff)
+            assertEquals(missingPixmap, u32le(missingError, 4))
+            assertEquals(XGlx.CreateGLXPixmap, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val nonPixmapError = socket.getInputStream().readExactly(32)
+            assertEquals(0, nonPixmapError[0].toInt())
+            assertEquals(4, nonPixmapError[1].toInt() and 0xff)
+            assertEquals(X11Ids.RootWindow, u32le(nonPixmapError, 4))
+            assertEquals(XGlx.CreateGLXPixmap, u16le(nonPixmapError, 8))
+            assertEquals(XGlx.MajorOpcode, nonPixmapError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(3, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX pixmap keeps backing geometry after core pixmap resource is freed`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0400
+            val glxPixmap = 0x0020_0401
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(11) + u16(13))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, 54, 0, u32(pixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""pixmaps":[]"""), json)
+            assertTrue(
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","screen":0,"width":11,"height":13,"depth":24}]"""),
+                json,
+            )
+        }
+    }
+
+    @Test
+    fun `GLX DestroyGLXPixmap frees modeled resource and recovers stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0200
+            val glxPixmap = 0x0020_0201
+            val missingGlxPixmap = 0x0020_0202
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateGLXPixmap, createGlxPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyGLXPixmap, u32(glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyGLXPixmap, u32(missingGlxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadPixmap, missingError[1].toInt() and 0xff)
+            assertEquals(missingGlxPixmap, u32le(missingError, 4))
+            assertEquals(XGlx.DestroyGLXPixmap, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""glxPixmaps":[]"""), json)
+        }
+    }
+
     private fun queryExtension(socket: Socket, name: String): ByteArray {
         val bytes = name.encodeToByteArray()
         writeRequest(socket, 98, 0, u16(bytes.size) + byteArrayOf(0, 0) + padded(bytes))
@@ -224,6 +330,12 @@ class XGlxProtocolTest {
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0) +
             u32(0)
+
+    private fun createGlxPixmapBody(pixmap: Int, glxPixmap: Int, visual: Int = X11Ids.RootVisual): ByteArray =
+        u32(0) + u32(visual) + u32(pixmap) + u32(glxPixmap)
+
+    private fun httpGet(socket: Socket, path: String): String =
+        java.net.URI("http://127.0.0.1:${socket.port}$path").toURL().readText()
 
     private fun readReply(input: InputStream): ByteArray {
         val header = input.readExactly(32)

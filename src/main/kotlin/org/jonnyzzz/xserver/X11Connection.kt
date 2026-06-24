@@ -251,7 +251,9 @@ internal class X11Connection(
             XGlx.IsDirect -> glxIsDirect(body)
             8, 9, 11 -> Unit
             1, 2 -> Unit
+            XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
+            XGlx.DestroyGLXPixmap -> glxDestroyPixmap(body)
             XGlx.QueryExtensionsString -> glxStringReply(XGlx.serverString(XGlx.ExtensionsName))
             XGlx.QueryServerString -> glxQueryServerString(body)
             XGlx.ClientInfo -> Unit
@@ -1336,6 +1338,39 @@ internal class X11Connection(
             ),
         )
         own(context)
+    }
+
+    private fun glxCreatePixmap(body: ByteArray) {
+        if (body.size != 16) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = 0)
+        val screen = byteOrder.u32(body, 0)
+        val visual = byteOrder.u32(body, 4)
+        val pixmap = byteOrder.u32(body, 8)
+        val glxPixmap = byteOrder.u32(body, 12)
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = screen)
+        if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = visual)
+        if (state.hasResource(glxPixmap)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = glxPixmap)
+        if (state.drawable(pixmap) == null) return writeError(error = 9, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = pixmap)
+        val backingPixmap = state.pixmap(pixmap) ?: return writeError(error = 4, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = pixmap)
+        state.putGlxPixmap(
+            XGlxPixmap(
+                id = glxPixmap,
+                pixmapId = pixmap,
+                visualId = visual,
+                screen = screen,
+                width = backingPixmap.width,
+                height = backingPixmap.height,
+                depth = backingPixmap.depth,
+            ),
+        )
+        own(glxPixmap)
+    }
+
+    private fun glxDestroyPixmap(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyGLXPixmap, badValue = 0)
+        val glxPixmap = byteOrder.u32(body, 0)
+        if (!state.hasGlxPixmap(glxPixmap)) return writeError(error = XGlx.BadPixmap, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyGLXPixmap, badValue = glxPixmap)
+        state.removeGlxPixmap(glxPixmap)
+        ownedResources.remove(glxPixmap)
     }
 
     private fun glxDestroyContext(body: ByteArray) {
