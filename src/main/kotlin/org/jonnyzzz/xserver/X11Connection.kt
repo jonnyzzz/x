@@ -244,7 +244,7 @@ internal class X11Connection(
         System.err.println("glx seq=$sequence minor=$minorOpcode operation=$operation body=${body.size} $detail")
 
         when (minorOpcode) {
-            XGlx.QueryVersion -> glxQueryVersion()
+            XGlx.QueryVersion -> glxQueryVersion(body)
             3 -> glxCreateContext(body)
             4 -> glxDestroyContext(body)
             5 -> glxMakeCurrent(body, isContextCurrent = false)
@@ -280,7 +280,8 @@ internal class X11Connection(
         }
     }
 
-    private fun glxQueryVersion() {
+    private fun glxQueryVersion(body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryVersion, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, XGlx.MajorVersion)
         byteOrder.put32(reply, 12, XGlx.MinorVersion)

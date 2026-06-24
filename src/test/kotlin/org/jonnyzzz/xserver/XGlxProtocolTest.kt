@@ -57,6 +57,23 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX QueryVersion validates fixed request length`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryVersion, u32(1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryVersion, u32(1) + u32(4) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryVersion, u32(1) + u32(4))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryVersion, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryVersion, sequence = 2)
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, u32le(version, 8))
+            assertEquals(4, u32le(version, 12))
+        }
+    }
+
+    @Test
     fun `GLX screen query requests validate fixed length and screen value`() {
         withServer { socket ->
             socket.soTimeout = 2_000
