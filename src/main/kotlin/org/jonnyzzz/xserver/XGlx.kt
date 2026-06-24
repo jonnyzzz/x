@@ -8,6 +8,7 @@ internal object XGlx {
     const val BadDrawable = FirstError + 2
     const val BadPixmap = FirstError + 3
     const val BadFBConfig = FirstError + 9
+    const val BadPbuffer = FirstError + 10
     const val BadWindow = FirstError + 12
     const val MajorVersion = 1
     const val MinorVersion = 4
@@ -26,6 +27,8 @@ internal object XGlx {
     const val CreateNewContext = 24
     const val QueryContext = 25
     const val MakeContextCurrent = 26
+    const val CreatePbuffer = 27
+    const val DestroyPbuffer = 28
     const val GetDrawableAttributes = 29
     const val ChangeDrawableAttributes = 30
     const val CreateWindow = 31
@@ -49,6 +52,11 @@ internal object XGlx {
     const val EventMask = 0x801F
     const val WindowBit = 0x00000001
     const val PixmapBit = 0x00000002
+    const val PbufferBit = 0x00000004
+    const val PreservedContents = 0x801B
+    const val LargestPbuffer = 0x801C
+    const val PbufferHeight = 0x8040
+    const val PbufferWidth = 0x8041
     const val YInvertedExt = 0x20D4
     const val TextureTargetExt = 0x20D6
     const val Texture2DExt = 0x20DC
@@ -82,8 +90,8 @@ internal object XGlx {
             CreateNewContext -> "CreateNewContext"
             QueryContext -> "QueryContext"
             MakeContextCurrent -> "MakeContextCurrent"
-            27 -> "CreatePbuffer"
-            28 -> "DestroyPbuffer"
+            CreatePbuffer -> "CreatePbuffer"
+            DestroyPbuffer -> "DestroyPbuffer"
             GetDrawableAttributes -> "GetDrawableAttributes"
             ChangeDrawableAttributes -> "ChangeDrawableAttributes"
             CreateWindow -> "CreateWindow"
@@ -176,7 +184,7 @@ internal object XGlx {
             0x27 to 0,
             0x28 to 0,
             0x24 to 0,
-            0x8010 to 0x00000001,
+            0x8010 to (WindowBit or PixmapBit or PbufferBit),
             0x8016 to 0,
             0x8017 to 0,
             0x8018 to 0,

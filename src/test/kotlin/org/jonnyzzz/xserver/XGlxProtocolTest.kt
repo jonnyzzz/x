@@ -45,6 +45,8 @@ class XGlxProtocolTest {
             assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
             assertEquals(0x800B, u32le(fbConfigs, 32))
             assertEquals(X11Ids.RootVisual, u32le(fbConfigs, 36))
+            val fbConfigAttributes = attributeMap(fbConfigs, offset = 32, count = XGlx.FbConfigAttributePairs)
+            assertEquals(XGlx.WindowBit or XGlx.PixmapBit or XGlx.PbufferBit, fbConfigAttributes.getValue(XGlx.DrawableType))
 
             writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0))
             val visuals = readReply(socket.getInputStream())
@@ -566,6 +568,83 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CreatePbuffer models drawable attributes and event mask`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pbuffer = 0x0020_0e00
+            val eventMask = 0x3456
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 13, height = 11))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, changeDrawableAttributesBody(pbuffer, XGlx.EventMask to eventMask))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(pbuffer))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val attributesReply = readReply(socket.getInputStream())
+            assertEquals(3, u16le(attributesReply, 2))
+            assertEquals(18, u32le(attributesReply, 4))
+            assertEquals(9, u32le(attributesReply, 8))
+            val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
+            assertEquals(0, attributes.getValue(XGlx.YInvertedExt))
+            assertEquals(13, attributes.getValue(XGlx.Width))
+            assertEquals(11, attributes.getValue(XGlx.Height))
+            assertEquals(0, attributes.getValue(XGlx.ScreenExt))
+            assertEquals(XGlx.TextureRectangleExt, attributes.getValue(XGlx.TextureTargetExt))
+            assertEquals(eventMask, attributes.getValue(XGlx.EventMask))
+            assertEquals(XGlx.RootFbConfigId, attributes.getValue(XGlx.FbConfigId))
+            assertEquals(1, attributes.getValue(XGlx.PreservedContents))
+            assertEquals(XGlx.PbufferBit, attributes.getValue(XGlx.DrawableType))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(
+                json.contains(""""glxPbuffers":[{"id":"0x${pbuffer.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":13,"height":11,"eventMask":$eventMask}]"""),
+                json,
+            )
+        }
+    }
+
+    @Test
+    fun `GLX CreatePbuffer and DestroyPbuffer validate resources and framing`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pbuffer = 0x0020_0f00
+            val missingPbuffer = 0x0020_0f01
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 8, height = 8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePbuffer, createPbufferBody(pbuffer, width = 4, height = 4))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(pbuffer) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(pbuffer))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPbuffer, u32(missingPbuffer))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val duplicateError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateError[0].toInt())
+            assertEquals(11, duplicateError[1].toInt() and 0xff)
+            assertEquals(pbuffer, u32le(duplicateError, 4))
+            assertEquals(XGlx.CreatePbuffer, u16le(duplicateError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+            val lengthError = socket.getInputStream().readExactly(32)
+            assertEquals(0, lengthError[0].toInt())
+            assertEquals(16, lengthError[1].toInt() and 0xff)
+            assertEquals(0, u32le(lengthError, 4))
+            assertEquals(XGlx.DestroyPbuffer, u16le(lengthError, 8))
+            assertEquals(XGlx.MajorOpcode, lengthError[10].toInt() and 0xff)
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadPbuffer, missingError[1].toInt() and 0xff)
+            assertEquals(missingPbuffer, u32le(missingError, 4))
+            assertEquals(XGlx.DestroyPbuffer, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""glxPbuffers":[]"""), json)
+        }
+    }
+
+    @Test
     fun `GLX DestroyPixmap accepts legacy oversized request and recovers stream`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -740,6 +819,23 @@ class XGlxProtocolTest {
             u32(window) +
             u32(glxWindow) +
             u32(attributes.size) +
+            attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
+
+    private fun createPbufferBody(
+        pbuffer: Int,
+        width: Int,
+        height: Int,
+        vararg attributes: Pair<Int, Int>,
+        fbConfig: Int = XGlx.RootFbConfigId,
+    ): ByteArray =
+        u32(0) +
+            u32(fbConfig) +
+            u32(pbuffer) +
+            u32(attributes.size + 2) +
+            u32(XGlx.PbufferWidth) +
+            u32(width) +
+            u32(XGlx.PbufferHeight) +
+            u32(height) +
             attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
 
     private fun httpGet(socket: Socket, path: String): String =

@@ -52,6 +52,7 @@ internal class X11State(
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
     private val glxPixmaps = linkedMapOf<Int, XGlxPixmap>()
     private val glxWindows = linkedMapOf<Int, XGlxWindow>()
+    private val glxPbuffers = linkedMapOf<Int, XGlxPbuffer>()
     private var nextGlxOperationId: Int = 1
     private val glxOperations = mutableListOf<XGlxOperation>()
     private var nextRenderOperationId: Int = 1
@@ -198,6 +199,7 @@ internal class X11State(
             glxContexts.remove(id)
             glxPixmaps.remove(id)
             glxWindows.remove(id)
+            glxPbuffers.remove(id)
             pictures.remove(id)
             glyphSets.remove(id)
         }
@@ -1403,6 +1405,16 @@ internal class X11State(
                     eventMask = glxWindow.eventMask,
                 )
             },
+            glxPbuffers = glxPbuffers.values.map { pbuffer ->
+                XGlxPbufferSnapshot(
+                    id = pbuffer.id,
+                    fbConfigId = pbuffer.fbConfigId,
+                    screen = pbuffer.screen,
+                    width = pbuffer.width,
+                    height = pbuffer.height,
+                    eventMask = pbuffer.eventMask,
+                )
+            },
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
@@ -1559,6 +1571,23 @@ internal class X11State(
 
     @Synchronized
     fun glxWindow(id: Int): XGlxWindow? = glxWindows[id]
+
+    @Synchronized
+    fun putGlxPbuffer(pbuffer: XGlxPbuffer) {
+        glxPbuffers[pbuffer.id] = pbuffer
+    }
+
+    @Synchronized
+    fun removeGlxPbuffer(id: Int) {
+        glxPbuffers.remove(id)
+        discardRetainedResourceIds(setOf(id))
+    }
+
+    @Synchronized
+    fun hasGlxPbuffer(id: Int): Boolean = glxPbuffers.containsKey(id)
+
+    @Synchronized
+    fun glxPbuffer(id: Int): XGlxPbuffer? = glxPbuffers[id]
 
     @Synchronized
     fun recordGlxOperation(
@@ -2759,7 +2788,8 @@ internal class X11State(
             glyphSets.containsKey(id) ||
             glxContexts.containsKey(id) ||
             glxPixmaps.containsKey(id) ||
-            glxWindows.containsKey(id)
+            glxWindows.containsKey(id) ||
+            glxPbuffers.containsKey(id)
 
     @Synchronized
     fun updateGc(
@@ -3890,6 +3920,7 @@ internal data class XScreenSnapshot(
     val pixmaps: List<XPixmapSnapshot>,
     val glxPixmaps: List<XGlxPixmapSnapshot>,
     val glxWindows: List<XGlxWindowSnapshot>,
+    val glxPbuffers: List<XGlxPbufferSnapshot>,
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
@@ -4205,6 +4236,27 @@ internal data class XGlxWindowSnapshot(
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+    val fbConfigIdHex: String get() = "0x${fbConfigId.toUInt().toString(16)}"
+}
+
+internal data class XGlxPbuffer(
+    val id: Int,
+    val fbConfigId: Int,
+    val screen: Int,
+    val width: Int,
+    val height: Int,
+    val eventMask: Int = 0,
+)
+
+internal data class XGlxPbufferSnapshot(
+    val id: Int,
+    val fbConfigId: Int,
+    val screen: Int,
+    val width: Int,
+    val height: Int,
+    val eventMask: Int,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val fbConfigIdHex: String get() = "0x${fbConfigId.toUInt().toString(16)}"
 }
 

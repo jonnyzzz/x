@@ -109,6 +109,11 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append("""{"id":"${window.idHex}","window":"${window.windowIdHex}","fbConfig":"${window.fbConfigIdHex}","screen":${window.screen},"width":${window.width},"height":${window.height},"eventMask":${window.eventMask}}""")
             }
+            append("""],"glxPbuffers":[""")
+            snapshot.glxPbuffers.forEachIndexed { index, pbuffer ->
+                if (index > 0) append(',')
+                append("""{"id":"${pbuffer.idHex}","fbConfig":"${pbuffer.fbConfigIdHex}","screen":${pbuffer.screen},"width":${pbuffer.width},"height":${pbuffer.height},"eventMask":${pbuffer.eventMask}}""")
+            }
             append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')

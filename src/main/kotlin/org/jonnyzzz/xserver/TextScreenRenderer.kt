@@ -173,6 +173,27 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("GLX pbuffers:")
+            if (snapshot.glxPbuffers.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (pbuffer in snapshot.glxPbuffers) {
+                    append("- ")
+                    append(pbuffer.idHex)
+                    append(" fbConfig=")
+                    append(pbuffer.fbConfigIdHex)
+                    append(" screen=")
+                    append(pbuffer.screen)
+                    append(" size=")
+                    append(pbuffer.width)
+                    append('x')
+                    append(pbuffer.height)
+                    append(" eventMask=0x")
+                    append(pbuffer.eventMask.toUInt().toString(16))
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Unsupported requests:")
             if (snapshot.unsupportedRequests.isEmpty()) {
                 appendLine("- None.")
