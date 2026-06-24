@@ -2451,13 +2451,16 @@ internal class X11Connection(
     }
 
     private fun fillPoly(body: ByteArray) {
-        if (body.size < 16) return
-        val gc = state.gc(byteOrder.u32(body, 4))
-        val drawableId = byteOrder.u32(body, 0)
+        if (body.size < 12) return writeError(error = 16, opcode = 69, badValue = 0)
         val shape = body[8].toInt() and 0xff
         if (shape !in 0..2) return writeError(error = 2, opcode = 69, badValue = shape)
         val coordMode = body[9].toInt() and 0xff
         if (coordMode !in 0..1) return writeError(error = 2, opcode = 69, badValue = coordMode)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 69, badValue = gcId)
+        val gc = state.gc(gcId)
+        val drawableId = byteOrder.u32(body, 0)
+        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 69, badValue = drawableId)
         val points = points(body, 12, coordMode)
         state.fillPolygon(
             drawableId = drawableId,
