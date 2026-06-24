@@ -42,6 +42,7 @@ internal class X11State(
     private var pointerY: Int = 0
     private var pointerState: Int = 0
     private var inputTime: Int = 1
+    private val motionHistory = mutableListOf<XMotionHistoryEntry>()
     private var lastPointerGrabTime: Int = 0
     private var lastKeyboardGrabTime: Int = 0
     private var nextInputOperationId: Int = 1
@@ -965,6 +966,8 @@ internal class X11State(
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
         val targetId: Int?
         synchronized(this) {
+            val previousX = pointerX
+            val previousY = pointerY
             pointerX = x.coerceIn(0, width - 1)
             pointerY = y.coerceIn(0, height - 1)
             val previousState = pointerState
@@ -976,6 +979,9 @@ internal class X11State(
             val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
             val childByAncestor = childByAncestor(path)
             val time = inputTime++
+            if (pointerX != previousX || pointerY != previousY) {
+                recordMotionHistory(time, pointerX, pointerY)
+            }
 
             if (logicalButton != 0) {
                 for ((sink, selections) in eventSinks) {
@@ -1056,6 +1062,7 @@ internal class X11State(
             val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
             val childByAncestor = childByAncestor(path)
             val time = inputTime++
+            recordMotionHistory(time, pointerX, pointerY)
 
             for ((sink, selections) in eventSinks) {
                 for (window in path) {
@@ -1184,6 +1191,43 @@ internal class X11State(
         if (inputOperations.size > MaxInputOperations) {
             inputOperations.removeAt(0)
         }
+    }
+
+    @Synchronized
+    fun motionEvents(windowId: Int, start: Int, stop: Int): List<XMotionHistoryEntry> {
+        val window = windows[windowId] ?: return emptyList()
+        val currentTime = currentServerTime(0)
+        val startTime = if (start == 0) currentTime else start
+        val stopTime = if (stop == 0 || Integer.compareUnsigned(stop, currentTime) > 0) currentTime else stop
+        if (
+            Integer.compareUnsigned(startTime, stopTime) > 0 ||
+            Integer.compareUnsigned(startTime, currentTime) > 0
+        ) {
+            return emptyList()
+        }
+
+        val absolute = absolutePosition(window)
+        val left = absolute.first - window.borderWidth
+        val top = absolute.second - window.borderWidth
+        val right = absolute.first + window.width + window.borderWidth
+        val bottom = absolute.second + window.height + window.borderWidth
+        return motionHistory
+            .asSequence()
+            .filter { event ->
+                Integer.compareUnsigned(event.time, startTime) >= 0 &&
+                    Integer.compareUnsigned(event.time, stopTime) <= 0 &&
+                    event.rootX >= left &&
+                    event.rootY >= top &&
+                    event.rootX < right &&
+                    event.rootY < bottom
+            }
+            .map { event ->
+                event.copy(
+                    x = event.rootX - absolute.first,
+                    y = event.rootY - absolute.second,
+                )
+            }
+            .toList()
     }
 
     @Synchronized
@@ -2834,6 +2878,7 @@ internal class X11State(
         private const val AnyModifier = 0x8000
         private const val KeyModifierMask = 0x00ff
         private const val MaxDrawingCommands = 10_000
+        private const val MaxMotionHistory = 256
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
         private const val MaxRenderOperations = 400
@@ -3237,6 +3282,19 @@ internal class X11State(
             result[pathFromTarget[index].id] = pathFromTarget[index - 1].id
         }
         return result
+    }
+
+    private fun recordMotionHistory(time: Int, rootX: Int, rootY: Int) {
+        motionHistory += XMotionHistoryEntry(
+            time = time,
+            rootX = rootX,
+            rootY = rootY,
+            x = rootX,
+            y = rootY,
+        )
+        if (motionHistory.size > MaxMotionHistory) {
+            motionHistory.removeAt(0)
+        }
     }
 
     private fun buttonMask(button: Int): Int =
@@ -3814,6 +3872,14 @@ internal data class XInputOperation(
 ) {
     val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
 }
+
+internal data class XMotionHistoryEntry(
+    val time: Int,
+    val rootX: Int,
+    val rootY: Int,
+    val x: Int,
+    val y: Int,
+)
 
 internal data class XInputControlOperation(
     val id: Int,

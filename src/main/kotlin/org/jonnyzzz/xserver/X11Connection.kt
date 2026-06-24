@@ -1876,8 +1876,19 @@ internal class X11Connection(
         if (body.size != 12) return writeError(error = 16, opcode = 39, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         if (state.window(windowId) == null) return writeError(error = 3, opcode = 39, badValue = windowId)
-        val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, 0)
+        val events = state.motionEvents(
+            windowId = windowId,
+            start = byteOrder.u32(body, 4),
+            stop = byteOrder.u32(body, 8),
+        )
+        val reply = reply(extra = 0, payloadUnits = events.size * 2)
+        byteOrder.put32(reply, 8, events.size)
+        events.forEachIndexed { index, event ->
+            val offset = 32 + index * 8
+            byteOrder.put32(reply, offset, event.time)
+            byteOrder.put16(reply, offset + 4, event.x)
+            byteOrder.put16(reply, offset + 6, event.y)
+        }
         write(reply)
     }
 

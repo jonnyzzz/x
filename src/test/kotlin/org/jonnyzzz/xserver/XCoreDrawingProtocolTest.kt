@@ -2620,6 +2620,58 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetMotionEvents returns window relative motion history filtered by time`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 20, width = 50, height = 40))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 5, destinationY = 6))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 7, destinationY = 8))
+                out.write(getMotionEventsRequest(WindowId, start = 1, stop = 0))
+                out.write(getMotionEventsRequest(WindowId, start = 2, stop = 2))
+                out.write(getMotionEventsRequest(WindowId, start = 3, stop = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+
+                val allMotion = readReply(socket.getInputStream())
+                assertEquals(1, allMotion[0].toInt())
+                assertEquals(5, u16le(allMotion, 2))
+                assertEquals(4, u32le(allMotion, 4))
+                assertEquals(2, u32le(allMotion, 8))
+                assertMotionEvent(allMotion, index = 0, time = 1, x = 5, y = 6)
+                assertMotionEvent(allMotion, index = 1, time = 2, x = 7, y = 8)
+
+                val filteredMotion = readReply(socket.getInputStream())
+                assertEquals(6, u16le(filteredMotion, 2))
+                assertEquals(2, u32le(filteredMotion, 4))
+                assertEquals(1, u32le(filteredMotion, 8))
+                assertMotionEvent(filteredMotion, index = 0, time = 2, x = 7, y = 8)
+
+                val emptyMotion = readReply(socket.getInputStream())
+                assertEquals(7, u16le(emptyMotion, 2))
+                assertEquals(0, u32le(emptyMotion, 4))
+                assertEquals(0, u32le(emptyMotion, 8))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(8, u16le(pointer, 2))
+                assertEquals(17, u16le(pointer, 16))
+                assertEquals(28, u16le(pointer, 18))
+                assertEquals(17, u16le(pointer, 20))
+                assertEquals(28, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetMotionEvents validates window and request length and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9630,6 +9682,13 @@ class XCoreDrawingProtocolTest {
         assertEquals(detail, event[1].toInt() and 0xff)
     }
 
+    private fun assertMotionEvent(reply: ByteArray, index: Int, time: Int, x: Int, y: Int) {
+        val offset = 32 + index * 8
+        assertEquals(time, u32le(reply, offset))
+        assertEquals(x, i16le(reply, offset + 4))
+        assertEquals(y, i16le(reply, offset + 6))
+    }
+
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int) {
         val reply = input.readExactly(32)
         assertEquals(0, reply[0].toInt())
@@ -9704,6 +9763,9 @@ class XCoreDrawingProtocolTest {
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun i16le(bytes: ByteArray, offset: Int): Int =
+        u16le(bytes, offset).toShort().toInt()
 
     private fun u32le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or
