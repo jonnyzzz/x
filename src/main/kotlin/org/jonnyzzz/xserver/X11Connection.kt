@@ -117,6 +117,7 @@ internal class X11Connection(
             2 -> changeWindowAttributes(body)
             3 -> getWindowAttributes(body)
             4 -> destroyWindow(body)
+            5 -> destroySubwindows(body)
             6 -> changeSaveSet(minorOpcode, body)
             7 -> reparentWindow(body)
             8 -> mapWindow(body)
@@ -1250,6 +1251,15 @@ internal class X11Connection(
     private fun destroyWindow(body: ByteArray) {
         if (body.size >= 4) {
             ownedResources.removeAll(state.removeWindow(byteOrder.u32(body, 0)))
+        }
+    }
+
+    private fun destroySubwindows(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 5, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 5, badValue = windowId)
+        for (child in state.childrenOf(windowId)) {
+            ownedResources.removeAll(state.removeWindow(child.id))
         }
     }
 
@@ -2903,6 +2913,7 @@ internal class X11Connection(
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
             4 -> "DestroyWindow"
+            5 -> "DestroySubwindows"
             6 -> "ChangeSaveSet"
             7 -> "ReparentWindow"
             8 -> "MapWindow"

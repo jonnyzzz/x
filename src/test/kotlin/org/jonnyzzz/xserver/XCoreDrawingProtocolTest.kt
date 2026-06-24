@@ -3769,6 +3769,67 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroySubwindows destroys direct children and descendants but keeps parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val first = WindowId + 1
+                val nested = WindowId + 2
+                val second = WindowId + 3
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(first, parent = parent))
+                out.write(createWindowRequest(nested, parent = first))
+                out.write(createWindowRequest(second, parent = parent))
+                out.write(destroySubwindowsRequest(parent))
+                out.write(queryTreeRequest(parent))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertTrue(treeChildren(readReply(socket.getInputStream())).isEmpty())
+                val rootChildren = treeChildren(readReply(socket.getInputStream()))
+                assertTrue(parent in rootChildren)
+                assertFalse(first in rootChildren)
+                assertFalse(second in rootChildren)
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, windowJsonId(parent))
+                assertFalse(json.contains(windowJsonId(first)))
+                assertFalse(json.contains(windowJsonId(nested)))
+                assertFalse(json.contains(windowJsonId(second)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroySubwindows validates request length and parent window without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = WindowId + 400
+                val out = socket.getOutputStream()
+                out.write(request(5, 0, ByteArray(0)))
+                out.write(destroySubwindowsRequest(missing))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 5, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 3, opcode = 5, badValue = missing, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FreeCursor clears active pointer grab that references cursor`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6435,6 +6496,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(4, 0, body)
+    }
+
+    private fun destroySubwindowsRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(5, 0, body)
     }
 
     private fun createWindowRequestBigEndian(
