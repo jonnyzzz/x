@@ -1569,7 +1569,7 @@ internal class X11Connection(
     }
 
     private fun glxQueryContext(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = 0)
         val context = byteOrder.u32(body, 0)
         val glxContext = state.glxContext(context)
             ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = context)
@@ -1726,7 +1726,7 @@ internal class X11Connection(
     }
 
     private fun glxCopyContext(body: ByteArray) {
-        if (body.size < 16) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = 0)
+        if (body.size != 16) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = 0)
         val source = byteOrder.u32(body, 0)
         val destination = byteOrder.u32(body, 4)
         val contextTag = byteOrder.u32(body, 12)
@@ -1745,7 +1745,7 @@ internal class X11Connection(
     }
 
     private fun glxGetDrawableAttributes(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
         val drawableId = byteOrder.u32(body, 0)
         val glxPixmap = state.glxPixmap(drawableId)
         val glxWindow = state.glxWindow(drawableId)
