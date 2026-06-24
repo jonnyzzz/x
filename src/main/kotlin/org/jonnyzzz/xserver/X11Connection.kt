@@ -2374,8 +2374,11 @@ internal class X11Connection(
     }
 
     private fun polyRectangle(body: ByteArray, kind: XDrawingKind) {
-        if (body.size < 16) return
-        val gc = state.gc(byteOrder.u32(body, 4))
+        val opcode = if (kind == XDrawingKind.FillRectangle) 70 else 67
+        if (body.size < 8 || (body.size - 8) % 8 != 0) return writeError(error = 16, opcode = opcode, badValue = 0)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
         val rectangles = rectangles(body, 8)
         when (kind) {
