@@ -1493,21 +1493,41 @@ internal class X11Connection(
     }
 
     private fun getProperty(deleteOpcode: Int, body: ByteArray) {
+        if (body.size != 20) return writeError(error = 16, opcode = 20, badValue = 0)
+        if (deleteOpcode !in XPropertyDelete.False..XPropertyDelete.True) {
+            return writeError(error = 2, opcode = 20, badValue = deleteOpcode)
+        }
         val delete = deleteOpcode != 0
-        val window = state.window(byteOrder.u32(body, 0)) ?: return writeError(3, 20, badValue = byteOrder.u32(body, 0))
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(3, 20, badValue = windowId)
         val propertyId = byteOrder.u32(body, 4)
+        if (state.atomName(propertyId) == null) return writeError(error = 5, opcode = 20, badValue = propertyId)
         val requestedType = byteOrder.u32(body, 8)
-        val longOffset = byteOrder.u32(body, 12).toLong().coerceAtLeast(0L).saturatingTimes4()
-        val longLength = byteOrder.u32(body, 16).toLong().coerceAtLeast(0L).saturatingTimes4()
+        if (requestedType != XPropertyType.Any && state.atomName(requestedType) == null) {
+            return writeError(error = 5, opcode = 20, badValue = requestedType)
+        }
+        val longOffsetUnits = byteOrder.u32(body, 12)
+        val longOffset = Integer.toUnsignedLong(longOffsetUnits).saturatingTimes4()
+        val longLength = Integer.toUnsignedLong(byteOrder.u32(body, 16)).saturatingTimes4()
         val property = window.properties[propertyId]
-        if (property == null || (requestedType != 0 && requestedType != property.type)) {
+        if (property == null) {
             val reply = reply(extra = 0, payloadUnits = 0)
             byteOrder.put32(reply, 8, 0)
             byteOrder.put32(reply, 12, 0)
             byteOrder.put32(reply, 16, 0)
             return write(reply)
         }
-        val available = property.data.drop(longOffset.coerceAtMost(property.data.size.toLong()).toInt()).toByteArray()
+        if (requestedType != XPropertyType.Any && requestedType != property.type) {
+            val reply = reply(extra = property.format, payloadUnits = 0)
+            byteOrder.put32(reply, 8, property.type)
+            byteOrder.put32(reply, 12, property.data.size)
+            byteOrder.put32(reply, 16, 0)
+            return write(reply)
+        }
+        if (longOffset > property.data.size.toLong()) {
+            return writeError(error = 2, opcode = 20, badValue = longOffsetUnits)
+        }
+        val available = property.data.drop(longOffset.toInt()).toByteArray()
         val value = available.take(longLength.coerceAtMost(available.size.toLong()).toInt()).toByteArray()
         val bytesAfter = (available.size - value.size).coerceAtLeast(0)
         val reply = reply(extra = property.format, payloadUnits = paddedLength(value.size) / 4)
@@ -1515,8 +1535,14 @@ internal class X11Connection(
         byteOrder.put32(reply, 12, bytesAfter)
         byteOrder.put32(reply, 16, value.size / (property.format / 8))
         propertyDataForClientOrder(property.format, value).copyInto(reply, 32)
+        val shouldDelete = delete && bytesAfter == 0
+        if (shouldDelete) {
+            window.properties.remove(propertyId)
+        }
         write(reply)
-        if (delete && bytesAfter == 0) window.properties.remove(propertyId)
+        if (shouldDelete) {
+            sendPropertyNotify(windowId, propertyId, XPropertyState.Deleted)
+        }
     }
 
     private fun listProperties(body: ByteArray) {
@@ -5028,6 +5054,15 @@ private object XPropertyFormat {
 private object XPropertyState {
     const val NewValue = 0
     const val Deleted = 1
+}
+
+private object XPropertyDelete {
+    const val False = 0
+    const val True = 1
+}
+
+private object XPropertyType {
+    const val Any = 0
 }
 
 private data class XRenderPictureAttributes(

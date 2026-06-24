@@ -6280,6 +6280,102 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetProperty validates request fields and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingWindow = WindowId + 410
+                val missingProperty = 0x00ff_fffb
+                val missingType = 0x00ff_fffa
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(20, 0, ByteArray(0)))
+                out.write(request(20, 0, ByteArray(24)))
+                out.write(getPropertyRawRequest(missingWindow, PrimaryAtom, StringAtom))
+                out.write(getPropertyRawRequest(WindowId, missingProperty, StringAtom))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, missingType))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, StringAtom, delete = 2))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "one"))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, StringAtom, longOffset = -1))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 20, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 20, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 20, badValue = missingWindow, sequence = 4)
+                assertError(socket.getInputStream(), error = 5, opcode = 20, badValue = missingProperty, sequence = 5)
+                assertError(socket.getInputStream(), error = 5, opcode = 20, badValue = missingType, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 20, badValue = 2, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = 20, badValue = -1, sequence = 9)
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 10, type = StringAtom, value = "one")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetProperty returns mismatch metadata and AnyPropertyType value`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "hello"))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, AtomAtom, delete = 1))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, 0))
+                out.write(getPropertyRequest(WindowId, AtomAtom, StringAtom))
+                out.flush()
+
+                assertPropertyReplyBytes(
+                    readReply(socket.getInputStream()),
+                    sequence = 3,
+                    type = StringAtom,
+                    format = 8,
+                    data = ByteArray(0),
+                    bytesAfter = 5,
+                )
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 4, type = StringAtom, value = "hello")
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 5)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetProperty delete removes only after complete read and sends PropertyNotify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "abcdef"))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, StringAtom, delete = 1, longLength = 1))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.write(getPropertyRawRequest(WindowId, PrimaryAtom, StringAtom, delete = 1, longOffset = 1, longLength = 1))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 4, type = StringAtom, value = "abcd", bytesAfter = 2)
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 5, type = StringAtom, value = "abcdef")
+                assertPropertyReply(readReply(socket.getInputStream()), sequence = 6, type = StringAtom, value = "ef")
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 6, window = WindowId, atom = PrimaryAtom, state = 1)
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 7)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RotateProperties rotates property values by positive and negative delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7756,12 +7852,24 @@ class XCoreDrawingProtocolTest {
     }
 
     private fun getPropertyRequest(window: Int, property: Int, type: Int): ByteArray {
+        return getPropertyRawRequest(window, property, type)
+    }
+
+    private fun getPropertyRawRequest(
+        window: Int,
+        property: Int,
+        type: Int,
+        delete: Int = 0,
+        longOffset: Int = 0,
+        longLength: Int = 1024,
+    ): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
         put32le(body, 4, property)
         put32le(body, 8, type)
-        put32le(body, 16, 1024)
-        return request(20, 0, body)
+        put32le(body, 12, longOffset)
+        put32le(body, 16, longLength)
+        return request(20, delete, body)
     }
 
     private fun getPropertyRequestBigEndian(window: Int, property: Int, type: Int): ByteArray {
@@ -8640,9 +8748,9 @@ class XCoreDrawingProtocolTest {
         assertEquals(threshold, u16le(reply, 12))
     }
 
-    private fun assertPropertyReply(reply: ByteArray, sequence: Int, type: Int, value: String) {
+    private fun assertPropertyReply(reply: ByteArray, sequence: Int, type: Int, value: String, bytesAfter: Int = 0) {
         val bytes = value.encodeToByteArray()
-        assertPropertyReplyBytes(reply, sequence, type, format = 8, data = bytes)
+        assertPropertyReplyBytes(reply, sequence, type, format = 8, data = bytes, bytesAfter = bytesAfter)
         assertEquals(value, reply.copyOfRange(32, 32 + bytes.size).decodeToString())
     }
 
@@ -8664,6 +8772,7 @@ class XCoreDrawingProtocolTest {
         type: Int,
         format: Int,
         data: ByteArray,
+        bytesAfter: Int = 0,
         byteOrderByte: Int = 0x6c,
     ) {
         val u16 = if (byteOrderByte == 0x42) ::u16be else ::u16le
@@ -8673,7 +8782,7 @@ class XCoreDrawingProtocolTest {
         assertEquals(sequence, u16(reply, 2))
         assertEquals(paddedLength(data.size) / 4, u32(reply, 4))
         assertEquals(type, u32(reply, 8))
-        assertEquals(0, u32(reply, 12))
+        assertEquals(bytesAfter, u32(reply, 12))
         assertEquals(data.size / (format / 8), u32(reply, 16))
         assertZeroBytes(reply, 20, 32)
         assertEquals(data.toList(), reply.copyOfRange(32, 32 + data.size).toList())

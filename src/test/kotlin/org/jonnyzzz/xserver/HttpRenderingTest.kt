@@ -287,7 +287,7 @@ class HttpRenderingTest {
     }
 
     @Test
-    fun `get property clamps overflowing offsets and lengths`() {
+    fun `get property rejects overflowing offset`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -300,9 +300,11 @@ class HttpRenderingTest {
                 out.write(getPropertyRequest(0x0020_0001, longOffset = 0x4000_0000, longLength = 0x7fff_ffff))
                 out.flush()
 
-                val reply = input.readExactly(32)
-                assertEquals(1, reply[0].toInt())
-                assertEquals(0, u16le(reply, 16))
+                val error = input.readExactly(32)
+                assertEquals(0, error[0].toInt())
+                assertEquals(2, error[1].toInt() and 0xff)
+                assertEquals(3, u16le(error, 2))
+                assertEquals(20, error[10].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
