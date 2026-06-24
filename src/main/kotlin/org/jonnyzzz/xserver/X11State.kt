@@ -37,6 +37,7 @@ internal class X11State(
     private var nextAtomId = 69
     private var focusWindowId: Int = X11Ids.RootWindow
     private var focusRevertTo: Int = 0
+    private var lastInputFocusChangeTime: Int = 0
     private var pointerX: Int = 0
     private var pointerY: Int = 0
     private var pointerState: Int = 0
@@ -322,7 +323,17 @@ internal class X11State(
     }
 
     @Synchronized
-    fun setInputFocus(focusWindowId: Int, revertTo: Int) {
+    fun setInputFocus(focusWindowId: Int, revertTo: Int, time: Int) {
+        val serverTime = currentServerTime(lastInputFocusChangeTime)
+        if (time != 0 &&
+            (
+                Integer.compareUnsigned(time, lastInputFocusChangeTime) < 0 ||
+                    Integer.compareUnsigned(time, serverTime) > 0
+                )
+        ) {
+            return
+        }
+        lastInputFocusChangeTime = if (time == 0) serverTime else time
         this.focusWindowId = focusWindowId
         this.focusRevertTo = revertTo
     }

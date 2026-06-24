@@ -1931,14 +1931,14 @@ internal class X11Connection(
     }
 
     private fun setInputFocus(revertTo: Int, body: ByteArray) {
-        if (body.size < 8) return writeError(error = 16, opcode = 42, badValue = 0)
+        if (body.size != 8) return writeError(error = 16, opcode = 42, badValue = 0)
         if (revertTo !in 0..2) return writeError(error = 2, opcode = 42, badValue = revertTo)
         val focusWindowId = byteOrder.u32(body, 0)
         if (focusWindowId !in 0..1) {
             val window = state.window(focusWindowId) ?: return writeError(error = 3, opcode = 42, badValue = focusWindowId)
             if (!state.windowIsViewable(window.id)) return writeError(error = 8, opcode = 42, badValue = focusWindowId)
         }
-        state.setInputFocus(focusWindowId, revertTo)
+        state.setInputFocus(focusWindowId, revertTo, byteOrder.u32(body, 4))
     }
 
     private fun queryKeymap() {

@@ -5058,6 +5058,68 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetInputFocus ignores stale and future timestamps without changing focus`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.pointerDown(1, 1)
+                val out = socket.getOutputStream()
+                out.write(setInputFocusRequest(1, revertTo = 2, time = 3))
+                out.write(getInputFocusRequest())
+                out.write(setInputFocusRequest(1, revertTo = 2, time = 2))
+                out.write(getInputFocusRequest())
+                out.write(setInputFocusRequest(0, revertTo = 2, time = 1))
+                out.write(getInputFocusRequest())
+                out.write(setInputFocusRequest(0, revertTo = 2, time = 0))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                val futureIgnored = readReply(socket.getInputStream())
+                assertEquals(2, u16le(futureIgnored, 2))
+                assertEquals(X11Ids.RootWindow, u32le(futureIgnored, 8))
+
+                val validExplicit = readReply(socket.getInputStream())
+                assertEquals(4, u16le(validExplicit, 2))
+                assertEquals(1, u32le(validExplicit, 8))
+
+                val staleIgnored = readReply(socket.getInputStream())
+                assertEquals(6, u16le(staleIgnored, 2))
+                assertEquals(1, u32le(staleIgnored, 8))
+
+                val currentTimeAccepted = readReply(socket.getInputStream())
+                assertEquals(8, u16le(currentTimeAccepted, 2))
+                assertEquals(0, u32le(currentTimeAccepted, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetInputFocus validates exact request length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(setInputFocusOversizedRequest())
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 42, badValue = 0, sequence = 1)
+                val focus = readReply(socket.getInputStream())
+                assertEquals(2, u16le(focus, 2))
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `Bell validates signed percent and preserves connection after errors`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8198,12 +8260,15 @@ class XCoreDrawingProtocolTest {
     private fun ungrabServerRequest(): ByteArray =
         request(37, 0, ByteArray(0))
 
-    private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
+    private fun setInputFocusRequest(window: Int, revertTo: Int, time: Int = 0): ByteArray {
         val body = ByteArray(8)
         put32le(body, 0, window)
-        put32le(body, 4, 0)
+        put32le(body, 4, time)
         return request(42, revertTo, body)
     }
+
+    private fun setInputFocusOversizedRequest(): ByteArray =
+        request(42, 0, ByteArray(12))
 
     private fun getInputFocusRequest(): ByteArray =
         request(43, 0, ByteArray(0))
