@@ -165,6 +165,17 @@ internal object SvgScreenRenderer {
                 append(""","time":${grab.timeUnsigned}""")
                 append('}')
             }
+            append("""],"passiveButtonGrabs":[""")
+            snapshot.passiveButtonGrabs.forEachIndexed { index, grab ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""window":"${grab.windowIdHex}","ownerEvents":${grab.ownerEvents},"eventMask":"${grab.eventMaskHex}","pointerMode":${grab.pointerMode},"keyboardMode":${grab.keyboardMode},"confineTo":""")
+                grab.confineToHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","cursor":""")
+                grab.cursorHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","button":${grab.button},"buttonName":"${escapeJson(grab.buttonName)}","modifiers":${grab.modifiers},"modifiersName":"${escapeJson(grab.modifiersName)}"""")
+                append('}')
+            }
             append("""],"serverGrabbed":${snapshot.serverGrabbed}}""")
         }
 

@@ -2560,6 +2560,163 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabButton is replyless and records passive button grab state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabButtonRequest(WindowId, ownerEvents = 1, button = 0, modifiers = 0x8000))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"passiveButtonGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":0,"buttonName":"AnyButton","modifiers":32768,"modifiersName":"AnyModifier"}]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabButton releases matching passive grabs and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabButtonRequest(WindowId, button = 1, modifiers = 4))
+                out.write(grabButtonRequest(WindowId, button = 2, modifiers = 4))
+                out.write(grabButtonRequest(WindowId, button = 6, modifiers = 1))
+                out.write(ungrabButtonRequest(WindowId, button = 0, modifiers = 4))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(6, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"button":6,"buttonName":"6","modifiers":1""")
+                assertFalse(stateJson.contains(""""button":1,"buttonName":"1","modifiers":4"""))
+                assertFalse(stateJson.contains(""""button":2,"buttonName":"2","modifiers":4"""))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabButton specific combination does not clear wildcard passive grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                out.write(ungrabButtonRequest(WindowId, button = 1, modifiers = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(4, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+
+                out.write(ungrabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val clearedPointer = readReply(socket.getInputStream())
+                assertEquals(1, clearedPointer[0].toInt())
+                assertEquals(6, u16le(clearedPointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"passiveButtonGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabButton reports BadAccess for conflicting passive grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabButtonRequest(WindowId, button = 0, modifiers = 0x8000))
+                    ownerOut.flush()
+                    assertContains(httpGet(server.localPort, "/state.json"), """"passiveButtonGrabs":[{""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabButtonRequest(WindowId, button = 1, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    assertError(other.getInputStream(), error = 10, opcode = 28, badValue = 0, sequence = 1)
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(2, u16le(pointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
+                    assertFalse(stateJson.contains(""""button":1,"buttonName":"1","modifiers":0"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabButton and UngrabButton validate values and request length`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabButtonRequest(WindowId, ownerEvents = 2))
+                out.write(grabButtonRequest(WindowId, pointerMode = 2))
+                out.write(grabButtonRequest(WindowId, modifiers = 0x0100))
+                out.write(grabButtonBadLengthRequest())
+                out.write(ungrabButtonRequest(WindowId, modifiers = 0x0100))
+                out.write(ungrabButtonBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 28, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 28, badValue = 2, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 28, badValue = 0x0100, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 28, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 29, badValue = 0x0100, sequence = 6)
+                assertError(socket.getInputStream(), error = 16, opcode = 29, badValue = 0, sequence = 7)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(8, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"passiveButtonGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer and GrabKeyboard report AlreadyGrabbed for another client's active grab`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4757,6 +4914,42 @@ class XCoreDrawingProtocolTest {
 
     private fun ungrabPointerBadLengthRequest(): ByteArray =
         request(27, 0, ByteArray(0))
+
+    private fun grabButtonRequest(
+        window: Int,
+        ownerEvents: Int = 0,
+        eventMask: Int = 0x000c,
+        pointerMode: Int = 0,
+        keyboardMode: Int = 0,
+        confineTo: Int = 0,
+        cursor: Int = 0,
+        button: Int = 1,
+        modifiers: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(20)
+        put32le(body, 0, window)
+        put16le(body, 4, eventMask)
+        body[6] = pointerMode.toByte()
+        body[7] = keyboardMode.toByte()
+        put32le(body, 8, confineTo)
+        put32le(body, 12, cursor)
+        body[16] = button.toByte()
+        put16le(body, 18, modifiers)
+        return request(28, ownerEvents, body)
+    }
+
+    private fun grabButtonBadLengthRequest(): ByteArray =
+        request(28, 0, ByteArray(0))
+
+    private fun ungrabButtonRequest(window: Int, button: Int = 1, modifiers: Int = 0): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put16le(body, 4, modifiers)
+        return request(29, button, body)
+    }
+
+    private fun ungrabButtonBadLengthRequest(): ByteArray =
+        request(29, 1, ByteArray(0))
 
     private fun grabKeyboardRequest(window: Int, time: Int = 0): ByteArray {
         val body = ByteArray(12)

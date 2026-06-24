@@ -57,6 +57,7 @@ internal class X11State(
     private var modifierMapping = XModifierMapping.Default
     private var activePointerGrab: XInputGrab? = null
     private var activeKeyboardGrab: XInputGrab? = null
+    private val passiveButtonGrabs = mutableListOf<XPassiveButtonGrab>()
     private val requestProcessingLock = ReentrantLock()
     private val serverGrabLock = ReentrantLock()
     private val serverGrabReleased = serverGrabLock.newCondition()
@@ -328,6 +329,29 @@ internal class X11State(
     }
 
     @Synchronized
+    fun grabButton(grab: XPassiveButtonGrab): Boolean {
+        if (passiveButtonGrabs.any { it.owner != grab.owner && passiveButtonGrabConflicts(it, grab) }) return false
+        passiveButtonGrabs.removeIf {
+            it.owner == grab.owner &&
+                it.windowId == grab.windowId &&
+                it.button == grab.button &&
+                it.modifiers == grab.modifiers
+        }
+        passiveButtonGrabs += grab
+        return true
+    }
+
+    @Synchronized
+    fun ungrabButton(owner: XEventSink, windowId: Int, button: Int, modifiers: Int) {
+        passiveButtonGrabs.removeIf {
+            it.owner == owner &&
+                it.windowId == windowId &&
+                requestedButtonRemovesGrab(button, it.button) &&
+                requestedModifierRemovesGrab(modifiers, it.modifiers)
+        }
+    }
+
+    @Synchronized
     fun grabKeyboard(grab: XInputGrab): Boolean {
         if (activeKeyboardGrab?.owner != null && activeKeyboardGrab?.owner != grab.owner) return false
         activeKeyboardGrab = grab
@@ -344,6 +368,7 @@ internal class X11State(
     fun releaseInputGrabs(owner: XEventSink) {
         if (activePointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
+        passiveButtonGrabs.removeIf { it.owner == owner }
     }
 
     private fun releaseInputGrabsForResources(resourceIds: Set<Int>) {
@@ -360,10 +385,32 @@ internal class X11State(
         if (keyboardGrab != null && keyboardGrab.windowId in resourceIds) {
             activeKeyboardGrab = null
         }
+        passiveButtonGrabs.removeIf {
+            it.windowId in resourceIds ||
+                it.confineTo?.let { id -> id in resourceIds } == true ||
+                it.cursor?.let { id -> id in resourceIds } == true
+        }
     }
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
         requestTime == 0 || Integer.compareUnsigned(requestTime, grabTime) >= 0
+
+    private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
+        left.windowId == right.windowId &&
+            passiveButtonMatches(left.button, right.button) &&
+            passiveModifierMatches(left.modifiers, right.modifiers)
+
+    private fun passiveButtonMatches(left: Int, right: Int): Boolean =
+        left == AnyButton || right == AnyButton || left == right
+
+    private fun passiveModifierMatches(left: Int, right: Int): Boolean =
+        left == AnyModifier || right == AnyModifier || left == right
+
+    private fun requestedButtonRemovesGrab(requested: Int, grabbed: Int): Boolean =
+        requested == AnyButton || requested == grabbed
+
+    private fun requestedModifierRemovesGrab(requested: Int, grabbed: Int): Boolean =
+        requested == AnyModifier || requested == grabbed
 
     fun processWhenServerGrabAllows(owner: XEventSink, process: () -> Unit) {
         while (true) {
@@ -736,6 +783,7 @@ internal class X11State(
                 activePointerGrab?.snapshot(),
                 activeKeyboardGrab?.snapshot(),
             ),
+            passiveButtonGrabs = passiveButtonGrabs.map { it.snapshot() },
             serverGrabbed = serverGrabbed(),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
@@ -2209,6 +2257,8 @@ internal class X11State(
     fun extensionByMajorOpcode(majorOpcode: Int): XExtension? = extensions.firstOrNull { it.majorOpcode == majorOpcode }
 
     companion object {
+        private const val AnyButton = 0
+        private const val AnyModifier = 0x8000
         private const val MaxDrawingCommands = 10_000
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
@@ -2927,6 +2977,7 @@ internal data class XScreenSnapshot(
     val inputOperations: List<XInputOperation>,
     val inputControlOperations: List<XInputControlOperation>,
     val inputGrabs: List<XInputGrabSnapshot>,
+    val passiveButtonGrabs: List<XPassiveButtonGrabSnapshot>,
     val serverGrabbed: Boolean,
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
@@ -3030,6 +3081,51 @@ internal data class XInputGrabSnapshot(
     val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
     val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
     val timeUnsigned: Long get() = time.toUInt().toLong()
+}
+
+internal data class XPassiveButtonGrab(
+    val owner: XEventSink,
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val eventMask: Int,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val confineTo: Int?,
+    val cursor: Int?,
+    val button: Int,
+    val modifiers: Int,
+) {
+    fun snapshot(): XPassiveButtonGrabSnapshot =
+        XPassiveButtonGrabSnapshot(
+            windowId = windowId,
+            ownerEvents = ownerEvents,
+            eventMask = eventMask,
+            pointerMode = pointerMode,
+            keyboardMode = keyboardMode,
+            confineTo = confineTo,
+            cursor = cursor,
+            button = button,
+            modifiers = modifiers,
+        )
+}
+
+internal data class XPassiveButtonGrabSnapshot(
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val eventMask: Int,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val confineTo: Int?,
+    val cursor: Int?,
+    val button: Int,
+    val modifiers: Int,
+) {
+    val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+    val eventMaskHex: String get() = "0x${eventMask.toUInt().toString(16)}"
+    val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
+    val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
+    val buttonName: String get() = if (button == 0) "AnyButton" else button.toString()
+    val modifiersName: String get() = if (modifiers == 0x8000) "AnyModifier" else "0x${modifiers.toUInt().toString(16)}"
 }
 
 internal data class XGlxContext(

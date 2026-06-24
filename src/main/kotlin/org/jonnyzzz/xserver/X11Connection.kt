@@ -137,8 +137,8 @@ internal class X11Connection(
             25 -> sendEvent(minorOpcode, body)
             26 -> grabPointer(minorOpcode, body)
             27 -> ungrabPointer(body)
-            28 -> unitReplyless()
-            29 -> unitReplyless()
+            28 -> grabButton(minorOpcode, body)
+            29 -> ungrabButton(minorOpcode, body)
             30 -> unitReplyless()
             31 -> grabKeyboard(minorOpcode, body)
             32 -> ungrabKeyboard(body)
@@ -1565,6 +1565,49 @@ internal class X11Connection(
         state.ungrabPointer(this, byteOrder.u32(body, 0))
     }
 
+    private fun grabButton(ownerEvents: Int, body: ByteArray) {
+        if (body.size != 20) return writeError(error = 16, opcode = 28, badValue = 0)
+        if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 28, badValue = ownerEvents)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 28, badValue = grabWindow)
+        val pointerMode = body[6].toInt() and 0xff
+        if (pointerMode !in 0..1) return writeError(error = 2, opcode = 28, badValue = pointerMode)
+        val keyboardMode = body[7].toInt() and 0xff
+        if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 28, badValue = keyboardMode)
+        val confineTo = byteOrder.u32(body, 8)
+        if (confineTo != 0 && state.window(confineTo) == null) return writeError(error = 3, opcode = 28, badValue = confineTo)
+        val cursor = byteOrder.u32(body, 12)
+        if (cursor != 0 && !state.hasCursor(cursor)) return writeError(error = 6, opcode = 28, badValue = cursor)
+        val button = body[16].toInt() and 0xff
+        val modifiers = byteOrder.u16(body, 18)
+        if (!validGrabModifiers(modifiers)) return writeError(error = 2, opcode = 28, badValue = modifiers)
+
+        val grabbed = state.grabButton(
+            XPassiveButtonGrab(
+                owner = this,
+                windowId = grabWindow,
+                ownerEvents = ownerEvents != 0,
+                eventMask = byteOrder.u16(body, 4),
+                pointerMode = pointerMode,
+                keyboardMode = keyboardMode,
+                confineTo = confineTo.takeIf { it != 0 },
+                cursor = cursor.takeIf { it != 0 },
+                button = button,
+                modifiers = modifiers,
+            ),
+        )
+        if (!grabbed) writeError(error = 10, opcode = 28, badValue = 0)
+    }
+
+    private fun ungrabButton(button: Int, body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = 29, badValue = 0)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 29, badValue = grabWindow)
+        val modifiers = byteOrder.u16(body, 4)
+        if (!validGrabModifiers(modifiers)) return writeError(error = 2, opcode = 29, badValue = modifiers)
+        state.ungrabButton(this, grabWindow, button, modifiers)
+    }
+
     private fun grabKeyboard(ownerEvents: Int, body: ByteArray) {
         if (body.size < 12) return writeError(error = 16, opcode = 31, badValue = 0)
         if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 31, badValue = ownerEvents)
@@ -1596,6 +1639,9 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 32, badValue = 0)
         state.ungrabKeyboard(this, byteOrder.u32(body, 0))
     }
+
+    private fun validGrabModifiers(modifiers: Int): Boolean =
+        modifiers == AnyModifier || (modifiers and KeyModifierMask.inv()) == 0
 
     private fun allowEvents(mode: Int, body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 35, badValue = 0)
@@ -3779,6 +3825,8 @@ internal class X11Connection(
     }
 
     private companion object {
+        const val AnyModifier = 0x8000
+        const val KeyModifierMask = 0x00ff
         const val GcValueMask = 0x007f_ffff
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
