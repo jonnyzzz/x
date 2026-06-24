@@ -2608,7 +2608,7 @@ internal class X11Connection(
     }
 
     private fun getImage(format: Int, body: ByteArray) {
-        if (body.size < 16) return writeError(error = 2, opcode = 73, badValue = 0)
+        if (body.size != 16) return writeError(error = 16, opcode = 73, badValue = 0)
         if (format !in 1..2) return writeError(error = 2, opcode = 73, badValue = format)
         val drawableId = byteOrder.u32(body, 0)
         val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 73, badValue = drawableId)

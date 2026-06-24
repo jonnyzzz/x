@@ -2433,6 +2433,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetImage reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val missingDrawable = WindowId + 0x7777
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(getImageBadLengthRequest(bodySize = 12))
+                out.write(getImageBadLengthRequest(bodySize = 20))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1, format = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1, format = 3))
+                out.write(getImageRequest(missingDrawable, x = 0, y = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 39, y = 29, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 73, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 73, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 73, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 73, badValue = 3, sequence = 5)
+                assertError(socket.getInputStream(), error = 9, opcode = 73, badValue = missingDrawable, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 73, badValue = WindowId, sequence = 7)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, u16le(image, 2))
+                assertEquals(1, u32le(image, 4))
+                assertEquals(4, u32le(image, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetImage validates bounds and applies plane mask`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2471,6 +2507,35 @@ class XCoreDrawingProtocolTest {
                 assertEquals(8, error[1].toInt() and 0xff)
                 assertEquals(WindowId, u32le(error, 4))
                 assertEquals(73, error[10].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage XYPixmap encodes selected planes most significant first`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24PixelsRequest(WindowId, width = 2, height = 1, pixels = listOf(0x0080_0000, 0x0000_0001)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1, planeMask = 0x0080_0001, format = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(24, image[1].toInt() and 0xff)
+                assertEquals(2, u32le(image, 4))
+                assertEquals(X11Ids.RootVisual, u32le(image, 8))
+                assertEquals(8, u32le(image, 12))
+                assertEquals(1, image[32].toInt() and 0xff)
+                assertZeroBytes(image, 33, 36)
+                assertEquals(2, image[36].toInt() and 0xff)
+                assertZeroBytes(image, 37, 40)
             }
             server.close()
             serverThread.join(1_000)
@@ -9745,6 +9810,12 @@ class XCoreDrawingProtocolTest {
         if (bodySize >= 4) put32le(body, 0, WindowId)
         if (bodySize >= 8) put32le(body, 4, GcId)
         return request(72, 2, body)
+    }
+
+    private fun getImageBadLengthRequest(bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        return request(73, 2, body)
     }
 
     private fun copyAreaRequest(
