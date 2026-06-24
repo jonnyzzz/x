@@ -5227,12 +5227,14 @@ class XCoreDrawingProtocolTest {
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
                 setup(socket)
+                val missing = WindowId + 406
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
                 out.write(request(2, 0, ByteArray(4)))
                 out.write(changeWindowAttributesRawRequest(WindowId, 0x0000_0001))
                 out.write(changeWindowAttributesRawRequest(WindowId, 0, 0))
                 out.write(changeWindowAttributesRawRequest(WindowId, 0x0000_8000, 0))
+                out.write(changeWindowEventMaskRequest(missing, XEventMasks.PropertyChange))
                 out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
                 out.write(queryPointerRequest())
                 out.flush()
@@ -5241,8 +5243,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 3)
                 assertError(socket.getInputStream(), error = 16, opcode = 2, badValue = 0, sequence = 4)
                 assertError(socket.getInputStream(), error = 2, opcode = 2, badValue = 0x0000_8000, sequence = 5)
+                assertError(socket.getInputStream(), error = 3, opcode = 2, badValue = missing, sequence = 6)
                 val pointer = readReply(socket.getInputStream())
-                assertEquals(7, u16le(pointer, 2))
+                assertEquals(8, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)

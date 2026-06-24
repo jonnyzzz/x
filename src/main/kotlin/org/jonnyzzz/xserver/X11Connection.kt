@@ -1241,6 +1241,7 @@ internal class X11Connection(
         if ((mask and WindowAttributeValueMask.inv()) != 0) {
             return writeError(error = 2, opcode = 2, badValue = mask)
         }
+        state.window(windowId) ?: return writeError(error = 3, opcode = 2, badValue = windowId)
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
