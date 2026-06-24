@@ -150,6 +150,29 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("GLX windows:")
+            if (snapshot.glxWindows.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (window in snapshot.glxWindows) {
+                    append("- ")
+                    append(window.idHex)
+                    append(" window=")
+                    append(window.windowIdHex)
+                    append(" fbConfig=")
+                    append(window.fbConfigIdHex)
+                    append(" screen=")
+                    append(window.screen)
+                    append(" size=")
+                    append(window.width)
+                    append('x')
+                    append(window.height)
+                    append(" eventMask=0x")
+                    append(window.eventMask.toUInt().toString(16))
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("Unsupported requests:")
             if (snapshot.unsupportedRequests.isEmpty()) {
                 appendLine("- None.")

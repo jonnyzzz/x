@@ -265,6 +265,8 @@ internal class X11Connection(
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
             XGlx.GetDrawableAttributes -> glxGetDrawableAttributes(body)
             XGlx.ChangeDrawableAttributes -> glxChangeDrawableAttributes(body)
+            XGlx.CreateWindow -> glxCreateWindow(body)
+            XGlx.DestroyWindow -> glxDestroyWindow(body)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
         }
@@ -1443,6 +1445,45 @@ internal class X11Connection(
         }
     }
 
+    private fun glxCreateWindow(body: ByteArray) {
+        if (body.size < 20) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = 0)
+        val screen = byteOrder.u32(body, 0)
+        val fbConfig = byteOrder.u32(body, 4)
+        val window = byteOrder.u32(body, 8)
+        val glxWindow = byteOrder.u32(body, 12)
+        val attribCount = byteOrder.u32(body, 16).toUInt().toLong()
+        if (attribCount > (UInt.MAX_VALUE.toLong() shr 3)) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = byteOrder.u32(body, 16))
+        }
+        val expectedSize = 20L + attribCount * 8L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = 0)
+        }
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = screen)
+        if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = fbConfig)
+        if (state.window(window) == null) return writeError(error = 3, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = window)
+        if (state.hasResource(glxWindow) || state.hasGlxWindowForWindow(window)) {
+            return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = glxWindow)
+        }
+        state.putGlxWindow(
+            XGlxWindow(
+                id = glxWindow,
+                windowId = window,
+                fbConfigId = fbConfig,
+                screen = screen,
+            ),
+        )
+        own(glxWindow)
+    }
+
+    private fun glxDestroyWindow(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyWindow, badValue = 0)
+        val glxWindow = byteOrder.u32(body, 0)
+        if (!state.hasGlxWindow(glxWindow)) return writeError(error = XGlx.BadWindow, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyWindow, badValue = glxWindow)
+        state.removeGlxWindow(glxWindow)
+        ownedResources.remove(glxWindow)
+    }
+
     private fun glxQueryContext(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryContext, badValue = 0)
         val context = byteOrder.u32(body, 0)
@@ -1481,7 +1522,8 @@ internal class X11Connection(
         if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
         val drawableId = byteOrder.u32(body, 0)
         val glxPixmap = state.glxPixmap(drawableId)
-        val window = state.window(drawableId)
+        val glxWindow = state.glxWindow(drawableId)
+        val window = glxWindow?.let { state.window(it.windowId) } ?: state.window(drawableId)
         if (glxPixmap == null && window == null) {
             return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = drawableId)
         }
@@ -1489,13 +1531,18 @@ internal class X11Connection(
             XGlx.YInvertedExt to 0,
             XGlx.Width to (glxPixmap?.width ?: window!!.width),
             XGlx.Height to (glxPixmap?.height ?: window!!.height),
-            XGlx.ScreenExt to (glxPixmap?.screen ?: 0),
+            XGlx.ScreenExt to (glxPixmap?.screen ?: glxWindow?.screen ?: 0),
         )
         if (glxPixmap != null) {
             attributes += XGlx.TextureTargetExt to glxPixmap.textureTarget
             attributes += XGlx.EventMask to glxPixmap.eventMask
             attributes += XGlx.FbConfigId to glxPixmap.fbConfigId
             attributes += XGlx.DrawableType to XGlx.PixmapBit
+        } else if (glxWindow != null) {
+            attributes += XGlx.TextureTargetExt to glxTextureTarget(window!!.width, window.height)
+            attributes += XGlx.EventMask to glxWindow.eventMask
+            attributes += XGlx.FbConfigId to glxWindow.fbConfigId
+            attributes += XGlx.DrawableType to XGlx.WindowBit
         } else {
             attributes += XGlx.DrawableType to XGlx.WindowBit
         }
@@ -1518,12 +1565,19 @@ internal class X11Connection(
             return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = 0)
         }
         val glxPixmap = state.glxPixmap(drawableId)
-            ?: return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = drawableId)
+        val glxWindow = state.glxWindow(drawableId)
+        if (glxPixmap == null && glxWindow == null) {
+            return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = drawableId)
+        }
         val eventMask = glxAttributePairs(body, 8, attribCount.toInt())
             .lastOrNull { (attribute, _) -> attribute == XGlx.EventMask }
             ?.second
         if (eventMask != null) {
-            state.putGlxPixmap(glxPixmap.copy(eventMask = eventMask))
+            if (glxPixmap != null) {
+                state.putGlxPixmap(glxPixmap.copy(eventMask = eventMask))
+            } else if (glxWindow != null) {
+                state.putGlxWindow(glxWindow.copy(eventMask = eventMask))
+            }
         }
     }
 
@@ -1578,6 +1632,8 @@ internal class X11Connection(
             XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
             XGlx.GetDrawableAttributes -> "drawable=${hex(0)}"
             XGlx.ChangeDrawableAttributes -> "drawable=${hex(0)} attribs=${u32(4)}"
+            XGlx.CreateWindow -> "screen=${u32(0)} fbconfig=${hex(4)} window=${hex(8)} glxWindow=${hex(12)} attribs=${u32(16)}"
+            XGlx.DestroyWindow -> "glxWindow=${hex(0)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
             8, 9, 11 -> "drawable/context=${hex(0)}"

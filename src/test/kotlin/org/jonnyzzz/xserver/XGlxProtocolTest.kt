@@ -476,6 +476,96 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CreateWindow models window drawable attributes`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val window = 0x0020_0c00
+            val glxWindow = 0x0020_0c01
+            val eventMask = 0x2468
+            writeRequest(socket, 1, 24, createWindowBody(window, width = 17, height = 19))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, glxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, changeDrawableAttributesBody(glxWindow, XGlx.EventMask to eventMask))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(glxWindow))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val attributesReply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(attributesReply, 2))
+            assertEquals(16, u32le(attributesReply, 4))
+            assertEquals(8, u32le(attributesReply, 8))
+            val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
+            assertEquals(0, attributes.getValue(XGlx.YInvertedExt))
+            assertEquals(17, attributes.getValue(XGlx.Width))
+            assertEquals(19, attributes.getValue(XGlx.Height))
+            assertEquals(0, attributes.getValue(XGlx.ScreenExt))
+            assertEquals(XGlx.TextureRectangleExt, attributes.getValue(XGlx.TextureTargetExt))
+            assertEquals(eventMask, attributes.getValue(XGlx.EventMask))
+            assertEquals(XGlx.RootFbConfigId, attributes.getValue(XGlx.FbConfigId))
+            assertEquals(XGlx.WindowBit, attributes.getValue(XGlx.DrawableType))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(
+                json.contains(""""glxWindows":[{"id":"0x${glxWindow.toString(16)}","window":"0x${window.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":17,"height":19,"eventMask":$eventMask}]"""),
+                json,
+            )
+        }
+    }
+
+    @Test
+    fun `GLX CreateWindow and DestroyWindow validate resources and recover stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val missingWindow = 0x0020_0d00
+            val window = 0x0020_0d01
+            val glxWindow = 0x0020_0d02
+            val missingGlxWindow = 0x0020_0d03
+            val secondGlxWindow = 0x0020_0d04
+            writeRequest(socket, 1, 24, createWindowBody(window, width = 8, height = 8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, glxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(missingWindow, glxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, glxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, secondGlxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, u32(glxWindow) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, u32(missingGlxWindow))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val missingWindowError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingWindowError[0].toInt())
+            assertEquals(3, missingWindowError[1].toInt() and 0xff)
+            assertEquals(missingWindow, u32le(missingWindowError, 4))
+            assertEquals(XGlx.CreateWindow, u16le(missingWindowError, 8))
+            assertEquals(XGlx.MajorOpcode, missingWindowError[10].toInt() and 0xff)
+
+            val duplicateError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateError[0].toInt())
+            assertEquals(11, duplicateError[1].toInt() and 0xff)
+            assertEquals(glxWindow, u32le(duplicateError, 4))
+            assertEquals(XGlx.CreateWindow, u16le(duplicateError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+            val duplicateBackingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateBackingError[0].toInt())
+            assertEquals(11, duplicateBackingError[1].toInt() and 0xff)
+            assertEquals(secondGlxWindow, u32le(duplicateBackingError, 4))
+            assertEquals(XGlx.CreateWindow, u16le(duplicateBackingError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateBackingError[10].toInt() and 0xff)
+
+            val missingGlxWindowError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingGlxWindowError[0].toInt())
+            assertEquals(XGlx.BadWindow, missingGlxWindowError[1].toInt() and 0xff)
+            assertEquals(missingGlxWindow, u32le(missingGlxWindowError, 4))
+            assertEquals(XGlx.DestroyWindow, u16le(missingGlxWindowError, 8))
+            assertEquals(XGlx.MajorOpcode, missingGlxWindowError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(8, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""glxWindows":[]"""), json)
+        }
+    }
+
+    @Test
     fun `GLX DestroyPixmap accepts legacy oversized request and recovers stream`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -624,6 +714,31 @@ class XGlxProtocolTest {
         vararg attributes: Pair<Int, Int>,
     ): ByteArray =
         u32(drawable) +
+            u32(attributes.size) +
+            attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
+
+    private fun createWindowBody(window: Int, width: Int, height: Int): ByteArray =
+        u32(window) +
+            u32(X11Ids.RootWindow) +
+            u16(0) +
+            u16(0) +
+            u16(width) +
+            u16(height) +
+            u16(0) +
+            u16(1) +
+            u32(X11Ids.RootVisual) +
+            u32(0)
+
+    private fun createGlxWindowBody(
+        window: Int,
+        glxWindow: Int,
+        vararg attributes: Pair<Int, Int>,
+        fbConfig: Int = XGlx.RootFbConfigId,
+    ): ByteArray =
+        u32(0) +
+            u32(fbConfig) +
+            u32(window) +
+            u32(glxWindow) +
             u32(attributes.size) +
             attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
 

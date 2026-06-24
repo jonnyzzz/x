@@ -104,6 +104,11 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append("""{"id":"${pixmap.idHex}","pixmap":"${pixmap.pixmapIdHex}","visual":"${pixmap.visualIdHex}","fbConfig":"${pixmap.fbConfigIdHex}","screen":${pixmap.screen},"width":${pixmap.width},"height":${pixmap.height},"depth":${pixmap.depth},"eventMask":${pixmap.eventMask},"textureTarget":${pixmap.textureTarget}}""")
             }
+            append("""],"glxWindows":[""")
+            snapshot.glxWindows.forEachIndexed { index, window ->
+                if (index > 0) append(',')
+                append("""{"id":"${window.idHex}","window":"${window.windowIdHex}","fbConfig":"${window.fbConfigIdHex}","screen":${window.screen},"width":${window.width},"height":${window.height},"eventMask":${window.eventMask}}""")
+            }
             append("""],"drawings":${snapshot.drawings.size},"renderOperations":${snapshot.renderOperations.size},"renderPictures":[""")
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')

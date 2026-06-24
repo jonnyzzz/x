@@ -8,6 +8,7 @@ internal object XGlx {
     const val BadDrawable = FirstError + 2
     const val BadPixmap = FirstError + 3
     const val BadFBConfig = FirstError + 9
+    const val BadWindow = FirstError + 12
     const val MajorVersion = 1
     const val MinorVersion = 4
 
@@ -27,6 +28,8 @@ internal object XGlx {
     const val MakeContextCurrent = 26
     const val GetDrawableAttributes = 29
     const val ChangeDrawableAttributes = 30
+    const val CreateWindow = 31
+    const val DestroyWindow = 32
     const val CreateContextAttribsARB = 34
 
     const val VendorName = 1
@@ -83,8 +86,8 @@ internal object XGlx {
             28 -> "DestroyPbuffer"
             GetDrawableAttributes -> "GetDrawableAttributes"
             ChangeDrawableAttributes -> "ChangeDrawableAttributes"
-            31 -> "CreateWindow"
-            32 -> "DestroyWindow"
+            CreateWindow -> "CreateWindow"
+            DestroyWindow -> "DestroyWindow"
             33 -> "SetClientInfoARB"
             CreateContextAttribsARB -> "CreateContextAttribsARB"
             35 -> "SetClientInfo2ARB"
