@@ -3,6 +3,7 @@ package org.jonnyzzz.xserver
 import java.io.InputStream
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.nio.charset.StandardCharsets
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -2415,6 +2416,90 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, u32le(reply, 16))
                 assertEquals(0, u32le(reply, 20))
                 assertEquals(0, u32le(reply, 24))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetFontPath returns default empty server font path`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getFontPathRequest())
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(0, reply[1].toInt() and 0xff)
+                assertEquals(1, u16le(reply, 2))
+                assertEquals(0, u32le(reply, 4))
+                assertEquals(0, u16le(reply, 8))
+                assertEquals(emptyList(), fontPathEntries(reply))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetFontPath updates GetFontPath and empty list restores default path`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(setFontPathRequest("/usr/share/fonts", "misc"))
+                out.write(getFontPathRequest())
+                out.flush()
+
+                val updated = readReply(socket.getInputStream())
+                assertEquals(1, updated[0].toInt())
+                assertEquals(0, updated[1].toInt() and 0xff)
+                assertEquals(2, u16le(updated, 2))
+                assertEquals(2, u16le(updated, 8))
+                assertEquals(listOf("/usr/share/fonts", "misc"), fontPathEntries(updated))
+                assertContains(httpGet(server.localPort, "/state.json"), """"fontPath":["/usr/share/fonts","misc"]""")
+
+                out.write(setFontPathRequest())
+                out.write(getFontPathRequest())
+                out.flush()
+
+                val reset = readReply(socket.getInputStream())
+                assertEquals(1, reset[0].toInt())
+                assertEquals(4, u16le(reset, 2))
+                assertEquals(0, u16le(reset, 8))
+                assertEquals(emptyList(), fontPathEntries(reset))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetFontPath validates malformed string list length and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(malformedSetFontPathRequest(count = 1, bytes = byteArrayOf()))
+                out.write(malformedSetFontPathRequest(count = 1, bytes = byteArrayOf(4, 'm'.code.toByte())))
+                out.write(getFontPathRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 51, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 51, badValue = 0, sequence = 2)
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(1, recovered[0].toInt())
+                assertEquals(3, u16le(recovered, 2))
+                assertEquals(emptyList(), fontPathEntries(recovered))
             }
             server.close()
             serverThread.join(1_000)
@@ -6533,6 +6618,42 @@ class XCoreDrawingProtocolTest {
             offset += 2
         }
         return request(48, oddLength, body)
+    }
+
+    private fun setFontPathRequest(vararg path: String): ByteArray {
+        val encoded = path.map { it.toByteArray(StandardCharsets.ISO_8859_1) }
+        val payloadSize = encoded.sumOf { 1 + it.size }
+        val body = ByteArray(4 + paddedLength(payloadSize))
+        put16le(body, 0, encoded.size)
+        var offset = 4
+        for (entry in encoded) {
+            body[offset++] = entry.size.toByte()
+            entry.copyInto(body, offset)
+            offset += entry.size
+        }
+        return request(51, 0, body)
+    }
+
+    private fun malformedSetFontPathRequest(count: Int, bytes: ByteArray): ByteArray {
+        val body = ByteArray(4 + paddedLength(bytes.size))
+        put16le(body, 0, count)
+        bytes.copyInto(body, 4)
+        return request(51, 0, body)
+    }
+
+    private fun getFontPathRequest(): ByteArray =
+        request(52, 0, ByteArray(0))
+
+    private fun fontPathEntries(reply: ByteArray): List<String> {
+        val count = u16le(reply, 8)
+        var offset = 32
+        return List(count) {
+            val length = reply[offset].toInt() and 0xff
+            offset += 1
+            val value = String(reply, offset, length, StandardCharsets.ISO_8859_1)
+            offset += length
+            value
+        }
     }
 
     private fun getImageRequest(

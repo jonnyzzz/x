@@ -4,6 +4,7 @@ import java.io.EOFException
 import java.io.InputStream
 import java.io.OutputStream
 import java.math.BigInteger
+import java.nio.charset.StandardCharsets
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
@@ -159,6 +160,7 @@ internal class X11Connection(
             47 -> queryFont(body)
             48 -> queryTextExtents(minorOpcode, body)
             49 -> listFonts()
+            51 -> setFontPath(body)
             52 -> getFontPath()
             53 -> createPixmap(minorOpcode, body)
             54 -> closeResource(body)
@@ -1869,9 +1871,34 @@ internal class X11Connection(
     }
 
     private fun getFontPath() {
-        val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, 0)
+        val path = state.fontPath().map { it.toByteArray(StandardCharsets.ISO_8859_1) }
+        val payloadBytes = path.sumOf { 1 + it.size }
+        val reply = reply(extra = 0, payloadUnits = paddedLength(payloadBytes) / 4)
+        byteOrder.put16(reply, 8, path.size)
+        var offset = 32
+        for (entry in path) {
+            reply[offset++] = entry.size.toByte()
+            entry.copyInto(reply, offset)
+            offset += entry.size
+        }
         write(reply)
+    }
+
+    private fun setFontPath(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 51, badValue = 0)
+        val count = byteOrder.u16(body, 0)
+        var offset = 4
+        val path = ArrayList<String>(count)
+        repeat(count) {
+            if (offset >= body.size) return writeError(error = 16, opcode = 51, badValue = 0)
+            val length = body[offset].toInt() and 0xff
+            offset += 1
+            if (offset + length > body.size) return writeError(error = 16, opcode = 51, badValue = 0)
+            path += String(body, offset, length, StandardCharsets.ISO_8859_1)
+            offset += length
+        }
+        if (body.size != 4 + paddedLength(offset - 4)) return writeError(error = 16, opcode = 51, badValue = 0)
+        state.setFontPath(path)
     }
 
     private fun createPixmap(depth: Int, body: ByteArray) {
@@ -2879,6 +2906,7 @@ internal class X11Connection(
             47 -> "QueryFont"
             48 -> "QueryTextExtents"
             49 -> "ListFonts"
+            51 -> "SetFontPath"
             52 -> "GetFontPath"
             53 -> "CreatePixmap"
             54 -> "FreePixmap"

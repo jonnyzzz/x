@@ -52,6 +52,7 @@ internal class X11State(
     private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
     private var nextUnsupportedRequestId: Int = 1
     private var screenSaver = XScreenSaverSettings()
+    private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
     private var modifierMapping = XModifierMapping.Default
@@ -314,6 +315,14 @@ internal class X11State(
     @Synchronized
     fun setModifierMapping(mapping: List<Int>) {
         modifierMapping = mapping.toList()
+    }
+
+    @Synchronized
+    fun fontPath(): List<String> = fontPath.toList()
+
+    @Synchronized
+    fun setFontPath(path: List<String>) {
+        fontPath = path.toList()
     }
 
     @Synchronized
@@ -1033,6 +1042,7 @@ internal class X11State(
                 mask = pointerState,
                 windowId = windowAt(pointerX, pointerY)?.id ?: 0,
             ),
+            fontPath = fontPath.toList(),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
             overlaps = overlaps(windowSnapshots),
@@ -3272,6 +3282,7 @@ internal data class XScreenSnapshot(
     val heightMillimeters: Int,
     val focusWindowId: Int,
     val pointer: XPointerStateSnapshot,
+    val fontPath: List<String>,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
