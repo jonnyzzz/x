@@ -2513,6 +2513,35 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER legacy unimplemented requests return BadImplementation and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val minorOpcodes = listOf(3, 9, 14, 15, 16)
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                minorOpcodes.forEach { minorOpcode ->
+                    out.write(renderRaw(minorOpcode, ByteArray(0)))
+                }
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                minorOpcodes.forEachIndexed { index, minorOpcode ->
+                    assertError(socket.getInputStream(), error = 17, badValue = 0, sequence = 4 + index, minorOpcode = minorOpcode)
+                }
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER CompositeGlyphs validates framing resources and mask format`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2971,6 +3000,9 @@ class XRenderProtocolTest {
 
     private fun renderAddGlyphsFromPictureRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 21, body)
+
+    private fun renderRaw(minorOpcode: Int, body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, minorOpcode, body)
 
     private fun renderFreeGlyphs(glyphSet: Int, glyphIds: List<Int>): ByteArray {
         val body = ByteArray(4 + glyphIds.size * 4)
