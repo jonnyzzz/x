@@ -2838,6 +2838,335 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabKey is replyless and records passive key grab state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyRequest(WindowId, ownerEvents = 1, key = 0, modifiers = 0x8000, pointerMode = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"passiveKeyGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"key":0,"keyName":"AnyKey","modifiers":32768,"modifiersName":"AnyModifier","pointerMode":1,"keyboardMode":0,"releasedCombinations":[]}]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKey releases matching passive key grabs and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyRequest(WindowId, key = 10, modifiers = 4))
+                out.write(grabKeyRequest(WindowId, key = 11, modifiers = 4))
+                out.write(grabKeyRequest(WindowId, key = 12, modifiers = 1))
+                out.write(ungrabKeyRequest(WindowId, key = 0, modifiers = 4))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(6, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"key":12,"keyName":"12","modifiers":1""")
+                assertFalse(stateJson.contains(""""key":10,"keyName":"10","modifiers":4"""))
+                assertFalse(stateJson.contains(""""key":11,"keyName":"11","modifiers":4"""))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKey releases exact combinations from wildcard passive key grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 10, modifiers = 0))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    val ownerPointer = readReply(owner.getInputStream())
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(4, u16le(ownerPointer, 2))
+                    val partiallyReleasedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(partiallyReleasedJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                    assertContains(partiallyReleasedJson, """"releasedCombinations":[{"key":10,"keyName":"10","modifiers":0,"modifiersName":"0x0"}]""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabKeyRequest(WindowId, key = 10, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabKeyRequest(WindowId, key = 11, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val otherPointer = readReply(other.getInputStream())
+                    assertEquals(1, otherPointer[0].toInt())
+                    assertEquals(2, u16le(otherPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 33, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                    assertContains(stateJson, """"releasedCombinations":[{"key":10,"keyName":"10","modifiers":0,"modifiersName":"0x0"}]""")
+                    assertContains(stateJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"key":10,"keyName":"10","modifiers":0""")
+                    assertFalse(stateJson.contains(""""key":11,"keyName":"11","modifiers":0"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKey preserves wildcard release patterns in state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 10, modifiers = 0x8000))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    val pointer = readReply(owner.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(4, u16le(pointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                    assertContains(stateJson, """"releasedCombinations":[{"key":10,"keyName":"10","modifiers":32768,"modifiersName":"AnyModifier"}]""")
+                    assertEquals(1, """"key":10,"keyName":"10","modifiers":32768,"modifiersName":"AnyModifier"""".toRegex().findAll(stateJson).count())
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabKeyRequest(WindowId, key = 10, modifiers = 5))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabKeyRequest(WindowId, key = 11, modifiers = 5))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val releasedPointer = readReply(other.getInputStream())
+                    assertEquals(1, releasedPointer[0].toInt())
+                    assertEquals(2, u16le(releasedPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 33, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val updatedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"key":10,"keyName":"10","modifiers":5""")
+                    assertFalse(updatedJson.contains(""""key":11,"keyName":"11","modifiers":5"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKey honors AnyKey release patterns during conflict checks`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                    ownerOut.write(ungrabKeyRequest(WindowId, key = 0, modifiers = 2))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    val ownerPointer = readReply(owner.getInputStream())
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(4, u16le(ownerPointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"releasedCombinations":[{"key":0,"keyName":"AnyKey","modifiers":2,"modifiersName":"0x2"}]""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabKeyRequest(WindowId, key = 10, modifiers = 2))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.write(grabKeyRequest(WindowId, key = 10, modifiers = 3))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    val releasedPointer = readReply(other.getInputStream())
+                    assertEquals(1, releasedPointer[0].toInt())
+                    assertEquals(2, u16le(releasedPointer, 2))
+                    assertError(other.getInputStream(), error = 10, opcode = 33, badValue = 0, sequence = 3)
+                    val recoveredPointer = readReply(other.getInputStream())
+                    assertEquals(1, recoveredPointer[0].toInt())
+                    assertEquals(4, u16le(recoveredPointer, 2))
+                    val updatedJson = httpGet(server.localPort, "/state.json")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"key":10,"keyName":"10","modifiers":2""")
+                    assertFalse(updatedJson.contains(""""key":10,"keyName":"10","modifiers":3"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabKey same client later grabs replace overlapping passive key combinations`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyRequest(WindowId, key = 10, modifiers = 0))
+                out.write(grabKeyRequest(WindowId, ownerEvents = 1, key = 0, modifiers = 0x8000, pointerMode = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val wildcardPointer = readReply(socket.getInputStream())
+                assertEquals(1, wildcardPointer[0].toInt())
+                assertEquals(4, u16le(wildcardPointer, 2))
+                val wildcardJson = httpGet(server.localPort, "/state.json")
+                assertContains(wildcardJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                assertContains(wildcardJson, """"ownerEvents":true""")
+                assertFalse(wildcardJson.contains(""""key":10,"keyName":"10","modifiers":0"""))
+
+                out.write(ungrabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val clearedPointer = readReply(socket.getInputStream())
+                assertEquals(1, clearedPointer[0].toInt())
+                assertEquals(6, u16le(clearedPointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"passiveKeyGrabs":[]""")
+
+                out.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                out.write(grabKeyRequest(WindowId, key = 10, modifiers = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val concretePointer = readReply(socket.getInputStream())
+                assertEquals(1, concretePointer[0].toInt())
+                assertEquals(9, u16le(concretePointer, 2))
+                val concreteJson = httpGet(server.localPort, "/state.json")
+                assertContains(concreteJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                assertContains(concreteJson, """"releasedCombinations":[{"key":10,"keyName":"10","modifiers":0,"modifiersName":"0x0"}]""")
+                assertContains(concreteJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"key":10,"keyName":"10","modifiers":0""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabKey reports BadAccess for conflicting passive key grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabKeyRequest(WindowId, key = 0, modifiers = 0x8000))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    val ownerPointer = readReply(owner.getInputStream())
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(3, u16le(ownerPointer, 2))
+                    assertContains(httpGet(server.localPort, "/state.json"), """"passiveKeyGrabs":[{""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabKeyRequest(WindowId, key = 10, modifiers = 0))
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+
+                    assertError(other.getInputStream(), error = 10, opcode = 33, badValue = 0, sequence = 1)
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(2, u16le(pointer, 2))
+                    val stateJson = httpGet(server.localPort, "/state.json")
+                    assertContains(stateJson, """"key":0,"keyName":"AnyKey","modifiers":32768""")
+                    assertFalse(stateJson.contains(""""key":10,"keyName":"10","modifiers":0"""))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabKey and UngrabKey validate values and request length`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyRequest(WindowId, ownerEvents = 2))
+                out.write(grabKeyRequest(WindowId, key = 1))
+                out.write(grabKeyRequest(WindowId, modifiers = 0x0100))
+                out.write(grabKeyRequest(WindowId, pointerMode = 2))
+                out.write(grabKeyRequest(WindowId, keyboardMode = 2))
+                out.write(grabKeyBadLengthRequest())
+                out.write(ungrabKeyRequest(WindowId, key = 1))
+                out.write(ungrabKeyBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 33, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 33, badValue = 1, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 33, badValue = 0x0100, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 33, badValue = 2, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 33, badValue = 2, sequence = 6)
+                assertError(socket.getInputStream(), error = 16, opcode = 33, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = 34, badValue = 1, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 34, badValue = 0, sequence = 9)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(10, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"passiveKeyGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer and GrabKeyboard report AlreadyGrabbed for another client's active grab`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5085,6 +5414,36 @@ class XCoreDrawingProtocolTest {
 
     private fun ungrabButtonBadLengthRequest(): ByteArray =
         request(29, 1, ByteArray(0))
+
+    private fun grabKeyRequest(
+        window: Int,
+        ownerEvents: Int = 0,
+        modifiers: Int = 0,
+        key: Int = 8,
+        pointerMode: Int = 0,
+        keyboardMode: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put16le(body, 4, modifiers)
+        body[6] = key.toByte()
+        body[7] = pointerMode.toByte()
+        body[8] = keyboardMode.toByte()
+        return request(33, ownerEvents, body)
+    }
+
+    private fun grabKeyBadLengthRequest(): ByteArray =
+        request(33, 0, ByteArray(0))
+
+    private fun ungrabKeyRequest(window: Int, key: Int = 8, modifiers: Int = 0): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put16le(body, 4, modifiers)
+        return request(34, key, body)
+    }
+
+    private fun ungrabKeyBadLengthRequest(): ByteArray =
+        request(34, 8, ByteArray(0))
 
     private fun grabKeyboardRequest(window: Int, time: Int = 0): ByteArray {
         val body = ByteArray(12)

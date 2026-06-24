@@ -176,6 +176,18 @@ internal object SvgScreenRenderer {
                 append(""","button":${grab.button},"buttonName":"${escapeJson(grab.buttonName)}","modifiers":${grab.modifiers},"modifiersName":"${escapeJson(grab.modifiersName)}"""")
                 append('}')
             }
+            append("""],"passiveKeyGrabs":[""")
+            snapshot.passiveKeyGrabs.forEachIndexed { index, grab ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""window":"${grab.windowIdHex}","ownerEvents":${grab.ownerEvents},"key":${grab.key},"keyName":"${escapeJson(grab.keyName)}","modifiers":${grab.modifiers},"modifiersName":"${escapeJson(grab.modifiersName)}","pointerMode":${grab.pointerMode},"keyboardMode":${grab.keyboardMode},"releasedCombinations":[""")
+                grab.releasedCombinations.forEachIndexed { combinationIndex, combination ->
+                    if (combinationIndex > 0) append(',')
+                    append("""{"key":${combination.key},"keyName":"${escapeJson(combination.keyName)}","modifiers":${combination.modifiers},"modifiersName":"${escapeJson(combination.modifiersName)}"}""")
+                }
+                append(']')
+                append('}')
+            }
             append("""],"serverGrabbed":${snapshot.serverGrabbed}}""")
         }
 

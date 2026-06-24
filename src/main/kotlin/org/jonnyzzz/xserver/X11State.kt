@@ -58,6 +58,7 @@ internal class X11State(
     private var activePointerGrab: XInputGrab? = null
     private var activeKeyboardGrab: XInputGrab? = null
     private val passiveButtonGrabs = mutableListOf<XPassiveButtonGrab>()
+    private val passiveKeyGrabs = mutableListOf<XPassiveKeyGrab>()
     private val requestProcessingLock = ReentrantLock()
     private val serverGrabLock = ReentrantLock()
     private val serverGrabReleased = serverGrabLock.newCondition()
@@ -360,6 +361,47 @@ internal class X11State(
     }
 
     @Synchronized
+    fun grabKey(grab: XPassiveKeyGrab): Boolean {
+        if (passiveKeyGrabs.any { it.owner != grab.owner && passiveKeyGrabConflicts(it, grab) }) return false
+        var index = passiveKeyGrabs.lastIndex
+        while (index >= 0) {
+            val existing = passiveKeyGrabs[index]
+            if (existing.owner == grab.owner && existing.windowId == grab.windowId) {
+                val releasedCombinations = keyGrabReleasedCombinations(existing, grab.key, grab.modifiers)
+                if (releasedCombinations != null) {
+                    if (keyGrabFullyReleased(existing, releasedCombinations)) {
+                        passiveKeyGrabs.removeAt(index)
+                    } else {
+                        passiveKeyGrabs[index] = existing.copy(releasedCombinations = releasedCombinations)
+                    }
+                }
+            }
+            index--
+        }
+        passiveKeyGrabs += grab
+        return true
+    }
+
+    @Synchronized
+    fun ungrabKey(owner: XEventSink, windowId: Int, key: Int, modifiers: Int) {
+        var index = passiveKeyGrabs.lastIndex
+        while (index >= 0) {
+            val grab = passiveKeyGrabs[index]
+            if (grab.owner == owner && grab.windowId == windowId) {
+                val releasedCombinations = keyGrabReleasedCombinations(grab, key, modifiers)
+                if (releasedCombinations != null) {
+                    if (keyGrabFullyReleased(grab, releasedCombinations)) {
+                        passiveKeyGrabs.removeAt(index)
+                    } else {
+                        passiveKeyGrabs[index] = grab.copy(releasedCombinations = releasedCombinations)
+                    }
+                }
+            }
+            index--
+        }
+    }
+
+    @Synchronized
     fun grabKeyboard(grab: XInputGrab): Boolean {
         if (activeKeyboardGrab?.owner != null && activeKeyboardGrab?.owner != grab.owner) return false
         activeKeyboardGrab = grab
@@ -377,6 +419,7 @@ internal class X11State(
         if (activePointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
         passiveButtonGrabs.removeIf { it.owner == owner }
+        passiveKeyGrabs.removeIf { it.owner == owner }
     }
 
     private fun releaseInputGrabsForResources(resourceIds: Set<Int>) {
@@ -398,6 +441,7 @@ internal class X11State(
                 it.confineTo?.let { id -> id in resourceIds } == true ||
                 it.cursor?.let { id -> id in resourceIds } == true
         }
+        passiveKeyGrabs.removeIf { it.windowId in resourceIds }
     }
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
@@ -424,11 +468,102 @@ internal class X11State(
     private fun passiveModifierMatches(left: Int, right: Int): Boolean =
         left == AnyModifier || right == AnyModifier || left == right
 
+    private fun passiveKeyGrabConflicts(left: XPassiveKeyGrab, right: XPassiveKeyGrab): Boolean =
+        left.windowId == right.windowId && concreteKeyGrabOverlap(left, right)
+
     private fun requestedButtonRemovesGrab(requested: Int, grabbed: Int): Boolean =
         requested == AnyButton || requested == grabbed
 
     private fun requestedModifierRemovesGrab(requested: Int, grabbed: Int): Boolean =
         requested == AnyModifier || requested == grabbed
+
+    private fun concreteKeyGrabOverlap(left: XPassiveKeyGrab, right: XPassiveKeyGrab): Boolean {
+        val keys = intersectRanges(keyRange(left.key), keyRange(right.key)) ?: return false
+        val modifiers = intersectRanges(modifierRange(left.modifiers), modifierRange(right.modifiers)) ?: return false
+        for (key in keys) {
+            for (modifier in modifiers) {
+                if (!keyGrabCombinationReleased(left, key, modifier) && !keyGrabCombinationReleased(right, key, modifier)) return true
+            }
+        }
+        return false
+    }
+
+    private fun keyGrabReleasedCombinations(grab: XPassiveKeyGrab, key: Int, modifiers: Int): Set<XPassiveKeyGrabCombination>? {
+        val releasedKey = intersectKeyPattern(grab.key, key) ?: return null
+        val releasedModifiers = intersectModifierPattern(grab.modifiers, modifiers) ?: return null
+        return addKeyGrabRelease(
+            grab.releasedCombinations,
+            XPassiveKeyGrabCombination(releasedKey, releasedModifiers),
+        )
+    }
+
+    private fun keyGrabFullyReleased(grab: XPassiveKeyGrab, releasedCombinations: Set<XPassiveKeyGrabCombination>): Boolean {
+        for (key in keyRange(grab.key)) {
+            for (modifier in modifierRange(grab.modifiers)) {
+                if (!keyGrabCombinationReleased(releasedCombinations, key, modifier)) return false
+            }
+        }
+        return true
+    }
+
+    private fun keyGrabCombinationReleased(grab: XPassiveKeyGrab, key: Int, modifiers: Int): Boolean =
+        keyGrabCombinationReleased(grab.releasedCombinations, key, modifiers)
+
+    private fun keyGrabCombinationReleased(
+        releasedCombinations: Set<XPassiveKeyGrabCombination>,
+        key: Int,
+        modifiers: Int,
+    ): Boolean =
+        releasedCombinations.any {
+            keyPatternCovers(it.key, key) && modifierPatternCovers(it.modifiers, modifiers)
+        }
+
+    private fun addKeyGrabRelease(
+        releasedCombinations: Set<XPassiveKeyGrabCombination>,
+        release: XPassiveKeyGrabCombination,
+    ): Set<XPassiveKeyGrabCombination> {
+        if (releasedCombinations.any { keyGrabPatternCovers(it, release) }) return releasedCombinations
+        return releasedCombinations
+            .filterNot { keyGrabPatternCovers(release, it) }
+            .toSet() + release
+    }
+
+    private fun keyGrabPatternCovers(left: XPassiveKeyGrabCombination, right: XPassiveKeyGrabCombination): Boolean =
+        keyPatternCovers(left.key, right.key) && modifierPatternCovers(left.modifiers, right.modifiers)
+
+    private fun intersectKeyPattern(left: Int, right: Int): Int? =
+        when {
+            left == right -> left
+            left == AnyKey -> right
+            right == AnyKey -> left
+            else -> null
+        }
+
+    private fun intersectModifierPattern(left: Int, right: Int): Int? =
+        when {
+            left == right -> left
+            left == AnyModifier -> right
+            right == AnyModifier -> left
+            else -> null
+        }
+
+    private fun keyPatternCovers(pattern: Int, concreteKey: Int): Boolean =
+        pattern == AnyKey || pattern == concreteKey
+
+    private fun modifierPatternCovers(pattern: Int, concreteModifiers: Int): Boolean =
+        pattern == AnyModifier || pattern == concreteModifiers
+
+    private fun keyRange(key: Int): IntRange =
+        if (key == AnyKey) XKeyboard.MinKeycode..XKeyboard.MaxKeycode else key..key
+
+    private fun modifierRange(modifiers: Int): IntRange =
+        if (modifiers == AnyModifier) 0..KeyModifierMask else modifiers..modifiers
+
+    private fun intersectRanges(left: IntRange, right: IntRange): IntRange? {
+        val start = maxOf(left.first, right.first)
+        val endInclusive = minOf(left.last, right.last)
+        return if (start <= endInclusive) start..endInclusive else null
+    }
 
     fun processWhenServerGrabAllows(owner: XEventSink, process: () -> Unit) {
         while (true) {
@@ -802,6 +937,7 @@ internal class X11State(
                 activeKeyboardGrab?.snapshot(),
             ),
             passiveButtonGrabs = passiveButtonGrabs.map { it.snapshot() },
+            passiveKeyGrabs = passiveKeyGrabs.map { it.snapshot() },
             serverGrabbed = serverGrabbed(),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
@@ -2276,7 +2412,9 @@ internal class X11State(
 
     companion object {
         private const val AnyButton = 0
+        private const val AnyKey = 0
         private const val AnyModifier = 0x8000
+        private const val KeyModifierMask = 0x00ff
         private const val MaxDrawingCommands = 10_000
         private const val MaxInputOperations = 200
         private const val MaxGlxOperations = 200
@@ -2996,6 +3134,7 @@ internal data class XScreenSnapshot(
     val inputControlOperations: List<XInputControlOperation>,
     val inputGrabs: List<XInputGrabSnapshot>,
     val passiveButtonGrabs: List<XPassiveButtonGrabSnapshot>,
+    val passiveKeyGrabs: List<XPassiveKeyGrabSnapshot>,
     val serverGrabbed: Boolean,
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
@@ -3147,6 +3286,52 @@ internal data class XPassiveButtonGrabSnapshot(
     val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
     val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
     val buttonName: String get() = if (button == 0) "AnyButton" else button.toString()
+    val modifiersName: String get() = if (modifiers == 0x8000) "AnyModifier" else "0x${modifiers.toUInt().toString(16)}"
+}
+
+internal data class XPassiveKeyGrab(
+    val owner: XEventSink,
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val modifiers: Int,
+    val key: Int,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val releasedCombinations: Set<XPassiveKeyGrabCombination> = emptySet(),
+) {
+    fun snapshot(): XPassiveKeyGrabSnapshot =
+        XPassiveKeyGrabSnapshot(
+            windowId = windowId,
+            ownerEvents = ownerEvents,
+            modifiers = modifiers,
+            key = key,
+            pointerMode = pointerMode,
+            keyboardMode = keyboardMode,
+            releasedCombinations = releasedCombinations.sortedWith(
+                compareBy<XPassiveKeyGrabCombination> { it.key }.thenBy { it.modifiers },
+            ),
+        )
+}
+
+internal data class XPassiveKeyGrabCombination(
+    val key: Int,
+    val modifiers: Int,
+) {
+    val keyName: String get() = if (key == 0) "AnyKey" else key.toString()
+    val modifiersName: String get() = if (modifiers == 0x8000) "AnyModifier" else "0x${modifiers.toUInt().toString(16)}"
+}
+
+internal data class XPassiveKeyGrabSnapshot(
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val modifiers: Int,
+    val key: Int,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val releasedCombinations: List<XPassiveKeyGrabCombination>,
+) {
+    val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+    val keyName: String get() = if (key == 0) "AnyKey" else key.toString()
     val modifiersName: String get() = if (modifiers == 0x8000) "AnyModifier" else "0x${modifiers.toUInt().toString(16)}"
 }
 

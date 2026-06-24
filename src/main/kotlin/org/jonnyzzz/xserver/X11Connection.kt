@@ -142,8 +142,8 @@ internal class X11Connection(
             30 -> changeActivePointerGrab(body)
             31 -> grabKeyboard(minorOpcode, body)
             32 -> ungrabKeyboard(body)
-            33 -> unitReplyless()
-            34 -> unitReplyless()
+            33 -> grabKey(minorOpcode, body)
+            34 -> ungrabKey(minorOpcode, body)
             35 -> allowEvents(minorOpcode, body)
             36 -> grabServer(body)
             37 -> ungrabServer(body)
@@ -1665,6 +1665,47 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 32, badValue = 0)
         state.ungrabKeyboard(this, byteOrder.u32(body, 0))
     }
+
+    private fun grabKey(ownerEvents: Int, body: ByteArray) {
+        if (body.size != 12) return writeError(error = 16, opcode = 33, badValue = 0)
+        if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 33, badValue = ownerEvents)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 33, badValue = grabWindow)
+        val modifiers = byteOrder.u16(body, 4)
+        if (!validGrabModifiers(modifiers)) return writeError(error = 2, opcode = 33, badValue = modifiers)
+        val key = body[6].toInt() and 0xff
+        if (!validGrabKey(key)) return writeError(error = 2, opcode = 33, badValue = key)
+        val pointerMode = body[7].toInt() and 0xff
+        if (pointerMode !in 0..1) return writeError(error = 2, opcode = 33, badValue = pointerMode)
+        val keyboardMode = body[8].toInt() and 0xff
+        if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 33, badValue = keyboardMode)
+
+        val grabbed = state.grabKey(
+            XPassiveKeyGrab(
+                owner = this,
+                windowId = grabWindow,
+                ownerEvents = ownerEvents != 0,
+                modifiers = modifiers,
+                key = key,
+                pointerMode = pointerMode,
+                keyboardMode = keyboardMode,
+            ),
+        )
+        if (!grabbed) writeError(error = 10, opcode = 33, badValue = 0)
+    }
+
+    private fun ungrabKey(key: Int, body: ByteArray) {
+        if (body.size != 8) return writeError(error = 16, opcode = 34, badValue = 0)
+        val grabWindow = byteOrder.u32(body, 0)
+        if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 34, badValue = grabWindow)
+        val modifiers = byteOrder.u16(body, 4)
+        if (!validGrabModifiers(modifiers)) return writeError(error = 2, opcode = 34, badValue = modifiers)
+        if (!validGrabKey(key)) return writeError(error = 2, opcode = 34, badValue = key)
+        state.ungrabKey(this, grabWindow, key, modifiers)
+    }
+
+    private fun validGrabKey(key: Int): Boolean =
+        key == AnyKey || key in XKeyboard.MinKeycode..XKeyboard.MaxKeycode
 
     private fun validGrabModifiers(modifiers: Int): Boolean =
         modifiers == AnyModifier || (modifiers and KeyModifierMask.inv()) == 0
@@ -3851,6 +3892,7 @@ internal class X11Connection(
     }
 
     private companion object {
+        const val AnyKey = 0
         const val AnyModifier = 0x8000
         const val KeyModifierMask = 0x00ff
         const val GcValueMask = 0x007f_ffff
