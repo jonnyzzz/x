@@ -254,6 +254,34 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX WaitGL WaitX and SwapBuffers validate fixed request length`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0111
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitGL, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitGL, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitX, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitX, u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(0) + u32(X11Ids.RootWindow) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitGL, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitX, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(0) + u32(X11Ids.RootWindow))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.WaitGL, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.WaitGL, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.WaitX, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.WaitX, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SwapBuffers, sequence = 6)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SwapBuffers, sequence = 7)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(11, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX WaitGL WaitX and SwapBuffers validate context tags and drawables`() {
         withServer { socket ->
             socket.soTimeout = 2_000

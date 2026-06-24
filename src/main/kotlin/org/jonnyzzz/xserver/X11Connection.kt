@@ -1606,7 +1606,7 @@ internal class X11Connection(
     }
 
     private fun glxWait(body: ByteArray, minorOpcode: Int) {
-        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
         val contextTag = byteOrder.u32(body, 0)
         if (contextTag != 0 && state.glxContext(contextTag) == null) {
             return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = contextTag)
@@ -1615,7 +1615,7 @@ internal class X11Connection(
     }
 
     private fun glxSwapBuffers(body: ByteArray) {
-        if (body.size < 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = 0)
+        if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = 0)
         val contextTag = byteOrder.u32(body, 0)
         val drawable = byteOrder.u32(body, 4)
         if (contextTag != 0 && state.glxContext(contextTag) == null) {
