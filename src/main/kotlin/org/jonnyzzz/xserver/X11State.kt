@@ -51,6 +51,8 @@ internal class X11State(
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
     private var modifierMapping = XModifierMapping.Default
+    private var activePointerGrab: XInputGrab? = null
+    private var activeKeyboardGrab: XInputGrab? = null
     private var accessControlEnabled = false
     private val accessHosts = linkedSetOf<XAccessHost>()
 
@@ -120,6 +122,7 @@ internal class X11State(
             windows.remove(windowId)
             windowOwners.remove(windowId)
         }
+        releaseInputGrabsForResources(removed)
         selectionOwners.entries.removeIf { it.value.windowId in removed }
         saveSets.values.forEach { it.removeAll(removed) }
         saveSets.entries.removeIf { it.value.isEmpty() }
@@ -133,6 +136,7 @@ internal class X11State(
         processSaveSet(owner, resourceIds)
         removeClientResources(resourceIds)
         saveSets.remove(owner)
+        releaseInputGrabs(owner)
     }
 
     @Synchronized
@@ -158,6 +162,7 @@ internal class X11State(
             pictures.remove(id)
             glyphSets.remove(id)
         }
+        releaseInputGrabsForResources(resourceIds)
         ensureDefaultColormapInstalled()
     }
 
@@ -302,6 +307,57 @@ internal class X11State(
     }
 
     @Synchronized
+    fun grabPointer(grab: XInputGrab): Boolean {
+        if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) return false
+        activePointerGrab = grab
+        return true
+    }
+
+    @Synchronized
+    fun ungrabPointer(owner: XEventSink, time: Int) {
+        val grab = activePointerGrab
+        if (grab?.owner == owner && validUngrabTime(time, grab.time)) activePointerGrab = null
+    }
+
+    @Synchronized
+    fun grabKeyboard(grab: XInputGrab): Boolean {
+        if (activeKeyboardGrab?.owner != null && activeKeyboardGrab?.owner != grab.owner) return false
+        activeKeyboardGrab = grab
+        return true
+    }
+
+    @Synchronized
+    fun ungrabKeyboard(owner: XEventSink, time: Int) {
+        val grab = activeKeyboardGrab
+        if (grab?.owner == owner && validUngrabTime(time, grab.time)) activeKeyboardGrab = null
+    }
+
+    @Synchronized
+    fun releaseInputGrabs(owner: XEventSink) {
+        if (activePointerGrab?.owner == owner) activePointerGrab = null
+        if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
+    }
+
+    private fun releaseInputGrabsForResources(resourceIds: Set<Int>) {
+        val pointerGrab = activePointerGrab
+        if (
+            pointerGrab != null &&
+            (pointerGrab.windowId in resourceIds ||
+                pointerGrab.confineTo?.let { it in resourceIds } == true ||
+                pointerGrab.cursor?.let { it in resourceIds } == true)
+        ) {
+            activePointerGrab = null
+        }
+        val keyboardGrab = activeKeyboardGrab
+        if (keyboardGrab != null && keyboardGrab.windowId in resourceIds) {
+            activeKeyboardGrab = null
+        }
+    }
+
+    private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
+        requestTime == 0 || Integer.compareUnsigned(requestTime, grabTime) >= 0
+
+    @Synchronized
     fun accessControlEnabled(): Boolean = accessControlEnabled
 
     @Synchronized
@@ -348,6 +404,7 @@ internal class X11State(
         selectionOwners.entries.removeIf { it.value.sink == sink }
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
+        releaseInputGrabs(sink)
     }
 
     @Synchronized
@@ -599,6 +656,10 @@ internal class X11State(
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
+            inputGrabs = listOfNotNull(
+                activePointerGrab?.snapshot(),
+                activeKeyboardGrab?.snapshot(),
+            ),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
             renderPictures = pictures.values.map { picture ->
@@ -2007,6 +2068,7 @@ internal class X11State(
         glxContexts.remove(id)
         pictures.remove(id)
         glyphSets.remove(id)
+        releaseInputGrabsForResources(setOf(id))
         ensureDefaultColormapInstalled()
     }
 
@@ -2786,6 +2848,7 @@ internal data class XScreenSnapshot(
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
+    val inputGrabs: List<XInputGrabSnapshot>,
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
     val renderPictures: List<XRenderPictureSnapshot>,
@@ -2828,6 +2891,46 @@ internal data class XInputOperation(
     val deliveredEvents: Int,
 ) {
     val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
+}
+
+internal data class XInputGrab(
+    val owner: XEventSink,
+    val kind: String,
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val confineTo: Int?,
+    val cursor: Int?,
+    val time: Int,
+) {
+    fun snapshot(): XInputGrabSnapshot =
+        XInputGrabSnapshot(
+            kind = kind,
+            windowId = windowId,
+            ownerEvents = ownerEvents,
+            pointerMode = pointerMode,
+            keyboardMode = keyboardMode,
+            confineTo = confineTo,
+            cursor = cursor,
+            time = time,
+        )
+}
+
+internal data class XInputGrabSnapshot(
+    val kind: String,
+    val windowId: Int,
+    val ownerEvents: Boolean,
+    val pointerMode: Int,
+    val keyboardMode: Int,
+    val confineTo: Int?,
+    val cursor: Int?,
+    val time: Int,
+) {
+    val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"
+    val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
+    val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
+    val timeUnsigned: Long get() = time.toUInt().toLong()
 }
 
 internal data class XGlxContext(

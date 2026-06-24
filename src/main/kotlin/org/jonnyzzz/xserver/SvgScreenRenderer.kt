@@ -147,6 +147,17 @@ internal object SvgScreenRenderer {
                 append(""","deliveredEvents":${operation.deliveredEvents}""")
                 append('}')
             }
+            append("""],"inputGrabs":[""")
+            snapshot.inputGrabs.forEachIndexed { index, grab ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""kind":"${escapeJson(grab.kind)}","window":"${grab.windowIdHex}","ownerEvents":${grab.ownerEvents},"pointerMode":${grab.pointerMode},"keyboardMode":${grab.keyboardMode},"confineTo":""")
+                grab.confineToHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","cursor":""")
+                grab.cursorHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","time":${grab.timeUnsigned}""")
+                append('}')
+            }
             append("""]}""")
         }
 

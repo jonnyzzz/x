@@ -2475,6 +2475,235 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UngrabPointer clears active grab and is replyless`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId))
+                out.flush()
+
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(ungrabPointerRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(1, pointer[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabPointer validates request length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(ungrabPointerBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 27, badValue = 0, sequence = 1)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(2, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabPointer only releases requesting client's active grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabPointerRequest(WindowId))
+                    ownerOut.flush()
+                    assertEquals(1, readReply(owner.getInputStream())[0].toInt())
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(ungrabPointerRequest())
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(2, u16le(pointer, 2))
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabPointer and GrabKeyboard report AlreadyGrabbed for another client's active grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabPointerRequest(WindowId))
+                    ownerOut.flush()
+                    assertEquals(0, readReply(owner.getInputStream())[1].toInt() and 0xff)
+
+                    val otherOut = other.getOutputStream()
+                    otherOut.write(grabPointerRequest(WindowId))
+                    otherOut.write(ungrabPointerRequest())
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+                    assertEquals(1, readReply(other.getInputStream())[1].toInt() and 0xff)
+                    assertEquals(1, readReply(other.getInputStream())[0].toInt())
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                    ownerOut.write(ungrabPointerRequest())
+                    ownerOut.write(grabKeyboardRequest(WindowId))
+                    ownerOut.flush()
+                    assertEquals(1, readReply(owner.getInputStream())[0].toInt())
+
+                    otherOut.write(grabKeyboardRequest(WindowId))
+                    otherOut.write(ungrabKeyboardRequest())
+                    otherOut.write(queryPointerRequest())
+                    otherOut.flush()
+                    assertEquals(1, readReply(other.getInputStream())[1].toInt() and 0xff)
+                    assertEquals(1, readReply(other.getInputStream())[0].toInt())
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabPointer and UngrabKeyboard ignore timestamps older than grab time`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId, time = 5))
+                out.flush()
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+
+                out.write(ungrabPointerRequest(time = 4))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(ungrabPointerRequest(time = 5))
+                out.write(grabKeyboardRequest(WindowId, time = 7))
+                out.flush()
+                assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
+
+                out.write(ungrabKeyboardRequest(time = 6))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
+
+                out.write(ungrabKeyboardRequest(time = 7))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroyWindow clears active pointer grab for destroyed grab window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId))
+                out.flush()
+                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+
+                out.write(destroyWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FreeCursor clears active pointer grab that references cursor`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val cursor = PixmapId + 90
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
+                out.write(grabPointerRequest(WindowId, cursor = cursor))
+                out.flush()
+                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                val grabbed = httpGet(server.localPort, "/state.json")
+                assertContains(grabbed, """"inputGrabs":[{"kind":"pointer"""")
+                assertContains(grabbed, """"cursor":"0x${cursor.toString(16)}"""")
+
+                out.write(freeCursorRequest(cursor))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabKeyboard replies success status for valid window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2495,6 +2724,58 @@ class XCoreDrawingProtocolTest {
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(1, pointer[1].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKeyboard clears active grab and is replyless`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyboardRequest(WindowId))
+                out.flush()
+
+                val grab = readReply(socket.getInputStream())
+                assertEquals(1, grab[0].toInt())
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
+
+                out.write(ungrabKeyboardRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(1, pointer[1].toInt() and 0xff)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UngrabKeyboard validates request length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(ungrabKeyboardBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 32, badValue = 0, sequence = 1)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(2, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -4051,6 +4332,12 @@ class XCoreDrawingProtocolTest {
         return request(1, 24, body)
     }
 
+    private fun destroyWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(4, 0, body)
+    }
+
     private fun createWindowRequestBigEndian(
         id: Int,
         width: Int = 40,
@@ -4102,6 +4389,12 @@ class XCoreDrawingProtocolTest {
         put16le(body, 12, 0xffff)
         put16le(body, 18, 0xffff)
         return request(93, 0, body)
+    }
+
+    private fun freeCursorRequest(cursor: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, cursor)
+        return request(95, 0, body)
     }
 
     private fun createGlyphCursorRequest(cursor: Int, sourceFont: Int, maskFont: Int): ByteArray {
@@ -4272,26 +4565,44 @@ class XCoreDrawingProtocolTest {
         return request(opcode, 0, body)
     }
 
-    private fun grabPointerRequest(window: Int): ByteArray {
+    private fun grabPointerRequest(window: Int, cursor: Int = 0, time: Int = 0): ByteArray {
         val body = ByteArray(20)
         put32le(body, 0, window)
         put16le(body, 4, 0)
         body[6] = 0
         body[7] = 0
         put32le(body, 8, 0)
-        put32le(body, 12, 0)
-        put32le(body, 16, 0)
+        put32le(body, 12, cursor)
+        put32le(body, 16, time)
         return request(26, 0, body)
     }
 
-    private fun grabKeyboardRequest(window: Int): ByteArray {
+    private fun ungrabPointerRequest(time: Int = 0): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, time)
+        return request(27, 0, body)
+    }
+
+    private fun ungrabPointerBadLengthRequest(): ByteArray =
+        request(27, 0, ByteArray(0))
+
+    private fun grabKeyboardRequest(window: Int, time: Int = 0): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, window)
-        put32le(body, 4, 0)
+        put32le(body, 4, time)
         body[8] = 0
         body[9] = 0
         return request(31, 0, body)
     }
+
+    private fun ungrabKeyboardRequest(time: Int = 0): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, time)
+        return request(32, 0, body)
+    }
+
+    private fun ungrabKeyboardBadLengthRequest(): ByteArray =
+        request(32, 0, ByteArray(0))
 
     private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
         val body = ByteArray(8)
