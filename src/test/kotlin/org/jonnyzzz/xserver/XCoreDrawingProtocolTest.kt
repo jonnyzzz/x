@@ -4162,6 +4162,73 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeKeyboardMapping updates GetKeyboardMapping and state snapshot`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(changeKeyboardMappingRequest(38, 2, 0x0061, 0x0041, 0x0062, 0x0042))
+                out.write(getKeyboardMappingRequest(37, 3))
+                out.flush()
+
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 1, request = 1, firstKeycode = 38, count = 2)
+                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 2, keysymsPerKeycode = 2, 0, 0, 0x0061, 0x0041, 0x0062, 0x0042)
+                assertContains(
+                    httpGet(server.localPort, "/state.json"),
+                    """"keyboardMapping":{"keysymsPerKeycode":2,"keycodes":[{"keycode":38,"keysyms":["0x61","0x41"]},{"keycode":39,"keysyms":["0x62","0x42"]}]}""",
+                )
+
+                out.write(changeKeyboardMappingRequest(40, 1, 0x0063))
+                out.write(getKeyboardMappingRequest(38, 3))
+                out.flush()
+
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 3, request = 1, firstKeycode = 40, count = 1)
+                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 4, keysymsPerKeycode = 2, 0x0061, 0x0041, 0x0062, 0x0042, 0x0063, 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `Keyboard mapping requests validate length and keycode range and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(101, 0, ByteArray(0)))
+                out.write(getKeyboardMappingRequest(7, 1))
+                out.write(getKeyboardMappingRequest(255, 2))
+                out.write(malformedChangeKeyboardMappingRequest(keycodeCount = 1, firstKeycode = 38, keysymsPerKeycode = 0))
+                out.write(changeKeyboardMappingRequest(7, 1, 0x0061))
+                out.write(changeKeyboardMappingRequest(255, 1, 0x0061, 0x0062))
+                out.write(request(100, 38, ByteArray(0)))
+                out.write(malformedChangeKeyboardMappingRequest(keycodeCount = 1, firstKeycode = 38, keysymsPerKeycode = 2, 0x0061))
+                out.write(changeKeyboardMappingRequest(40, 1, 0x0063))
+                out.write(getKeyboardMappingRequest(40, 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 101, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 2, opcode = 101, badValue = 7, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 101, badValue = 255, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 100, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 100, badValue = 7, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 100, badValue = 255, sequence = 6)
+                assertError(socket.getInputStream(), error = 16, opcode = 100, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 100, badValue = 0, sequence = 8)
+                assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 9, request = 1, firstKeycode = 40, count = 1)
+                assertKeyboardMapping(readReply(socket.getInputStream()), sequence = 10, keysymsPerKeycode = 1, 0x0063)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `Pointer mapping remaps button events and reports busy while altered button is down`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6644,6 +6711,34 @@ class XCoreDrawingProtocolTest {
     private fun getFontPathRequest(): ByteArray =
         request(52, 0, ByteArray(0))
 
+    private fun getKeyboardMappingRequest(firstKeycode: Int, count: Int): ByteArray {
+        val body = ByteArray(4)
+        body[0] = firstKeycode.toByte()
+        body[1] = count.toByte()
+        return request(101, 0, body)
+    }
+
+    private fun changeKeyboardMappingRequest(firstKeycode: Int, keysymsPerKeycode: Int, vararg keysyms: Int): ByteArray {
+        require(keysymsPerKeycode > 0)
+        require(keysyms.size % keysymsPerKeycode == 0)
+        return malformedChangeKeyboardMappingRequest(
+            keycodeCount = keysyms.size / keysymsPerKeycode,
+            firstKeycode = firstKeycode,
+            keysymsPerKeycode = keysymsPerKeycode,
+            keysyms = keysyms,
+        )
+    }
+
+    private fun malformedChangeKeyboardMappingRequest(keycodeCount: Int, firstKeycode: Int, keysymsPerKeycode: Int, vararg keysyms: Int): ByteArray {
+        val body = ByteArray(4 + keysyms.size * 4)
+        body[0] = firstKeycode.toByte()
+        body[1] = keysymsPerKeycode.toByte()
+        keysyms.forEachIndexed { index, keysym ->
+            put32le(body, 4 + index * 4, keysym)
+        }
+        return request(100, keycodeCount, body)
+    }
+
     private fun fontPathEntries(reply: ByteArray): List<String> {
         val count = u16le(reply, 8)
         var offset = 32
@@ -6828,6 +6923,18 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 32 + keycodes.size, 32 + payloadBytes)
     }
 
+    private fun assertKeyboardMapping(reply: ByteArray, sequence: Int, keysymsPerKeycode: Int, vararg keysyms: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(keysymsPerKeycode, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(keysyms.size, u32le(reply, 4))
+        assertZeroBytes(reply, 8, 32)
+        keysyms.forEachIndexed { index, keysym ->
+            assertEquals(keysym, u32le(reply, 32 + index * 4))
+        }
+        assertEquals(32 + keysyms.size * 4, reply.size)
+    }
+
     private fun assertListHosts(reply: ByteArray, sequence: Int, enabled: Boolean, vararg hosts: AccessHost) {
         assertEquals(1, reply[0].toInt())
         assertEquals(if (enabled) 1 else 0, reply[1].toInt() and 0xff)
@@ -6859,13 +6966,13 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 8, 32)
     }
 
-    private fun assertMappingNotify(event: ByteArray, sequence: Int, request: Int = 2) {
+    private fun assertMappingNotify(event: ByteArray, sequence: Int, request: Int = 2, firstKeycode: Int = 0, count: Int = 0) {
         assertEquals(34, event[0].toInt() and 0xff)
         assertEquals(0, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
         assertEquals(request, event[4].toInt() and 0xff)
-        assertEquals(0, event[5].toInt() and 0xff)
-        assertEquals(0, event[6].toInt() and 0xff)
+        assertEquals(firstKeycode, event[5].toInt() and 0xff)
+        assertEquals(count, event[6].toInt() and 0xff)
         assertZeroBytes(event, 7, 32)
     }
 

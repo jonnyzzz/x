@@ -56,6 +56,7 @@ internal class X11State(
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
     private var modifierMapping = XModifierMapping.Default
+    private var keyboardMapping = XKeyboardMapping.Default
     private var activePointerGrab: XInputGrab? = null
     private var activeKeyboardGrab: XInputGrab? = null
     private val passiveButtonGrabs = mutableListOf<XPassiveButtonGrab>()
@@ -315,6 +316,38 @@ internal class X11State(
     @Synchronized
     fun setModifierMapping(mapping: List<Int>) {
         modifierMapping = mapping.toList()
+    }
+
+    @Synchronized
+    fun keyboardMapping(firstKeycode: Int, count: Int): XKeyboardMapping {
+        val rows = linkedMapOf<Int, List<Int>>()
+        for (keycode in firstKeycode until firstKeycode + count) {
+            rows[keycode] = keyboardMapping.keysymsFor(keycode)
+        }
+        return XKeyboardMapping(
+            keysymsPerKeycode = keyboardMapping.keysymsPerKeycode,
+            keysymsByKeycode = rows,
+        )
+    }
+
+    @Synchronized
+    fun setKeyboardMapping(firstKeycode: Int, keysymsPerKeycode: Int, keysyms: List<Int>): Int {
+        val keycodeCount = keysyms.size / keysymsPerKeycode
+        val effectiveKeysymsPerKeycode = maxOf(keyboardMapping.keysymsPerKeycode, keysymsPerKeycode)
+        val rows = keyboardMapping.keysymsByKeycode
+            .mapValues { (_, existing) -> List(effectiveKeysymsPerKeycode) { index -> existing.getOrElse(index) { 0 } } }
+            .toMutableMap()
+        for (index in 0 until keycodeCount) {
+            val keycode = firstKeycode + index
+            val start = index * keysymsPerKeycode
+            val row = keysyms.subList(start, start + keysymsPerKeycode)
+            rows[keycode] = List(effectiveKeysymsPerKeycode) { keysymIndex -> row.getOrElse(keysymIndex) { 0 } }
+        }
+        keyboardMapping = XKeyboardMapping(
+            keysymsPerKeycode = effectiveKeysymsPerKeycode,
+            keysymsByKeycode = rows.toSortedMap(),
+        )
+        return keycodeCount
     }
 
     @Synchronized
@@ -1043,6 +1076,7 @@ internal class X11State(
                 windowId = windowAt(pointerX, pointerY)?.id ?: 0,
             ),
             fontPath = fontPath.toList(),
+            keyboardMapping = keyboardMapping.snapshot(),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
             overlaps = overlaps(windowSnapshots),
@@ -2954,6 +2988,31 @@ internal object XKeyboard {
     const val MaxKeycode = 255
 }
 
+internal data class XKeyboardMapping(
+    val keysymsPerKeycode: Int,
+    val keysymsByKeycode: Map<Int, List<Int>>,
+) {
+    fun keysymsFor(keycode: Int): List<Int> {
+        val keysyms = keysymsByKeycode[keycode].orEmpty()
+        return List(keysymsPerKeycode) { index -> keysyms.getOrElse(index) { 0 } }
+    }
+
+    fun snapshot(): XKeyboardMappingSnapshot =
+        XKeyboardMappingSnapshot(
+            keysymsPerKeycode = keysymsPerKeycode,
+            keycodes = keysymsByKeycode.toSortedMap().map { (keycode, keysyms) ->
+                XKeycodeMappingSnapshot(keycode = keycode, keysyms = keysyms.toList())
+            },
+        )
+
+    companion object {
+        val Default = XKeyboardMapping(
+            keysymsPerKeycode = 1,
+            keysymsByKeycode = emptyMap(),
+        )
+    }
+}
+
 internal data class XAccessHost(
     val family: Int,
     val address: List<Int>,
@@ -3283,6 +3342,7 @@ internal data class XScreenSnapshot(
     val focusWindowId: Int,
     val pointer: XPointerStateSnapshot,
     val fontPath: List<String>,
+    val keyboardMapping: XKeyboardMappingSnapshot,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
@@ -3301,6 +3361,18 @@ internal data class XScreenSnapshot(
     val extensionQueries: List<XExtensionQuery>,
     val unsupportedRequests: List<XUnsupportedRequest>,
 )
+
+internal data class XKeyboardMappingSnapshot(
+    val keysymsPerKeycode: Int,
+    val keycodes: List<XKeycodeMappingSnapshot>,
+)
+
+internal data class XKeycodeMappingSnapshot(
+    val keycode: Int,
+    val keysyms: List<Int>,
+) {
+    val keysymHexes: List<String> get() = keysyms.map { "0x${it.toUInt().toString(16)}" }
+}
 
 internal data class XPointerStateSnapshot(
     val x: Int,

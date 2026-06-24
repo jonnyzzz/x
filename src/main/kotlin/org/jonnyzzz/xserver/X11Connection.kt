@@ -209,6 +209,7 @@ internal class X11Connection(
             97 -> queryBestSize(minorOpcode, body)
             98 -> queryExtension(body)
             99 -> listExtensions()
+            100 -> changeKeyboardMapping(minorOpcode, body)
             101 -> getKeyboardMapping(body)
             103 -> getKeyboardControl()
             104 -> bell(minorOpcode, body)
@@ -2955,6 +2956,7 @@ internal class X11Connection(
             97 -> "QueryBestSize"
             98 -> "QueryExtension"
             99 -> "ListExtensions"
+            100 -> "ChangeKeyboardMapping"
             101 -> "GetKeyboardMapping"
             103 -> "GetKeyboardControl"
             104 -> "Bell"
@@ -2991,9 +2993,24 @@ internal class X11Connection(
     }
 
     private fun getKeyboardMapping(body: ByteArray) {
-        val count = body.getOrNull(0)?.toInt()?.and(0xff) ?: 0
-        val keysymsPerKeycode = 1
-        val reply = reply(extra = keysymsPerKeycode, payloadUnits = count * keysymsPerKeycode)
+        if (body.size != 4) return writeError(error = 16, opcode = 101, badValue = 0)
+        val firstKeycode = body[0].toInt() and 0xff
+        val count = body[1].toInt() and 0xff
+        if (firstKeycode !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+            return writeError(error = 2, opcode = 101, badValue = firstKeycode)
+        }
+        if (count > 0 && firstKeycode + count - 1 > XKeyboard.MaxKeycode) {
+            return writeError(error = 2, opcode = 101, badValue = firstKeycode)
+        }
+        val mapping = state.keyboardMapping(firstKeycode, count)
+        val reply = reply(extra = mapping.keysymsPerKeycode, payloadUnits = count * mapping.keysymsPerKeycode)
+        var offset = 32
+        for (keycode in firstKeycode until firstKeycode + count) {
+            for (keysym in mapping.keysymsFor(keycode)) {
+                byteOrder.put32(reply, offset, keysym)
+                offset += 4
+            }
+        }
         write(reply)
     }
 
@@ -3161,6 +3178,28 @@ internal class X11Connection(
         val reply = reply(extra = map.size, payloadUnits = paddedLength(map.size) / 4)
         map.copyInto(reply, 32)
         write(reply)
+    }
+
+    private fun changeKeyboardMapping(keycodeCount: Int, body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 100, badValue = 0)
+        val firstKeycode = body[0].toInt() and 0xff
+        val keysymsPerKeycode = body[1].toInt() and 0xff
+        if (keysymsPerKeycode == 0) return writeError(error = 2, opcode = 100, badValue = 0)
+        val expectedSize = 4 + keycodeCount * keysymsPerKeycode * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = 100, badValue = 0)
+        if (firstKeycode !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+            return writeError(error = 2, opcode = 100, badValue = firstKeycode)
+        }
+        if (keycodeCount > 0 && firstKeycode + keycodeCount - 1 > XKeyboard.MaxKeycode) {
+            return writeError(error = 2, opcode = 100, badValue = firstKeycode)
+        }
+        val keysymCount = keycodeCount * keysymsPerKeycode
+        val keysyms = List(keysymCount) { index -> byteOrder.u32(body, 4 + index * 4) }
+        state.setKeyboardMapping(firstKeycode, keysymsPerKeycode, keysyms)
+        val event = XMappingNotifyEvent(request = 1, firstKeycode = firstKeycode, count = keycodeCount)
+        for (sink in state.mappingNotifySinks()) {
+            runCatching { sink.sendMappingNotifyEvent(event) }
+        }
     }
 
     private fun setModifierMapping(keycodesPerModifier: Int, body: ByteArray) {

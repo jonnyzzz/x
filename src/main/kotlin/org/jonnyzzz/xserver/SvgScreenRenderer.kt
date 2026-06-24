@@ -61,7 +61,17 @@ internal object SvgScreenRenderer {
                 if (index > 0) append(',')
                 append('"').append(escapeJson(path)).append('"')
             }
-            append("""],"windows":[""")
+            append("""],"keyboardMapping":{"keysymsPerKeycode":${snapshot.keyboardMapping.keysymsPerKeycode},"keycodes":[""")
+            snapshot.keyboardMapping.keycodes.forEachIndexed { index, keycode ->
+                if (index > 0) append(',')
+                append("""{"keycode":${keycode.keycode},"keysyms":[""")
+                keycode.keysymHexes.forEachIndexed { keysymIndex, keysym ->
+                    if (keysymIndex > 0) append(',')
+                    append('"').append(keysym).append('"')
+                }
+                append("""]}""")
+            }
+            append("""]},"windows":[""")
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')
