@@ -2065,14 +2065,16 @@ internal class X11Connection(
     }
 
     private fun createPixmap(depth: Int, body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size != 12) return writeError(error = 16, opcode = 53, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 53, badValue = id)
         val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 53, badValue = drawableId)
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
-        System.err.println("core seq=$sequence CreatePixmap pixmap=${id.toHex()} depth=$depth ${width}x$height drawable=${drawableId.toHex()}")
+        if (width == 0) return writeError(error = 2, opcode = 53, badValue = width)
+        if (height == 0) return writeError(error = 2, opcode = 53, badValue = height)
+        if (depth !in SupportedPixmapDepths) return writeError(error = 2, opcode = 53, badValue = depth)
         state.putPixmap(
             XPixmap(
                 id = id,
@@ -4378,6 +4380,7 @@ internal class X11Connection(
         const val D65_Z = 1.08883
         const val D65_U_PRIME = 0.19783982482140777
         const val D65_V_PRIME = 0.4683363029324097
+        val SupportedPixmapDepths = setOf(1, 4, 8, 24, 32)
         val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
         val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)
         val XNamedColors = mapOf(

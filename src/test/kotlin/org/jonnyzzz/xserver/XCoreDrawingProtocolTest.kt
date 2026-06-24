@@ -448,6 +448,40 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreatePixmap validates length dimensions and depth without reserving id`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapBadLengthRequest(bodySize = 8))
+                out.write(createPixmapBadLengthRequest(bodySize = 16))
+                out.write(createPixmapRequest(PixmapId, width = 0, height = 1))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 0))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 7))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = Blue, drawable = PixmapId))
+                out.write(polyPointRequest(PixmapId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 53, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 53, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 53, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 53, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 53, badValue = 7, sequence = 6)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreatePixmap rejects duplicate resource id without replacing existing pixmap`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8128,6 +8162,9 @@ class XCoreDrawingProtocolTest {
         put16le(body, 10, height)
         return request(53, depth, body)
     }
+
+    private fun createPixmapBadLengthRequest(bodySize: Int): ByteArray =
+        request(53, 24, ByteArray(bodySize))
 
     private fun getGeometryRequest(id: Int): ByteArray {
         val body = ByteArray(4)
