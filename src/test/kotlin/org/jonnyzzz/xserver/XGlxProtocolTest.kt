@@ -734,6 +734,34 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CreateContextAttribs validates attributed request length before creating context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val shortContext = 0x0020_0103
+            val overlongContext = 0x0020_0104
+            val mismatchedContext = 0x0020_0105
+            val validContext = 0x0020_0106
+            val hugeCountContext = 0x0020_0107
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(shortContext, direct = true).copyOf(20))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(overlongContext, direct = true) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(mismatchedContext, direct = true, XGlx.RenderType to XGlx.RgbaType).copyOf(24))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(hugeCountContext, direct = true).copyOf(20) + u32(0x2000_0000))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(validContext, direct = true, XGlx.RenderType to XGlx.RgbaType))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, u32(validContext))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(overlongContext))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 4)
+            val direct = readReply(socket.getInputStream())
+            assertEquals(6, u16le(direct, 2))
+            assertEquals(1, direct[8].toInt())
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = overlongContext, minorOpcode = XGlx.QueryContext, sequence = 7)
+        }
+    }
+
+    @Test
     fun `GLX CreateContextAttribs rejects duplicate resource id without replacing existing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -1395,13 +1423,18 @@ class XGlxProtocolTest {
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0)
 
-    private fun createContextAttribsBody(context: Int, direct: Boolean): ByteArray =
+    private fun createContextAttribsBody(
+        context: Int,
+        direct: Boolean,
+        vararg attributes: Pair<Int, Int>,
+    ): ByteArray =
         u32(context) +
             u32(XGlx.RootFbConfigId) +
             u32(0) +
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0) +
-            u32(0)
+            u32(attributes.size) +
+            attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
 
     private fun copyContextBody(
         source: Int,

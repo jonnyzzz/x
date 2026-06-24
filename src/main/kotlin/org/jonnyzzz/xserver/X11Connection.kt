@@ -1377,10 +1377,17 @@ internal class X11Connection(
     }
 
     private fun glxCreateContextAttribs(body: ByteArray) {
-        if (body.size < 24) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
+        if (body.size < 24) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
         val context = byteOrder.u32(body, 0)
         val fbConfig = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
+        val attribCount = byteOrder.u32(body, 20).toUInt().toLong()
+        // Xorg validates CreateContextAttribsARB by comparing the request
+        // length to sizeof(request) + numAttribs * 8 and reports BadLength.
+        val expectedSize = 24L + attribCount * 8L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
+        }
         if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = context)
         state.putGlxContext(
             XGlxContext(
