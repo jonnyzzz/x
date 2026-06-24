@@ -2037,6 +2037,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolyArc and PolyFillArc report request errors and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(polyArcBadLengthRequest(opcode = 68, bodySize = 4))
+                out.write(polyArcBadLengthRequest(opcode = 71, bodySize = 16))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = emptyList()))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(14, 0, 10, 10, 0, FullCircleAngle))))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = emptyList()))
+                out.write(polyArcRequest(WindowId, GcId + 1, filled = true, arcs = emptyList()))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(XArcCommand(0, 0, 10, 10, 0, FullCircleAngle))))
+                out.write(polyArcRequest(WindowId, GcId + 1, filled = true, arcs = listOf(XArcCommand(14, 0, 10, 10, 0, FullCircleAngle))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 26, height = 12))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 68, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 71, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 68, badValue = GcId, sequence = 4)
+                assertError(socket.getInputStream(), error = 13, opcode = 71, badValue = GcId, sequence = 5)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 26, 5, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 26, 5, 5))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 26, 19, 5))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 26, 13, 5))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9475,6 +9512,13 @@ class XCoreDrawingProtocolTest {
             offset += 12
         }
         return request(if (filled) 71 else 68, 0, body)
+    }
+
+    private fun polyArcBadLengthRequest(opcode: Int, bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        if (bodySize >= 8) put32le(body, 4, GcId)
+        return request(opcode, 0, body)
     }
 
     private fun setClipRectanglesRequest(

@@ -2412,8 +2412,11 @@ internal class X11Connection(
     }
 
     private fun polyArc(body: ByteArray, filled: Boolean) {
-        if (body.size < 20) return
-        val gc = state.gc(byteOrder.u32(body, 4))
+        val opcode = if (filled) 71 else 68
+        if (body.size < 8 || (body.size - 8) % 12 != 0) return writeError(error = 16, opcode = opcode, badValue = 0)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
         val arcs = arcs(body, 8)
         if (filled) {
