@@ -1747,6 +1747,48 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Triangles validates request framing resources and mask format`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingSource = SolidPictureId + 0x200
+                val missingDestination = PictureId + 0x200
+                val unknownMaskFormat = 0x7fff_2010
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 12, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, PictureId).copyOf(16)))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, PictureId).copyOf(28)))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, PictureId, operation = XRender.OpBlendMaximum + 1)))
+                out.write(renderTrianglesRaw(trianglesHeader(missingSource, PictureId)))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, missingDestination)))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, PictureId, maskFormat = unknownMaskFormat)))
+                out.write(renderTrianglesRaw(trianglesHeader(SolidPictureId, PictureId, maskFormat = XRender.Rgb24Format)))
+                out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(3 to 2, 8 to 2, 3 to 7), maskFormat = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 10))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 6, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 7, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingSource, sequence = 8, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 9, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, badValue = unknownMaskFormat, sequence = 10, minorOpcode = 11)
+                assertError(socket.getInputStream(), error = 8, badValue = XRender.Rgb24Format, sequence = 11, minorOpcode = 11)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 12, x = 4, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 2, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER triangles honor A1 mask format`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2715,6 +2757,23 @@ class XRenderProtocolTest {
         }
         return request(XRender.MajorOpcode, 11, body)
     }
+
+    private fun trianglesHeader(
+        source: Int,
+        destination: Int,
+        operation: Int = XRender.OpSrc,
+        maskFormat: Int = XRender.A8Format,
+    ): ByteArray {
+        val body = ByteArray(20)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, maskFormat)
+        return body
+    }
+
+    private fun renderTrianglesRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 11, body)
 
     private fun renderTriStrip(
         source: Int,
