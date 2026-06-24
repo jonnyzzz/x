@@ -7300,6 +7300,41 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    @Test
+    fun `SendEvent rejects invalid request fields and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val event = selectionNotifyEvent(WindowId, PrimaryAtom, AtomAtom, StringAtom, time = 77)
+                val unknownWindow = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(sendEventRequest(WindowId, event, propagateOpcode = 2))
+                out.write(sendEventRequest(unknownWindow, event))
+                out.write(sendEventRequest(WindowId, event, extraBytes = 4))
+                out.write(sendEventRequest(WindowId, event))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 25, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 3, opcode = 25, badValue = unknownWindow, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 25, badValue = 0, sequence = 4)
+
+                val delivered = socket.getInputStream().readExactly(32)
+                assertEquals(0x80 or 31, delivered[0].toInt() and 0xff)
+                assertEquals(5, u16le(delivered, 2))
+                assertEquals(77, u32le(delivered, 4))
+                assertEquals(WindowId, u32le(delivered, 8))
+                assertEquals(PrimaryAtom, u32le(delivered, 12))
+                assertEquals(AtomAtom, u32le(delivered, 16))
+                assertEquals(StringAtom, u32le(delivered, 20))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket, byteOrderByte: Int = 0x6c) {
         val setup = ByteArray(12)
         setup[0] = byteOrderByte.toByte()
@@ -8075,12 +8110,19 @@ class XCoreDrawingProtocolTest {
         return request(24, 0, body)
     }
 
-    private fun sendEventRequest(destination: Int, event: ByteArray, eventMask: Int = 0, propagate: Boolean = false): ByteArray {
-        val body = ByteArray(40)
+    private fun sendEventRequest(
+        destination: Int,
+        event: ByteArray,
+        eventMask: Int = 0,
+        propagate: Boolean = false,
+        propagateOpcode: Int = if (propagate) 1 else 0,
+        extraBytes: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(40 + extraBytes)
         put32le(body, 0, destination)
         put32le(body, 4, eventMask)
         event.copyInto(body, 8, endIndex = 32)
-        return request(25, if (propagate) 1 else 0, body)
+        return request(25, propagateOpcode, body)
     }
 
     private fun selectionNotifyEvent(requestor: Int, selection: Int, target: Int, property: Int, time: Int): ByteArray {
