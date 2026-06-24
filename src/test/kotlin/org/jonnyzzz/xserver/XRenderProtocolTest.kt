@@ -2390,6 +2390,10 @@ class XRenderProtocolTest {
                     put32le(it, 0, referencedGlyphSet)
                     put32le(it, 4, GlyphSetId)
                 }))
+                out.write(renderReferenceGlyphSetRaw(ByteArray(20).also {
+                    put32le(it, 0, referencedGlyphSet)
+                    put32le(it, 4, GlyphSetId)
+                }))
                 out.write(renderReferenceGlyphSet(referencedGlyphSet, missingGlyphSet))
                 out.write(renderReferenceGlyphSet(referencedGlyphSet, GlyphSetId))
                 out.write(renderFreeGlyphSetRaw(ByteArray(0)))
@@ -2420,10 +2424,11 @@ class XRenderProtocolTest {
                 assertError(socket.getInputStream(), error = XRender.PictFormatError, badValue = unknownFormat, sequence = 5, minorOpcode = 17)
                 assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 7, minorOpcode = 18)
                 assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 8, minorOpcode = 18)
-                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 9, minorOpcode = 18)
-                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 11, minorOpcode = 19)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 9, minorOpcode = 18)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 10, minorOpcode = 18)
                 assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 12, minorOpcode = 19)
-                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 13, minorOpcode = 19)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 13, minorOpcode = 19)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 14, minorOpcode = 19)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
             }
@@ -2977,7 +2982,7 @@ class XRenderProtocolTest {
         request(XRender.MajorOpcode, 17, body)
 
     private fun renderReferenceGlyphSet(glyphSet: Int, existing: Int): ByteArray {
-        val body = ByteArray(20)
+        val body = ByteArray(8)
         put32le(body, 0, glyphSet)
         put32le(body, 4, existing)
         return request(XRender.MajorOpcode, 18, body)

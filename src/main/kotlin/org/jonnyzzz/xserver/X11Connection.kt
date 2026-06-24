@@ -766,9 +766,7 @@ internal class X11Connection(
     }
 
     private fun renderReferenceGlyphSet(body: ByteArray) {
-        if (body.size != 8 && body.size != 20) {
-            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = 0)
-        }
+        if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = id)
         val existingId = byteOrder.u32(body, 4)
