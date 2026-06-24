@@ -1053,11 +1053,13 @@ class XCoreDrawingProtocolTest {
                 out.write(freeColorsRequest(X11Ids.DefaultColormap, planeMask = 0, pixels = listOf(Red, 0x0000_ff00)))
                 out.write(freeColorsRequest(missingColormap, planeMask = 0, pixels = listOf(Red)))
                 out.write(request(88, 0, ByteArray(4)))
+                out.write(freeColorsRequest(X11Ids.DefaultColormap, planeMask = 0, pixels = listOf(0x0100_0000)))
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0, blue = 0xffff))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 12, opcode = 88, badValue = missingColormap, sequence = 2)
                 assertError(socket.getInputStream(), error = 16, opcode = 88, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 88, badValue = 0x0100_0000, sequence = 4)
 
                 val blue = readReply(socket.getInputStream())
                 assertEquals(Blue, u32le(blue, 16))

@@ -2778,6 +2778,12 @@ internal class X11Connection(
         if (body.size < 8 || (body.size - 8) % 4 != 0) return writeError(error = 16, opcode = 88, badValue = 0)
         val colormap = byteOrder.u32(body, 0)
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 88, badValue = colormap)
+        var offset = 8
+        while (offset < body.size) {
+            val pixel = byteOrder.u32(body, offset)
+            if (!isValidTrueColorPixel(pixel)) return writeError(error = 2, opcode = 88, badValue = pixel)
+            offset += 4
+        }
     }
 
     private fun storeColors(body: ByteArray) {
