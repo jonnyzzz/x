@@ -464,8 +464,13 @@ internal class X11Connection(
     }
 
     private fun renderSetPictureClipRectangles(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8 || (body.size - 8) % 8 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 6, badValue = 0)
+        }
         val picture = byteOrder.u32(body, 0)
+        if (state.picture(picture) == null) {
+            return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 6, badValue = picture)
+        }
         val originX = byteOrder.i16(body, 4)
         val originY = byteOrder.i16(body, 6)
         state.updatePictureClip(
