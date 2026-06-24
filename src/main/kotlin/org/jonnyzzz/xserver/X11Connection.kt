@@ -220,7 +220,7 @@ internal class X11Connection(
             105 -> changePointerControl(body)
             106 -> getPointerControl(body)
             107 -> setScreenSaver(body)
-            108 -> getScreenSaver()
+            108 -> getScreenSaver(body)
             109 -> changeHosts(minorOpcode, body)
             110 -> listHosts(body)
             111 -> setAccessControl(minorOpcode, body)
@@ -3426,7 +3426,8 @@ internal class X11Connection(
         )
     }
 
-    private fun getScreenSaver() {
+    private fun getScreenSaver(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 108, badValue = 0)
         val screenSaver = state.screenSaver()
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 8, screenSaver.timeout)

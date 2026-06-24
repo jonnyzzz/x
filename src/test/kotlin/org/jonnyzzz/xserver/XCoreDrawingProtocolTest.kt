@@ -6892,6 +6892,34 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetScreenSaver validates length and preserves connection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(setScreenSaverRequest(timeout = 12, interval = 34, preferBlanking = 1, allowExposures = 0))
+                out.write(request(108, 0, ByteArray(4)))
+                out.write(getScreenSaverRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 108, badValue = 0, sequence = 2)
+
+                val screenSaver = readReply(socket.getInputStream())
+                assertEquals(3, u16le(screenSaver, 2))
+                assertEquals(0, u32le(screenSaver, 4))
+                assertEquals(12, u16le(screenSaver, 8))
+                assertEquals(34, u16le(screenSaver, 10))
+                assertEquals(1, screenSaver[12].toInt() and 0xff)
+                assertEquals(0, screenSaver[13].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ForceScreenSaver validates mode and length and preserves connection`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
