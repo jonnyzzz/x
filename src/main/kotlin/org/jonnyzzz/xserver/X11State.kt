@@ -1558,6 +1558,9 @@ internal class X11State(
     fun glyphSetFormat(id: Int): Int? = glyphSets[id]?.format
 
     @Synchronized
+    fun hasGlyphSet(id: Int): Boolean = glyphSets.containsKey(id)
+
+    @Synchronized
     fun glyph(glyphSetId: Int, glyphId: Int): XGlyph? = glyphSets[glyphSetId]?.glyphs?.get(glyphId)
 
     @Synchronized

@@ -8,6 +8,8 @@ internal object XRender {
     const val MinorVersion = 11
     const val PictFormatError = FirstError
     const val PictureError = FirstError + 1
+    const val GlyphSetError = FirstError + 3
+    const val GlyphError = FirstError + 4
 
     const val Argb32Format = 0x0000_0029
     const val Rgb24Format = 0x0000_002a

@@ -729,24 +729,37 @@ internal class X11Connection(
     }
 
     private fun renderCreateGlyphSet(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = id)
-        state.putGlyphSet(XGlyphSet(id, byteOrder.u32(body, 4)))
+        val format = byteOrder.u32(body, 4)
+        if (format !in XRender.PictFormats) {
+            return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = format)
+        }
+        state.putGlyphSet(XGlyphSet(id, format))
         own(id)
     }
 
     private fun renderReferenceGlyphSet(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size != 8 && body.size != 20) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = 0)
+        }
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = id)
-        state.referenceGlyphSet(id, byteOrder.u32(body, 4))
+        val existingId = byteOrder.u32(body, 4)
+        if (!state.hasGlyphSet(existingId)) {
+            return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = existingId)
+        }
+        state.referenceGlyphSet(id, existingId)
         own(id)
     }
 
     private fun renderFreeGlyphSet(body: ByteArray) {
-        if (body.size < 4) return
+        if (body.size != 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 19, badValue = 0)
         val id = byteOrder.u32(body, 0)
+        if (!state.hasGlyphSet(id)) {
+            return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 19, badValue = id)
+        }
         state.removeGlyphSet(id)
         ownedResources.remove(id)
     }
