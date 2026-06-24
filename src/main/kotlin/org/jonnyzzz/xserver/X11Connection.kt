@@ -264,6 +264,7 @@ internal class X11Connection(
             XGlx.QueryContext -> glxQueryContext(body)
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
             XGlx.GetDrawableAttributes -> glxGetDrawableAttributes(body)
+            XGlx.ChangeDrawableAttributes -> glxChangeDrawableAttributes(body)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
             else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
         }
@@ -1376,6 +1377,7 @@ internal class X11Connection(
         if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
             return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = 0)
         }
+        val attributes = glxAttributePairs(body, 20, attribCount.toInt())
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = screen)
         if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = fbConfig)
         createGlxPixmapResource(
@@ -1385,6 +1387,7 @@ internal class X11Connection(
             visual = X11Ids.RootVisual,
             fbConfig = fbConfig,
             screen = screen,
+            attributes = attributes,
         )
     }
 
@@ -1395,6 +1398,7 @@ internal class X11Connection(
         visual: Int,
         fbConfig: Int,
         screen: Int,
+        attributes: List<Pair<Int, Int>> = emptyList(),
     ) {
         if (state.hasResource(glxPixmap)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = glxPixmap)
         if (state.drawable(pixmap) == null) return writeError(error = 9, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = pixmap)
@@ -1409,6 +1413,7 @@ internal class X11Connection(
                 width = backingPixmap.width,
                 height = backingPixmap.height,
                 depth = backingPixmap.depth,
+                textureTarget = glxTextureTarget(backingPixmap.width, backingPixmap.height, attributes),
             ),
         )
         own(glxPixmap)
@@ -1487,8 +1492,8 @@ internal class X11Connection(
             XGlx.ScreenExt to (glxPixmap?.screen ?: 0),
         )
         if (glxPixmap != null) {
-            attributes += XGlx.TextureTargetExt to glxTextureTarget(glxPixmap.width, glxPixmap.height)
-            attributes += XGlx.EventMask to 0
+            attributes += XGlx.TextureTargetExt to glxPixmap.textureTarget
+            attributes += XGlx.EventMask to glxPixmap.eventMask
             attributes += XGlx.FbConfigId to glxPixmap.fbConfigId
             attributes += XGlx.DrawableType to XGlx.PixmapBit
         } else {
@@ -1501,8 +1506,41 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun glxTextureTarget(width: Int, height: Int): Int =
-        if (width.isPowerOfTwo() && height.isPowerOfTwo()) XGlx.Texture2DExt else XGlx.TextureRectangleExt
+    private fun glxChangeDrawableAttributes(body: ByteArray) {
+        if (body.size < 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = 0)
+        val drawableId = byteOrder.u32(body, 0)
+        val attribCount = byteOrder.u32(body, 4).toUInt().toLong()
+        if (attribCount > (UInt.MAX_VALUE.toLong() shr 3)) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = byteOrder.u32(body, 4))
+        }
+        val expectedSize = 8L + attribCount * 8L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = 0)
+        }
+        val glxPixmap = state.glxPixmap(drawableId)
+            ?: return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ChangeDrawableAttributes, badValue = drawableId)
+        val eventMask = glxAttributePairs(body, 8, attribCount.toInt())
+            .lastOrNull { (attribute, _) -> attribute == XGlx.EventMask }
+            ?.second
+        if (eventMask != null) {
+            state.putGlxPixmap(glxPixmap.copy(eventMask = eventMask))
+        }
+    }
+
+    private fun glxAttributePairs(body: ByteArray, offset: Int, count: Int): List<Pair<Int, Int>> =
+        List(count) { index ->
+            val pairOffset = offset + index * 8
+            byteOrder.u32(body, pairOffset) to byteOrder.u32(body, pairOffset + 4)
+        }
+
+    private fun glxTextureTarget(width: Int, height: Int, attributes: List<Pair<Int, Int>> = emptyList()): Int {
+        for ((attribute, value) in attributes) {
+            if (attribute == XGlx.TextureTargetExt && (value == XGlx.Texture2DExt || value == XGlx.TextureRectangleExt)) {
+                return value
+            }
+        }
+        return if (width.isPowerOfTwo() && height.isPowerOfTwo()) XGlx.Texture2DExt else XGlx.TextureRectangleExt
+    }
 
     private fun Int.isPowerOfTwo(): Boolean = this > 0 && (this and (this - 1)) == 0
 
@@ -1539,6 +1577,7 @@ internal class X11Connection(
             XGlx.QueryContext -> "context=${hex(0)}"
             XGlx.MakeContextCurrent -> "oldTag=${hex(0)} drawable=${hex(4)} readDrawable=${hex(8)} context=${hex(12)}"
             XGlx.GetDrawableAttributes -> "drawable=${hex(0)}"
+            XGlx.ChangeDrawableAttributes -> "drawable=${hex(0)} attribs=${u32(4)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
             8, 9, 11 -> "drawable/context=${hex(0)}"

@@ -26,6 +26,7 @@ internal object XGlx {
     const val QueryContext = 25
     const val MakeContextCurrent = 26
     const val GetDrawableAttributes = 29
+    const val ChangeDrawableAttributes = 30
     const val CreateContextAttribsARB = 34
 
     const val VendorName = 1
@@ -81,7 +82,7 @@ internal object XGlx {
             27 -> "CreatePbuffer"
             28 -> "DestroyPbuffer"
             GetDrawableAttributes -> "GetDrawableAttributes"
-            30 -> "ChangeDrawableAttributes"
+            ChangeDrawableAttributes -> "ChangeDrawableAttributes"
             31 -> "CreateWindow"
             32 -> "DestroyWindow"
             33 -> "SetClientInfoARB"

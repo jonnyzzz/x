@@ -142,6 +142,10 @@ internal object TextScreenRenderer {
                     append(pixmap.height)
                     append(" depth=")
                     append(pixmap.depth)
+                    append(" eventMask=0x")
+                    append(pixmap.eventMask.toUInt().toString(16))
+                    append(" textureTarget=0x")
+                    append(pixmap.textureTarget.toUInt().toString(16))
                     appendLine()
                 }
             }

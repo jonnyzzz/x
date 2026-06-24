@@ -1376,6 +1376,8 @@ internal class X11State(
                     width = pixmap.width,
                     height = pixmap.height,
                     depth = pixmap.depth,
+                    eventMask = pixmap.eventMask,
+                    textureTarget = pixmap.textureTarget,
                 )
             },
             overlaps = overlaps(windowSnapshots),
@@ -4117,6 +4119,8 @@ internal data class XGlxPixmap(
     val width: Int,
     val height: Int,
     val depth: Int,
+    val textureTarget: Int,
+    val eventMask: Int = 0,
 )
 
 internal data class XGlxPixmapSnapshot(
@@ -4128,6 +4132,8 @@ internal data class XGlxPixmapSnapshot(
     val width: Int,
     val height: Int,
     val depth: Int,
+    val eventMask: Int,
+    val textureTarget: Int,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val pixmapIdHex: String get() = "0x${pixmapId.toUInt().toString(16)}"

@@ -207,7 +207,7 @@ class XGlxProtocolTest {
             assertEquals(4, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(
-                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":8,"height":8,"depth":24}]"""),
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":8,"height":8,"depth":24,"eventMask":0,"textureTarget":${XGlx.Texture2DExt}}]"""),
                 json,
             )
         }
@@ -258,7 +258,7 @@ class XGlxProtocolTest {
             val json = httpGet(socket, "/state.json")
             assertTrue(json.contains(""""pixmaps":[]"""), json)
             assertTrue(
-                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":11,"height":13,"depth":24}]"""),
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":11,"height":13,"depth":24,"eventMask":0,"textureTarget":${XGlx.TextureRectangleExt}}]"""),
                 json,
             )
         }
@@ -286,7 +286,7 @@ class XGlxProtocolTest {
             assertEquals(4, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(
-                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":9,"height":7,"depth":24}]"""),
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":9,"height":7,"depth":24,"eventMask":0,"textureTarget":${XGlx.TextureRectangleExt}}]"""),
                 json,
             )
         }
@@ -401,6 +401,77 @@ class XGlxProtocolTest {
 
             val pointer = readReply(socket.getInputStream())
             assertEquals(3, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX ChangeDrawableAttributes updates event mask and preserves texture target`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0a00
+            val glxPixmap = 0x0020_0a01
+            val eventMask = 0x1357
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(9) + u16(7))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.CreatePixmap,
+                createFbConfigPixmapBody(pixmap, glxPixmap, XGlx.TextureTargetExt to XGlx.Texture2DExt),
+            )
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.ChangeDrawableAttributes,
+                changeDrawableAttributesBody(glxPixmap, 0x20 to 0x8000, XGlx.EventMask to eventMask),
+            )
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetDrawableAttributes, u32(glxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val attributesReply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(attributesReply, 2))
+            assertEquals(16, u32le(attributesReply, 4))
+            assertEquals(8, u32le(attributesReply, 8))
+            val attributes = attributeMap(attributesReply, offset = 32, count = u32le(attributesReply, 8))
+            assertEquals(XGlx.Texture2DExt, attributes.getValue(XGlx.TextureTargetExt))
+            assertEquals(eventMask, attributes.getValue(XGlx.EventMask))
+            assertEquals(XGlx.PixmapBit, attributes.getValue(XGlx.DrawableType))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""eventMask":$eventMask,"textureTarget":${XGlx.Texture2DExt}"""), json)
+        }
+    }
+
+    @Test
+    fun `GLX ChangeDrawableAttributes validates drawable and attribute framing`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0b00
+            val glxPixmap = 0x0020_0b01
+            val missingDrawable = 0x0020_0b02
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, u32(glxPixmap) + u32(1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ChangeDrawableAttributes, changeDrawableAttributesBody(missingDrawable))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val lengthError = socket.getInputStream().readExactly(32)
+            assertEquals(0, lengthError[0].toInt())
+            assertEquals(16, lengthError[1].toInt() and 0xff)
+            assertEquals(0, u32le(lengthError, 4))
+            assertEquals(XGlx.ChangeDrawableAttributes, u16le(lengthError, 8))
+            assertEquals(XGlx.MajorOpcode, lengthError[10].toInt() and 0xff)
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadDrawable, missingError[1].toInt() and 0xff)
+            assertEquals(missingDrawable, u32le(missingError, 4))
+            assertEquals(XGlx.ChangeDrawableAttributes, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
         }
     }
 
@@ -545,6 +616,14 @@ class XGlxProtocolTest {
             u32(fbConfig) +
             u32(pixmap) +
             u32(glxPixmap) +
+            u32(attributes.size) +
+            attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
+
+    private fun changeDrawableAttributesBody(
+        drawable: Int,
+        vararg attributes: Pair<Int, Int>,
+    ): ByteArray =
+        u32(drawable) +
             u32(attributes.size) +
             attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
 
