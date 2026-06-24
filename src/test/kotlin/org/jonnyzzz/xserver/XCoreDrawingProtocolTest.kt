@@ -2944,8 +2944,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabPointerRequest(WindowId))
+                out.write(grabPointerRequest(X11Ids.RootWindow))
                 out.write(queryPointerRequest())
                 out.flush()
 
@@ -2964,6 +2963,88 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabPointer reports NotViewable for unmapped or offscreen windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val confine = WindowId + 1
+                val offscreen = WindowId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabPointerRequest(WindowId))
+                out.write(createWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.write(createWindowRequest(offscreen, x = 200, y = 200, width = 10, height = 10))
+                out.write(mapWindowRequest(offscreen))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = offscreen))
+                out.flush()
+
+                val unmappedGrab = readReply(socket.getInputStream())
+                assertEquals(1, unmappedGrab[0].toInt())
+                assertEquals(4, unmappedGrab[1].toInt() and 0xff)
+                assertEquals(2, u16le(unmappedGrab, 2))
+
+                val unmappedConfine = readReply(socket.getInputStream())
+                assertEquals(1, unmappedConfine[0].toInt())
+                assertEquals(4, unmappedConfine[1].toInt() and 0xff)
+                assertEquals(4, u16le(unmappedConfine, 2))
+
+                assertMapAndExpose(socket.getInputStream(), offscreen)
+                val offscreenConfine = readReply(socket.getInputStream())
+                assertEquals(1, offscreenConfine[0].toInt())
+                assertEquals(4, offscreenConfine[1].toInt() and 0xff)
+                assertEquals(7, u16le(offscreenConfine, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabPointer reports InvalidTime for future or stale timestamps`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.pointerDown(1, 1)
+                val out = socket.getOutputStream()
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 3))
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 2))
+                out.write(ungrabPointerRequest(time = 2))
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val futureGrab = readReply(socket.getInputStream())
+                assertEquals(1, futureGrab[0].toInt())
+                assertEquals(3, futureGrab[1].toInt() and 0xff)
+                assertEquals(1, u16le(futureGrab, 2))
+
+                val validGrab = readReply(socket.getInputStream())
+                assertEquals(1, validGrab[0].toInt())
+                assertEquals(0, validGrab[1].toInt() and 0xff)
+                assertEquals(2, u16le(validGrab, 2))
+
+                val staleGrab = readReply(socket.getInputStream())
+                assertEquals(1, staleGrab[0].toInt())
+                assertEquals(3, staleGrab[1].toInt() and 0xff)
+                assertEquals(4, u16le(staleGrab, 2))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UngrabPointer clears active grab and is replyless`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2971,8 +3052,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabPointerRequest(WindowId))
+                out.write(grabPointerRequest(X11Ids.RootWindow))
                 out.flush()
 
                 val grab = readReply(socket.getInputStream())
@@ -3027,8 +3107,7 @@ class XCoreDrawingProtocolTest {
                     setup(other)
 
                     val ownerOut = owner.getOutputStream()
-                    ownerOut.write(createWindowRequest(WindowId))
-                    ownerOut.write(grabPointerRequest(WindowId))
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow))
                     ownerOut.flush()
                     assertEquals(1, readReply(owner.getInputStream())[0].toInt())
                     assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
@@ -3056,48 +3135,48 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val cursor = PixmapId + 90
+                server.input.pointerDown(1, 1)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
                 out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
-                out.write(grabPointerRequest(WindowId, time = 5, eventMask = 0x0004))
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 2, eventMask = 0x0004))
                 out.flush()
 
                 val grab = readReply(socket.getInputStream())
                 assertEquals(1, grab[0].toInt())
-                assertEquals(3, u16le(grab, 2))
+                assertEquals(2, u16le(grab, 2))
 
-                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 4, eventMask = 0x0040))
+                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 1, eventMask = 0x0040))
                 out.write(queryPointerRequest())
                 out.flush()
 
                 val oldTimePointer = readReply(socket.getInputStream())
                 assertEquals(1, oldTimePointer[0].toInt())
-                assertEquals(5, u16le(oldTimePointer, 2))
+                assertEquals(4, u16le(oldTimePointer, 2))
                 val unchangedJson = httpGet(server.localPort, "/state.json")
-                assertContains(unchangedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0x4"""")
-                assertContains(unchangedJson, """"cursor":null,"time":5""")
+                assertContains(unchangedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${X11Ids.RootWindow.toString(16)}","ownerEvents":false,"eventMask":"0x4"""")
+                assertContains(unchangedJson, """"cursor":null,"time":2""")
 
-                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 5, eventMask = 0x0040))
+                out.write(changeActivePointerGrabRequest(cursor = cursor, time = 2, eventMask = 0x0040))
                 out.write(queryPointerRequest())
                 out.flush()
 
                 val changedPointer = readReply(socket.getInputStream())
                 assertEquals(1, changedPointer[0].toInt())
-                assertEquals(7, u16le(changedPointer, 2))
+                assertEquals(6, u16le(changedPointer, 2))
                 val changedJson = httpGet(server.localPort, "/state.json")
-                assertContains(changedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0x40"""")
-                assertContains(changedJson, """"cursor":"0x${cursor.toString(16)}","time":5""")
+                assertContains(changedJson, """"inputGrabs":[{"kind":"pointer","window":"0x${X11Ids.RootWindow.toString(16)}","ownerEvents":false,"eventMask":"0x40"""")
+                assertContains(changedJson, """"cursor":"0x${cursor.toString(16)}","time":2""")
 
-                out.write(changeActivePointerGrabRequest(cursor = 0, time = 6, eventMask = 0x0004))
+                out.write(changeActivePointerGrabRequest(cursor = 0, time = 3, eventMask = 0x0004))
                 out.write(queryPointerRequest())
                 out.flush()
 
                 val futureTimePointer = readReply(socket.getInputStream())
                 assertEquals(1, futureTimePointer[0].toInt())
-                assertEquals(9, u16le(futureTimePointer, 2))
+                assertEquals(8, u16le(futureTimePointer, 2))
                 val futureIgnoredJson = httpGet(server.localPort, "/state.json")
                 assertContains(futureIgnoredJson, """"eventMask":"0x40"""")
-                assertContains(futureIgnoredJson, """"cursor":"0x${cursor.toString(16)}","time":5""")
+                assertContains(futureIgnoredJson, """"cursor":"0x${cursor.toString(16)}","time":2""")
             }
             server.close()
             serverThread.join(1_000)
@@ -3117,11 +3196,10 @@ class XCoreDrawingProtocolTest {
 
                     val cursor = PixmapId + 91
                     val ownerOut = owner.getOutputStream()
-                    ownerOut.write(createWindowRequest(WindowId))
                     ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
-                    ownerOut.write(grabPointerRequest(WindowId, time = 1, eventMask = 0x0004))
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow, time = 1, eventMask = 0x0004))
                     ownerOut.flush()
-                    assertEquals(3, u16le(readReply(owner.getInputStream()), 2))
+                    assertEquals(2, u16le(readReply(owner.getInputStream()), 2))
 
                     val otherOut = other.getOutputStream()
                     otherOut.write(changeActivePointerGrabRequest(cursor = cursor, time = 1, eventMask = 0x0040))
@@ -3667,13 +3745,12 @@ class XCoreDrawingProtocolTest {
                     setup(other)
 
                     val ownerOut = owner.getOutputStream()
-                    ownerOut.write(createWindowRequest(WindowId))
-                    ownerOut.write(grabPointerRequest(WindowId))
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow))
                     ownerOut.flush()
                     assertEquals(0, readReply(owner.getInputStream())[1].toInt() and 0xff)
 
                     val otherOut = other.getOutputStream()
-                    otherOut.write(grabPointerRequest(WindowId))
+                    otherOut.write(grabPointerRequest(X11Ids.RootWindow))
                     otherOut.write(ungrabPointerRequest())
                     otherOut.write(queryPointerRequest())
                     otherOut.flush()
@@ -3682,11 +3759,11 @@ class XCoreDrawingProtocolTest {
                     assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
                     ownerOut.write(ungrabPointerRequest())
-                    ownerOut.write(grabKeyboardRequest(WindowId))
+                    ownerOut.write(grabKeyboardRequest(X11Ids.RootWindow))
                     ownerOut.flush()
                     assertEquals(1, readReply(owner.getInputStream())[0].toInt())
 
-                    otherOut.write(grabKeyboardRequest(WindowId))
+                    otherOut.write(grabKeyboardRequest(X11Ids.RootWindow))
                     otherOut.write(ungrabKeyboardRequest())
                     otherOut.write(queryPointerRequest())
                     otherOut.flush()
@@ -3707,30 +3784,31 @@ class XCoreDrawingProtocolTest {
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
                 setup(socket)
+                server.input.pointerDown(1, 1)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabPointerRequest(WindowId, time = 5))
+                out.write(grabPointerRequest(X11Ids.RootWindow, time = 2))
                 out.flush()
                 assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
 
-                out.write(ungrabPointerRequest(time = 4))
+                out.write(ungrabPointerRequest(time = 1))
                 out.write(queryPointerRequest())
                 out.flush()
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
-                out.write(ungrabPointerRequest(time = 5))
-                out.write(grabKeyboardRequest(WindowId, time = 7))
+                out.write(ungrabPointerRequest(time = 2))
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyboardRequest(WindowId, time = 2))
                 out.flush()
                 assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
 
-                out.write(ungrabKeyboardRequest(time = 6))
+                out.write(ungrabKeyboardRequest(time = 1))
                 out.write(queryPointerRequest())
                 out.flush()
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"keyboard"""")
 
-                out.write(ungrabKeyboardRequest(time = 7))
+                out.write(ungrabKeyboardRequest(time = 2))
                 out.write(queryPointerRequest())
                 out.flush()
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())
@@ -3750,8 +3828,10 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
                 out.write(grabPointerRequest(WindowId))
                 out.flush()
+                assertMapAndExpose(socket.getInputStream(), WindowId)
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
@@ -4277,9 +4357,8 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val cursor = PixmapId + 90
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
                 out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId + 1))
-                out.write(grabPointerRequest(WindowId, cursor = cursor))
+                out.write(grabPointerRequest(X11Ids.RootWindow, cursor = cursor))
                 out.flush()
                 assertEquals(1, readReply(socket.getInputStream())[0].toInt())
                 val grabbed = httpGet(server.localPort, "/state.json")

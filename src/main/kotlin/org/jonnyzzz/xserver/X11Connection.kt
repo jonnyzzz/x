@@ -1690,7 +1690,7 @@ internal class X11Connection(
         if (cursor != 0 && !state.hasCursor(cursor)) return writeError(error = 6, opcode = 26, badValue = cursor)
         val time = byteOrder.u32(body, 16)
 
-        val grabbed = state.grabPointer(
+        val status = state.grabPointer(
             XInputGrab(
                 owner = this,
                 kind = "pointer",
@@ -1704,7 +1704,7 @@ internal class X11Connection(
                 time = time,
             ),
         )
-        write(reply(extra = if (grabbed) 0 else 1, payloadUnits = 0))
+        write(reply(extra = status, payloadUnits = 0))
     }
 
     private fun ungrabPointer(body: ByteArray) {

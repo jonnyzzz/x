@@ -41,6 +41,7 @@ internal class X11State(
     private var pointerY: Int = 0
     private var pointerState: Int = 0
     private var inputTime: Int = 1
+    private var lastPointerGrabTime: Int = 0
     private var nextInputOperationId: Int = 1
     private val inputOperations = mutableListOf<XInputOperation>()
     private var nextInputControlOperationId: Int = 1
@@ -470,10 +471,25 @@ internal class X11State(
     }
 
     @Synchronized
-    fun grabPointer(grab: XInputGrab): Boolean {
-        if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) return false
-        activePointerGrab = grab
-        return true
+    fun grabPointer(grab: XInputGrab): Int {
+        if (!windowIsViewable(grab.windowId)) return XGrabStatus.NotViewable
+        if (grab.confineTo?.let { !windowIsViewable(it) || !windowHasVisibleBounds(it) } == true) {
+            return XGrabStatus.NotViewable
+        }
+        val serverTime = currentServerTime(lastPointerGrabTime)
+        if (grab.time != 0 &&
+            (
+                Integer.compareUnsigned(grab.time, lastPointerGrabTime) < 0 ||
+                    Integer.compareUnsigned(grab.time, serverTime) > 0
+                )
+        ) {
+            return XGrabStatus.InvalidTime
+        }
+        if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) return XGrabStatus.AlreadyGrabbed
+        val effectiveTime = if (grab.time == 0) serverTime else grab.time
+        lastPointerGrabTime = effectiveTime
+        activePointerGrab = grab.copy(time = effectiveTime)
+        return XGrabStatus.Success
     }
 
     @Synchronized
@@ -598,7 +614,11 @@ internal class X11State(
     }
 
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
-        requestTime == 0 || Integer.compareUnsigned(requestTime, grabTime) >= 0
+        requestTime == 0 ||
+            (
+                Integer.compareUnsigned(requestTime, grabTime) >= 0 &&
+                    Integer.compareUnsigned(requestTime, currentServerTime(grabTime)) <= 0
+                )
 
     private fun validChangeActivePointerGrabTime(requestTime: Int, grabTime: Int): Boolean =
         requestTime == 0 ||
@@ -609,6 +629,13 @@ internal class X11State(
 
     private fun currentServerTime(floor: Int): Int =
         if (Integer.compareUnsigned(inputTime, floor) < 0) floor else inputTime
+
+    @Synchronized
+    fun windowHasVisibleBounds(id: Int): Boolean {
+        val window = windows[id] ?: return false
+        val absolute = absolutePosition(window)
+        return visibleBounds(window, absolute.first, absolute.second) != null
+    }
 
     private fun passiveButtonGrabConflicts(left: XPassiveButtonGrab, right: XPassiveButtonGrab): Boolean =
         left.windowId == right.windowId &&
@@ -3759,6 +3786,14 @@ internal data class XInputGrabSnapshot(
     val confineToHex: String? get() = confineTo?.let { "0x${it.toUInt().toString(16)}" }
     val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
     val timeUnsigned: Long get() = time.toUInt().toLong()
+}
+
+internal object XGrabStatus {
+    const val Success = 0
+    const val AlreadyGrabbed = 1
+    const val Frozen = 2
+    const val InvalidTime = 3
+    const val NotViewable = 4
 }
 
 internal data class XPassiveButtonGrab(
