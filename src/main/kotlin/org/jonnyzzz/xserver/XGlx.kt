@@ -5,6 +5,7 @@ internal object XGlx {
     const val FirstEvent = 0
     const val FirstError = 128
     const val BadPixmap = FirstError + 3
+    const val BadFBConfig = FirstError + 9
     const val MajorVersion = 1
     const val MinorVersion = 4
 
@@ -17,6 +18,8 @@ internal object XGlx {
     const val QueryServerString = 19
     const val ClientInfo = 20
     const val GetFBConfigs = 21
+    const val CreatePixmap = 22
+    const val DestroyPixmap = 23
     const val CreateNewContext = 24
     const val MakeContextCurrent = 26
     const val CreateContextAttribsARB = 34
@@ -51,8 +54,8 @@ internal object XGlx {
             QueryServerString -> "QueryServerString"
             ClientInfo -> "ClientInfo"
             GetFBConfigs -> "GetFBConfigs"
-            22 -> "CreatePixmap"
-            23 -> "DestroyPixmap"
+            CreatePixmap -> "CreatePixmap"
+            DestroyPixmap -> "DestroyPixmap"
             CreateNewContext -> "CreateNewContext"
             25 -> "QueryContext"
             MakeContextCurrent -> "MakeContextCurrent"

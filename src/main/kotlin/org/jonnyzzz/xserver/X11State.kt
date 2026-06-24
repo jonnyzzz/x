@@ -1371,6 +1371,7 @@ internal class X11State(
                     id = pixmap.id,
                     pixmapId = pixmap.pixmapId,
                     visualId = pixmap.visualId,
+                    fbConfigId = pixmap.fbConfigId,
                     screen = pixmap.screen,
                     width = pixmap.width,
                     height = pixmap.height,
@@ -4108,6 +4109,7 @@ internal data class XGlxPixmap(
     val id: Int,
     val pixmapId: Int,
     val visualId: Int,
+    val fbConfigId: Int,
     val screen: Int,
     val width: Int,
     val height: Int,
@@ -4118,6 +4120,7 @@ internal data class XGlxPixmapSnapshot(
     val id: Int,
     val pixmapId: Int,
     val visualId: Int,
+    val fbConfigId: Int,
     val screen: Int,
     val width: Int,
     val height: Int,
@@ -4126,6 +4129,7 @@ internal data class XGlxPixmapSnapshot(
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val pixmapIdHex: String get() = "0x${pixmapId.toUInt().toString(16)}"
     val visualIdHex: String get() = "0x${visualId.toUInt().toString(16)}"
+    val fbConfigIdHex: String get() = "0x${fbConfigId.toUInt().toString(16)}"
 }
 
 internal data class XGlxOperation(

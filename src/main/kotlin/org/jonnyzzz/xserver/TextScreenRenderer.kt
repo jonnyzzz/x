@@ -132,6 +132,8 @@ internal object TextScreenRenderer {
                     append(pixmap.pixmapIdHex)
                     append(" visual=")
                     append(pixmap.visualIdHex)
+                    append(" fbConfig=")
+                    append(pixmap.fbConfigIdHex)
                     append(" screen=")
                     append(pixmap.screen)
                     append(" size=")

@@ -258,6 +258,8 @@ internal class X11Connection(
             XGlx.QueryServerString -> glxQueryServerString(body)
             XGlx.ClientInfo -> Unit
             XGlx.GetFBConfigs -> glxGetFbConfigs(body)
+            XGlx.CreatePixmap -> glxCreateFbConfigPixmap(body)
+            XGlx.DestroyPixmap -> glxDestroyFbConfigPixmap(body)
             XGlx.CreateNewContext -> glxCreateNewContext(body)
             XGlx.MakeContextCurrent -> glxMakeCurrent(body, isContextCurrent = true)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
@@ -1348,14 +1350,59 @@ internal class X11Connection(
         val glxPixmap = byteOrder.u32(body, 12)
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = screen)
         if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = visual)
-        if (state.hasResource(glxPixmap)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = glxPixmap)
-        if (state.drawable(pixmap) == null) return writeError(error = 9, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = pixmap)
-        val backingPixmap = state.pixmap(pixmap) ?: return writeError(error = 4, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateGLXPixmap, badValue = pixmap)
+        createGlxPixmapResource(
+            minorOpcode = XGlx.CreateGLXPixmap,
+            pixmap = pixmap,
+            glxPixmap = glxPixmap,
+            visual = visual,
+            fbConfig = XGlx.RootFbConfigId,
+            screen = screen,
+        )
+    }
+
+    private fun glxCreateFbConfigPixmap(body: ByteArray) {
+        if (body.size < 20) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = 0)
+        val screen = byteOrder.u32(body, 0)
+        val fbConfig = byteOrder.u32(body, 4)
+        val pixmap = byteOrder.u32(body, 8)
+        val glxPixmap = byteOrder.u32(body, 12)
+        val attribCount = byteOrder.u32(body, 16).toUInt().toLong()
+        if (attribCount > (UInt.MAX_VALUE.toLong() shr 3)) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = byteOrder.u32(body, 16))
+        }
+        val expectedSize = 20L + attribCount * 8L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = 0)
+        }
+        if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = screen)
+        if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePixmap, badValue = fbConfig)
+        createGlxPixmapResource(
+            minorOpcode = XGlx.CreatePixmap,
+            pixmap = pixmap,
+            glxPixmap = glxPixmap,
+            visual = X11Ids.RootVisual,
+            fbConfig = fbConfig,
+            screen = screen,
+        )
+    }
+
+    private fun createGlxPixmapResource(
+        minorOpcode: Int,
+        pixmap: Int,
+        glxPixmap: Int,
+        visual: Int,
+        fbConfig: Int,
+        screen: Int,
+    ) {
+        if (state.hasResource(glxPixmap)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = glxPixmap)
+        if (state.drawable(pixmap) == null) return writeError(error = 9, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = pixmap)
+        val backingPixmap = state.pixmap(pixmap) ?: return writeError(error = 4, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = pixmap)
         state.putGlxPixmap(
             XGlxPixmap(
                 id = glxPixmap,
                 pixmapId = pixmap,
                 visualId = visual,
+                fbConfigId = fbConfig,
                 screen = screen,
                 width = backingPixmap.width,
                 height = backingPixmap.height,
@@ -1369,6 +1416,14 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyGLXPixmap, badValue = 0)
         val glxPixmap = byteOrder.u32(body, 0)
         if (!state.hasGlxPixmap(glxPixmap)) return writeError(error = XGlx.BadPixmap, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyGLXPixmap, badValue = glxPixmap)
+        state.removeGlxPixmap(glxPixmap)
+        ownedResources.remove(glxPixmap)
+    }
+
+    private fun glxDestroyFbConfigPixmap(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyPixmap, badValue = 0)
+        val glxPixmap = byteOrder.u32(body, 0)
+        if (!state.hasGlxPixmap(glxPixmap)) return writeError(error = XGlx.BadPixmap, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyPixmap, badValue = glxPixmap)
         state.removeGlxPixmap(glxPixmap)
         ownedResources.remove(glxPixmap)
     }

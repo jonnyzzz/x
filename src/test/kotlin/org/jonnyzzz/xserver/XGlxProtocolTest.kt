@@ -173,7 +173,7 @@ class XGlxProtocolTest {
             assertEquals(4, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(
-                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","screen":0,"width":8,"height":8,"depth":24}]"""),
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":8,"height":8,"depth":24}]"""),
                 json,
             )
         }
@@ -224,9 +224,97 @@ class XGlxProtocolTest {
             val json = httpGet(socket, "/state.json")
             assertTrue(json.contains(""""pixmaps":[]"""), json)
             assertTrue(
-                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","screen":0,"width":11,"height":13,"depth":24}]"""),
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":11,"height":13,"depth":24}]"""),
                 json,
             )
+        }
+    }
+
+    @Test
+    fun `GLX CreatePixmap models fbconfig pixmap resource and validates duplicate ids`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0500
+            val glxPixmap = 0x0020_0501
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(9) + u16(7))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap, 0x20 to 0x8000))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val duplicateError = socket.getInputStream().readExactly(32)
+            assertEquals(0, duplicateError[0].toInt())
+            assertEquals(11, duplicateError[1].toInt() and 0xff)
+            assertEquals(glxPixmap, u32le(duplicateError, 4))
+            assertEquals(XGlx.CreatePixmap, u16le(duplicateError, 8))
+            assertEquals(XGlx.MajorOpcode, duplicateError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(
+                json.contains(""""glxPixmaps":[{"id":"0x${glxPixmap.toString(16)}","pixmap":"0x${pixmap.toString(16)}","visual":"0x${X11Ids.RootVisual.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"width":9,"height":7,"depth":24}]"""),
+                json,
+            )
+        }
+    }
+
+    @Test
+    fun `GLX CreatePixmap validates fbconfig and attribute framing`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0600
+            val badFbConfig = XGlx.RootFbConfigId + 1
+            val glxPixmap = 0x0020_0601
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap, fbConfig = badFbConfig))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, u32(0) + u32(XGlx.RootFbConfigId) + u32(pixmap) + u32(glxPixmap) + u32(1))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val fbConfigError = socket.getInputStream().readExactly(32)
+            assertEquals(0, fbConfigError[0].toInt())
+            assertEquals(XGlx.BadFBConfig, fbConfigError[1].toInt() and 0xff)
+            assertEquals(badFbConfig, u32le(fbConfigError, 4))
+            assertEquals(XGlx.CreatePixmap, u16le(fbConfigError, 8))
+            assertEquals(XGlx.MajorOpcode, fbConfigError[10].toInt() and 0xff)
+
+            val lengthError = socket.getInputStream().readExactly(32)
+            assertEquals(0, lengthError[0].toInt())
+            assertEquals(16, lengthError[1].toInt() and 0xff)
+            assertEquals(0, u32le(lengthError, 4))
+            assertEquals(XGlx.CreatePixmap, u16le(lengthError, 8))
+            assertEquals(XGlx.MajorOpcode, lengthError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""glxPixmaps":[]"""), json)
+        }
+    }
+
+    @Test
+    fun `GLX DestroyPixmap accepts legacy oversized request and recovers stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val pixmap = 0x0020_0700
+            val glxPixmap = 0x0020_0701
+            val missingGlxPixmap = 0x0020_0702
+            writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPixmap, u32(glxPixmap) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPixmap, u32(missingGlxPixmap))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val missingError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingError[0].toInt())
+            assertEquals(XGlx.BadPixmap, missingError[1].toInt() and 0xff)
+            assertEquals(missingGlxPixmap, u32le(missingError, 4))
+            assertEquals(XGlx.DestroyPixmap, u16le(missingError, 8))
+            assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+            val json = httpGet(socket, "/state.json")
+            assertTrue(json.contains(""""glxPixmaps":[]"""), json)
         }
     }
 
@@ -333,6 +421,19 @@ class XGlxProtocolTest {
 
     private fun createGlxPixmapBody(pixmap: Int, glxPixmap: Int, visual: Int = X11Ids.RootVisual): ByteArray =
         u32(0) + u32(visual) + u32(pixmap) + u32(glxPixmap)
+
+    private fun createFbConfigPixmapBody(
+        pixmap: Int,
+        glxPixmap: Int,
+        vararg attributes: Pair<Int, Int>,
+        fbConfig: Int = XGlx.RootFbConfigId,
+    ): ByteArray =
+        u32(0) +
+            u32(fbConfig) +
+            u32(pixmap) +
+            u32(glxPixmap) +
+            u32(attributes.size) +
+            attributes.flatMap { (attribute, value) -> (u32(attribute) + u32(value)).toList() }.toByteArray()
 
     private fun httpGet(socket: Socket, path: String): String =
         java.net.URI("http://127.0.0.1:${socket.port}$path").toURL().readText()
