@@ -409,7 +409,7 @@ internal class X11Connection(
     }
 
     private fun renderQueryPictIndexValues(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0)
         val format = byteOrder.u32(body, 0)
         if (format !in XRender.PictFormats) {
             return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = format)

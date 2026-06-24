@@ -898,7 +898,7 @@ class XCoreDrawingProtocolTest {
 
                 assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 5)
                 assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0001, sequence = 6)
-                assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0002, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 7)
                 assertError(socket.getInputStream(), error = 8, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = XRender.Argb32Format, sequence = 8)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
