@@ -250,6 +250,7 @@ internal class X11Connection(
             5 -> glxMakeCurrent(body, isContextCurrent = false)
             XGlx.IsDirect -> glxIsDirect(body)
             XGlx.WaitGL, XGlx.WaitX -> glxWait(body, minorOpcode)
+            XGlx.CopyContext -> glxCopyContext(body)
             XGlx.SwapBuffers -> glxSwapBuffers(body)
             1, 2 -> Unit
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
@@ -1584,6 +1585,24 @@ internal class X11Connection(
         }
     }
 
+    private fun glxCopyContext(body: ByteArray) {
+        if (body.size < 16) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        val destination = byteOrder.u32(body, 4)
+        val contextTag = byteOrder.u32(body, 12)
+        val sourceContext = state.glxContext(source)
+            ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = source)
+        state.glxContext(destination)
+            ?: return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = destination)
+        if (contextTag != 0) {
+            val tagContext = state.glxContext(contextTag)
+                ?: return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = contextTag)
+            if (tagContext.id != sourceContext.id) {
+                return writeError(error = 8, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = source)
+            }
+        }
+    }
+
     private fun glxGetDrawableAttributes(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
         val drawableId = byteOrder.u32(body, 0)
@@ -1715,6 +1734,7 @@ internal class X11Connection(
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
             XGlx.WaitGL, XGlx.WaitX -> "contextTag=${hex(0)}"
+            XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             else -> ""
         }

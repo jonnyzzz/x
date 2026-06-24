@@ -18,6 +18,7 @@ internal object XGlx {
     const val IsDirect = 6
     const val WaitGL = 8
     const val WaitX = 9
+    const val CopyContext = 10
     const val SwapBuffers = 11
     const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
@@ -77,7 +78,7 @@ internal object XGlx {
             QueryVersion -> "QueryVersion"
             WaitGL -> "WaitGL"
             WaitX -> "WaitX"
-            10 -> "CopyContext"
+            CopyContext -> "CopyContext"
             SwapBuffers -> "SwapBuffers"
             12 -> "UseXFont"
             CreateGLXPixmap -> "CreateGLXPixmap"

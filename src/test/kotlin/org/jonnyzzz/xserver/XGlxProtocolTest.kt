@@ -152,6 +152,72 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CopyContext accepts modeled contexts without a reply`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val source = 0x0020_0130
+            val destination = 0x0020_0131
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(source, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(destination, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(source, destination, mask = 0, contextTag = source))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX CopyContext validates source destination and context tag`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val source = 0x0020_0140
+            val destination = 0x0020_0141
+            val missingSource = 0x0020_0142
+            val missingDestination = 0x0020_0143
+            val badTag = 0x0020_0144
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(source, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(destination, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(missingSource, destination))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(source, missingDestination))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(source, destination, contextTag = badTag))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(source, destination, contextTag = destination))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val missingSourceError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingSourceError[0].toInt())
+            assertEquals(XGlx.BadContext, missingSourceError[1].toInt() and 0xff)
+            assertEquals(missingSource, u32le(missingSourceError, 4))
+            assertEquals(XGlx.CopyContext, u16le(missingSourceError, 8))
+            assertEquals(XGlx.MajorOpcode, missingSourceError[10].toInt() and 0xff)
+
+            val missingDestinationError = socket.getInputStream().readExactly(32)
+            assertEquals(0, missingDestinationError[0].toInt())
+            assertEquals(XGlx.BadContext, missingDestinationError[1].toInt() and 0xff)
+            assertEquals(missingDestination, u32le(missingDestinationError, 4))
+            assertEquals(XGlx.CopyContext, u16le(missingDestinationError, 8))
+            assertEquals(XGlx.MajorOpcode, missingDestinationError[10].toInt() and 0xff)
+
+            val badTagError = socket.getInputStream().readExactly(32)
+            assertEquals(0, badTagError[0].toInt())
+            assertEquals(XGlx.BadContextTag, badTagError[1].toInt() and 0xff)
+            assertEquals(badTag, u32le(badTagError, 4))
+            assertEquals(XGlx.CopyContext, u16le(badTagError, 8))
+            assertEquals(XGlx.MajorOpcode, badTagError[10].toInt() and 0xff)
+
+            val tagMismatchError = socket.getInputStream().readExactly(32)
+            assertEquals(0, tagMismatchError[0].toInt())
+            assertEquals(8, tagMismatchError[1].toInt() and 0xff)
+            assertEquals(source, u32le(tagMismatchError, 4))
+            assertEquals(XGlx.CopyContext, u16le(tagMismatchError, 8))
+            assertEquals(XGlx.MajorOpcode, tagMismatchError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(7, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX CreateNewContext rejects duplicate resource id without replacing existing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -832,6 +898,14 @@ class XGlxProtocolTest {
             u32(0) +
             byteArrayOf(if (direct) 1 else 0, 0, 0, 0) +
             u32(0)
+
+    private fun copyContextBody(
+        source: Int,
+        destination: Int,
+        mask: Int = 0,
+        contextTag: Int = 0,
+    ): ByteArray =
+        u32(source) + u32(destination) + u32(mask) + u32(contextTag)
 
     private fun createGlxPixmapBody(pixmap: Int, glxPixmap: Int, visual: Int = X11Ids.RootVisual): ByteArray =
         u32(0) + u32(visual) + u32(pixmap) + u32(glxPixmap)
