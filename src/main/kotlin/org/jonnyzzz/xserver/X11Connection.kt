@@ -1391,7 +1391,9 @@ internal class X11Connection(
     }
 
     private fun getGeometry(body: ByteArray) {
-        val drawable = state.drawable(byteOrder.u32(body, 0)) ?: return writeError(9, 14, badValue = byteOrder.u32(body, 0))
+        if (body.size != 4) return writeError(error = 16, opcode = 14, badValue = 0)
+        val drawableId = byteOrder.u32(body, 0)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 14, badValue = drawableId)
         val reply = reply(extra = drawable.depth, payloadUnits = 0)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
         byteOrder.put16(reply, 12, drawable.x)
@@ -1403,7 +1405,9 @@ internal class X11Connection(
     }
 
     private fun queryTree(body: ByteArray) {
-        val window = state.window(byteOrder.u32(body, 0)) ?: return writeError(3, 15, badValue = byteOrder.u32(body, 0))
+        if (body.size != 4) return writeError(error = 16, opcode = 15, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 15, badValue = windowId)
         val children = state.childrenOf(window.id)
         val reply = reply(extra = 0, payloadUnits = children.size)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
