@@ -635,6 +635,90 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `OpenFont and CloseFont validate lengths and font resources`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val font = PixmapId + 700
+                val missingFont = font + 1
+                val out = socket.getOutputStream()
+                out.write(malformedOpenFontRequest(font, declaredNameLength = 5, nameBytes = byteArrayOf()))
+                out.write(openFontRequest(font))
+                out.write(openFontRequest(font))
+                out.write(request(46, 0, ByteArray(0)))
+                out.write(closeFontRequest(missingFont))
+                out.write(closeFontRequest(font))
+                out.write(queryFontRequest(font))
+                out.write(openFontRequest(font))
+                out.write(queryFontRequest(font))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 45, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 14, opcode = 45, badValue = font, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 46, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 7, opcode = 46, badValue = missingFont, sequence = 5)
+                assertError(socket.getInputStream(), error = 7, opcode = 47, badValue = font, sequence = 7)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(8, u16le(reply, 10))
+                assertEquals(12, u16le(reply, 52))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `typed free resource requests validate lengths and resource classes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val cursor = PixmapId + 900
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = PixmapId))
+                out.write(request(54, 0, ByteArray(0)))
+                out.write(request(60, 0, ByteArray(0)))
+                out.write(request(79, 0, ByteArray(0)))
+                out.write(request(95, 0, ByteArray(0)))
+                out.write(freePixmapRequest(WindowId))
+                out.write(freeGcRequest(WindowId))
+                out.write(freeColormapRequest(WindowId))
+                out.write(freeCursorRequest(WindowId))
+                out.write(freePixmapRequest(PixmapId))
+                out.write(freeGcRequest(GcId))
+                out.write(freeColormapRequest(ColormapId))
+                out.write(freeCursorRequest(cursor))
+                out.write(getFontPathRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 54, badValue = 0, sequence = 6)
+                assertError(socket.getInputStream(), error = 16, opcode = 60, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 79, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 95, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 4, opcode = 54, badValue = WindowId, sequence = 10)
+                assertError(socket.getInputStream(), error = 13, opcode = 60, badValue = WindowId, sequence = 11)
+                assertError(socket.getInputStream(), error = 12, opcode = 79, badValue = WindowId, sequence = 12)
+                assertError(socket.getInputStream(), error = 6, opcode = 95, badValue = WindowId, sequence = 13)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(18, u16le(reply, 2))
+                assertEquals(0, u16le(reply, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateColormap rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2356,6 +2440,48 @@ class XCoreDrawingProtocolTest {
                 assertEquals(4, u16le(reply, 32))
                 assertEquals(12, u16le(reply, 52))
                 assertEquals(4, u16le(reply, 54))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `font query requests validate fontable and pattern framing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingFontable = GcId + 900
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(request(47, 0, ByteArray(0)))
+                out.write(queryFontRequest(missingFontable))
+                out.write(request(48, 2, ByteArray(0)))
+                out.write(request(48, 2, queryTextExtentsBody(GcId, char2b = emptyList())))
+                out.write(queryTextExtentsRequest(missingFontable, char2b = emptyList()))
+                out.write(queryTextExtentsOddPaddingBadLengthRequest(GcId))
+                out.write(request(49, 0, ByteArray(0)))
+                out.write(malformedListFontsRequest(declaredPatternLength = 5, patternBytes = byteArrayOf()))
+                out.write(listFontsRequest("*", maxNames = 100))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 47, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 7, opcode = 47, badValue = missingFontable, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 48, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 48, badValue = 2, sequence = 6)
+                assertError(socket.getInputStream(), error = 7, opcode = 48, badValue = missingFontable, sequence = 7)
+                assertError(socket.getInputStream(), error = 16, opcode = 48, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 49, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 16, opcode = 49, badValue = 0, sequence = 10)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(11, u16le(reply, 2))
+                assertEquals(0, u32le(reply, 4))
+                assertEquals(0, u16le(reply, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -8021,6 +8147,12 @@ class XCoreDrawingProtocolTest {
         return request(54, 0, body)
     }
 
+    private fun freeGcRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(60, 0, body)
+    }
+
     private fun createCursorRequest(cursor: Int, source: Int, mask: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, cursor)
@@ -8062,6 +8194,20 @@ class XCoreDrawingProtocolTest {
         put16le(body, 4, nameBytes.size)
         nameBytes.copyInto(body, 8)
         return request(45, 0, body)
+    }
+
+    private fun malformedOpenFontRequest(font: Int, declaredNameLength: Int, nameBytes: ByteArray): ByteArray {
+        val body = ByteArray(8 + paddedLength(nameBytes.size))
+        put32le(body, 0, font)
+        put16le(body, 4, declaredNameLength)
+        nameBytes.copyInto(body, 8)
+        return request(45, 0, body)
+    }
+
+    private fun closeFontRequest(font: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, font)
+        return request(46, 0, body)
     }
 
     private fun createColormapRequest(colormap: Int, window: Int): ByteArray {
@@ -9252,6 +9398,11 @@ class XCoreDrawingProtocolTest {
 
     private fun queryTextExtentsRequest(fontable: Int, char2b: List<Pair<Int, Int>>): ByteArray {
         val oddLength = char2b.size % 2
+        return request(48, oddLength, queryTextExtentsBody(fontable, char2b))
+    }
+
+    private fun queryTextExtentsBody(fontable: Int, char2b: List<Pair<Int, Int>>): ByteArray {
+        val oddLength = char2b.size % 2
         val body = ByteArray(4 + char2b.size * 2 + if (oddLength != 0) 2 else 0)
         put32le(body, 0, fontable)
         var offset = 4
@@ -9260,7 +9411,30 @@ class XCoreDrawingProtocolTest {
             body[offset + 1] = byte2.toByte()
             offset += 2
         }
-        return request(48, oddLength, body)
+        return body
+    }
+
+    private fun queryTextExtentsOddPaddingBadLengthRequest(fontable: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, fontable)
+        return request(48, 1, body)
+    }
+
+    private fun listFontsRequest(pattern: String, maxNames: Int): ByteArray {
+        val patternBytes = pattern.toByteArray(StandardCharsets.ISO_8859_1)
+        val body = ByteArray(4 + paddedLength(patternBytes.size))
+        put16le(body, 0, maxNames)
+        put16le(body, 2, patternBytes.size)
+        patternBytes.copyInto(body, 4)
+        return request(49, 0, body)
+    }
+
+    private fun malformedListFontsRequest(declaredPatternLength: Int, patternBytes: ByteArray): ByteArray {
+        val body = ByteArray(4 + paddedLength(patternBytes.size))
+        put16le(body, 0, 100)
+        put16le(body, 2, declaredPatternLength)
+        patternBytes.copyInto(body, 4)
+        return request(49, 0, body)
     }
 
     private fun listFontsWithInfoRequest(pattern: String, maxNames: Int): ByteArray {

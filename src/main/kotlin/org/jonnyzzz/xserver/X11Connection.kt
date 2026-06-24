@@ -158,21 +158,21 @@ internal class X11Connection(
             43 -> getInputFocus()
             44 -> queryKeymap()
             45 -> openFont(body)
-            46 -> closeResource(body)
+            46 -> closeResource(opcode = 46, body = body, error = 7, exists = state::hasFont)
             47 -> queryFont(body)
             48 -> queryTextExtents(minorOpcode, body)
-            49 -> listFonts()
+            49 -> listFonts(body)
             50 -> listFontsWithInfo(body)
             51 -> setFontPath(body)
             52 -> getFontPath()
             53 -> createPixmap(minorOpcode, body)
-            54 -> closeResource(body)
+            54 -> closeResource(opcode = 54, body = body, error = 4, exists = state::hasPixmap)
             55 -> createGc(body)
             56 -> changeGc(body)
             57 -> copyGc(body)
             58 -> setDashes(body)
             59 -> setClipRectangles(minorOpcode, body)
-            60 -> closeResource(body)
+            60 -> closeResource(opcode = 60, body = body, error = 13, exists = state::hasGc)
             61 -> clearArea(body)
             62 -> copyArea(body)
             63 -> copyPlane(body)
@@ -191,7 +191,7 @@ internal class X11Connection(
             76 -> imageText(minorOpcode, body, is16Bit = false)
             77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(body)
-            79 -> closeResource(body)
+            79 -> closeResource(opcode = 79, body = body, error = 12, exists = state::hasColormap)
             80 -> copyColormapAndFree(body)
             81 -> installColormap(body)
             82 -> uninstallColormap(body)
@@ -207,7 +207,7 @@ internal class X11Connection(
             92 -> lookupColor(body)
             93 -> createCursor(opcode, body)
             94 -> createCursor(opcode, body)
-            95 -> closeResource(body)
+            95 -> closeResource(opcode = 95, body = body, error = 6, exists = state::hasCursor)
             96 -> recolorCursor(body)
             97 -> queryBestSize(minorOpcode, body)
             98 -> queryExtension(body)
@@ -1957,23 +1957,27 @@ internal class X11Connection(
     }
 
     private fun openFont(body: ByteArray) {
-        if (body.size >= 4) {
-            val id = byteOrder.u32(body, 0)
-            if (state.hasResource(id)) return writeError(error = 14, opcode = 45, badValue = id)
-            state.putFont(id)
-            own(id)
-        }
+        if (body.size < 8) return writeError(error = 16, opcode = 45, badValue = 0)
+        val nameLength = byteOrder.u16(body, 4)
+        if (body.size != 8 + paddedLength(nameLength)) return writeError(error = 16, opcode = 45, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 45, badValue = id)
+        state.putFont(id)
+        own(id)
     }
 
-    private fun closeResource(body: ByteArray) {
-        if (body.size >= 4) {
-            val id = byteOrder.u32(body, 0)
-            state.removeResource(id)
-            ownedResources.remove(id)
-        }
+    private fun closeResource(opcode: Int, body: ByteArray, error: Int, exists: (Int) -> Boolean) {
+        if (body.size != 4) return writeError(error = 16, opcode = opcode, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        if (!exists(id)) return writeError(error = error, opcode = opcode, badValue = id)
+        state.removeResource(id)
+        ownedResources.remove(id)
     }
 
     private fun queryFont(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 47, badValue = 0)
+        val fontable = byteOrder.u32(body, 0)
+        if (!state.hasFontable(fontable)) return writeError(error = 7, opcode = 47, badValue = fontable)
         val reply = reply(extra = 0, payloadUnits = 7)
         putCharInfo(reply, 8)
         putCharInfo(reply, 24)
@@ -1992,9 +1996,13 @@ internal class X11Connection(
     }
 
     private fun queryTextExtents(oddLength: Int, body: ByteArray) {
-        if (body.size < 4) return writeError(error = 2, opcode = 48, badValue = 0)
+        if (body.size < 4) return writeError(error = 16, opcode = 48, badValue = 0)
+        if (oddLength !in 0..1) return writeError(error = 2, opcode = 48, badValue = oddLength)
         val padBytes = if (oddLength != 0) 2 else 0
-        val stringBytes = (body.size - 4 - padBytes).coerceAtLeast(0)
+        val stringBytes = body.size - 4 - padBytes
+        if (stringBytes < 0) return writeError(error = 16, opcode = 48, badValue = 0)
+        val fontable = byteOrder.u32(body, 0)
+        if (!state.hasFontable(fontable)) return writeError(error = 7, opcode = 48, badValue = fontable)
         val charCount = stringBytes / 2
         val overallWidth = charCount * XFramebuffer.TextCellWidth
         val hasText = charCount > 0
@@ -2009,7 +2017,10 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun listFonts() {
+    private fun listFonts(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 49, badValue = 0)
+        val patternLength = byteOrder.u16(body, 2)
+        if (body.size != 4 + paddedLength(patternLength)) return writeError(error = 16, opcode = 49, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 8, 0)
         write(reply)

@@ -2606,6 +2606,15 @@ internal class X11State(
     fun hasGc(id: Int): Boolean = gcs.containsKey(id)
 
     @Synchronized
+    fun hasPixmap(id: Int): Boolean = pixmaps.containsKey(id)
+
+    @Synchronized
+    fun hasFont(id: Int): Boolean = fonts.contains(id)
+
+    @Synchronized
+    fun hasFontable(id: Int): Boolean = fonts.contains(id) || gcs.containsKey(id)
+
+    @Synchronized
     fun canCopyGc(sourceId: Int, destinationId: Int): Boolean {
         val source = gcs[sourceId] ?: return false
         val destination = gcs[destinationId] ?: return false
