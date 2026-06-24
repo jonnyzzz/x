@@ -2783,6 +2783,54 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `AllowEvents is replyless and records input control state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(allowEventsRequest(mode = 6, time = 0x8000_0000.toInt()))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(2, u16le(pointer, 2))
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"inputControlOperations":[{"id":1,"operation":"AllowEvents","mode":6,"modeName":"AsyncBoth","time":2147483648}]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `AllowEvents validates mode and request length with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(allowEventsRequest(mode = 8))
+                out.write(allowEventsBadLengthRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 35, badValue = 8, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 35, badValue = 0, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputControlOperations":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabServer and UngrabServer are replyless and update state`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4727,6 +4775,15 @@ class XCoreDrawingProtocolTest {
 
     private fun ungrabKeyboardBadLengthRequest(): ByteArray =
         request(32, 0, ByteArray(0))
+
+    private fun allowEventsRequest(mode: Int, time: Int = 0): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, time)
+        return request(35, mode, body)
+    }
+
+    private fun allowEventsBadLengthRequest(): ByteArray =
+        request(35, 0, ByteArray(0))
 
     private fun grabServerRequest(): ByteArray =
         request(36, 0, ByteArray(0))

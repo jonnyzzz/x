@@ -144,7 +144,7 @@ internal class X11Connection(
             32 -> ungrabKeyboard(body)
             33 -> unitReplyless()
             34 -> unitReplyless()
-            35 -> unitReplyless()
+            35 -> allowEvents(minorOpcode, body)
             36 -> grabServer(body)
             37 -> ungrabServer(body)
             38 -> queryPointer()
@@ -1595,6 +1595,16 @@ internal class X11Connection(
     private fun ungrabKeyboard(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 32, badValue = 0)
         state.ungrabKeyboard(this, byteOrder.u32(body, 0))
+    }
+
+    private fun allowEvents(mode: Int, body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 35, badValue = 0)
+        if (mode !in 0..7) return writeError(error = 2, opcode = 35, badValue = mode)
+        state.recordInputControlOperation(
+            operation = "AllowEvents",
+            mode = mode,
+            time = byteOrder.u32(body, 0),
+        )
     }
 
     private fun grabServer(body: ByteArray) {

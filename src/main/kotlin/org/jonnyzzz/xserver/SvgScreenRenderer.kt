@@ -147,6 +147,13 @@ internal object SvgScreenRenderer {
                 append(""","deliveredEvents":${operation.deliveredEvents}""")
                 append('}')
             }
+            append("""],"inputControlOperations":[""")
+            snapshot.inputControlOperations.forEachIndexed { index, operation ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""id":${operation.id},"operation":"${escapeJson(operation.operation)}","mode":${operation.mode},"modeName":"${escapeJson(operation.modeName)}","time":${operation.timeUnsigned}""")
+                append('}')
+            }
             append("""],"inputGrabs":[""")
             snapshot.inputGrabs.forEachIndexed { index, grab ->
                 if (index > 0) append(',')

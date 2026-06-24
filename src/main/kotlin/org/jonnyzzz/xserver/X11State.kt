@@ -39,6 +39,8 @@ internal class X11State(
     private var inputTime: Int = 1
     private var nextInputOperationId: Int = 1
     private val inputOperations = mutableListOf<XInputOperation>()
+    private var nextInputControlOperationId: Int = 1
+    private val inputControlOperations = mutableListOf<XInputControlOperation>()
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
     private var nextGlxOperationId: Int = 1
     private val glxOperations = mutableListOf<XGlxOperation>()
@@ -603,6 +605,19 @@ internal class X11State(
     }
 
     @Synchronized
+    fun recordInputControlOperation(operation: String, mode: Int, time: Int) {
+        inputControlOperations += XInputControlOperation(
+            id = nextInputControlOperationId++,
+            operation = operation,
+            mode = mode,
+            time = time,
+        )
+        if (inputControlOperations.size > MaxInputOperations) {
+            inputControlOperations.removeAt(0)
+        }
+    }
+
+    @Synchronized
     fun configureWindow(
         id: Int,
         x: Int? = null,
@@ -716,6 +731,7 @@ internal class X11State(
             overlaps = overlaps(windowSnapshots),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
+            inputControlOperations = inputControlOperations.toList(),
             inputGrabs = listOfNotNull(
                 activePointerGrab?.snapshot(),
                 activeKeyboardGrab?.snapshot(),
@@ -2909,6 +2925,7 @@ internal data class XScreenSnapshot(
     val overlaps: List<XWindowOverlap>,
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
+    val inputControlOperations: List<XInputControlOperation>,
     val inputGrabs: List<XInputGrabSnapshot>,
     val serverGrabbed: Boolean,
     val glxOperations: List<XGlxOperation>,
@@ -2953,6 +2970,26 @@ internal data class XInputOperation(
     val deliveredEvents: Int,
 ) {
     val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
+}
+
+internal data class XInputControlOperation(
+    val id: Int,
+    val operation: String,
+    val mode: Int,
+    val time: Int,
+) {
+    val modeName: String get() = when (mode) {
+        0 -> "AsyncPointer"
+        1 -> "SyncPointer"
+        2 -> "ReplayPointer"
+        3 -> "AsyncKeyboard"
+        4 -> "SyncKeyboard"
+        5 -> "ReplayKeyboard"
+        6 -> "AsyncBoth"
+        7 -> "SyncBoth"
+        else -> "Unknown"
+    }
+    val timeUnsigned: Long get() = time.toUInt().toLong()
 }
 
 internal data class XInputGrab(
