@@ -308,6 +308,10 @@ internal class X11State(
     fun mappingNotifySinks(): List<XEventSink> = eventSinks.keys.toList()
 
     @Synchronized
+    fun propertyNotifySinks(windowId: Int): List<XEventSink> =
+        eventSelectionsForWindow(windowId, XEventMasks.PropertyChange)
+
+    @Synchronized
     fun pointerLogicalButton(physicalButton: Int): Int =
         pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
 

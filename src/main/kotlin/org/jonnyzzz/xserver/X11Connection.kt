@@ -222,6 +222,7 @@ internal class X11Connection(
             110 -> listHosts(body)
             111 -> setAccessControl(minorOpcode, body)
             112 -> setCloseDownMode(minorOpcode, body)
+            114 -> rotateProperties(body)
             115 -> forceScreenSaver(minorOpcode, body)
             116 -> setPointerMapping(minorOpcode, body)
             117 -> getPointerMapping(body)
@@ -1458,6 +1459,34 @@ internal class X11Connection(
             offset += 4
         }
         write(reply)
+    }
+
+    private fun rotateProperties(body: ByteArray) {
+        if (body.size < 8) return writeError(error = 16, opcode = 114, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val count = byteOrder.u16(body, 4)
+        val delta = byteOrder.i16(body, 6)
+        if (body.size != 8 + count * 4) return writeError(error = 16, opcode = 114, badValue = 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 114, badValue = windowId)
+        val atoms = List(count) { index -> byteOrder.u32(body, 8 + index * 4) }
+        val invalidAtom = atoms.firstOrNull { state.atomName(it) == null }
+        if (invalidAtom != null) return writeError(error = 5, opcode = 114, badValue = invalidAtom)
+        val duplicate = atoms.firstOrNull { atom -> atoms.count { it == atom } > 1 }
+        if (duplicate != null) return writeError(error = 8, opcode = 114, badValue = duplicate)
+        val missing = atoms.firstOrNull { it !in window.properties }
+        if (missing != null) return writeError(error = 8, opcode = 114, badValue = missing)
+        if (count == 0) return
+        val shift = ((delta % count) + count) % count
+        if (shift == 0) return
+        val values = atoms.map { window.properties.getValue(it) }
+        atoms.forEachIndexed { index, atom ->
+            window.properties[atom] = values[(index + shift) % count]
+        }
+        for (sink in state.propertyNotifySinks(windowId)) {
+            for (atom in atoms) {
+                runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = atom, state = 0)) }
+            }
+        }
     }
 
     private fun setSelectionOwner(body: ByteArray) {
@@ -3399,6 +3428,17 @@ internal class X11Connection(
         bytes[4] = event.request.toByte()
         bytes[5] = event.firstKeycode.toByte()
         bytes[6] = event.count.toByte()
+        write(bytes)
+    }
+
+    override fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 28
+        bytes[1] = event.state.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put32(bytes, 8, event.atom)
+        byteOrder.put32(bytes, 12, event.time)
         write(bytes)
     }
 

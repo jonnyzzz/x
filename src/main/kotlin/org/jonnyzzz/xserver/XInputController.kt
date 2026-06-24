@@ -102,6 +102,7 @@ data class XInputResult(
 internal interface XEventSink {
     fun sendPointerEvent(event: XPointerEvent)
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
+    fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
 }
@@ -151,6 +152,13 @@ internal data class XMappingNotifyEvent(
     val count: Int = 0,
 )
 
+internal data class XPropertyNotifyEvent(
+    val windowId: Int,
+    val atom: Int,
+    val state: Int,
+    val time: Int = 0,
+)
+
 internal data class XSelectionRequestEvent(
     val time: Int,
     val ownerWindowId: Int,
@@ -176,6 +184,7 @@ internal object XEventMasks {
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3
     const val PointerMotion = 1 shl 6
+    const val PropertyChange = 1 shl 22
 
     fun forPointerType(type: XPointerEventType): Int =
         when (type) {
