@@ -1287,8 +1287,9 @@ internal class X11Connection(
     }
 
     private fun mapWindow(body: ByteArray) {
-        if (body.size < 4) return
-        val window = state.mapWindow(byteOrder.u32(body, 0)) ?: return
+        if (body.size != 4) return writeError(error = 16, opcode = 8, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.mapWindow(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
         state.paintWindowBackground(window.id)
         sendMapNotify(window)
         sendExpose(window)
