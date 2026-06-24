@@ -1006,6 +1006,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render FreePicture validates request framing and removes picture resources`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val picture = PixmapId + 0x360
+                val missingPicture = picture + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePictureRequest(picture))
+                out.write(renderRequest(7, ByteArray(0)))
+                out.write(renderRequest(7, ByteArray(8).also { put32le(it, 0, picture) }))
+                out.write(renderFreePictureRequest(WindowId))
+                out.write(renderFreePictureRequest(missingPicture))
+                out.write(renderFreePictureRequest(picture))
+                out.write(renderChangePictureRequest(picture, valueMask = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = WindowId, sequence = 5)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 7, badValue = missingPicture, sequence = 6)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = picture, sequence = 8)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(9, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"renderPictures":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11050,6 +11086,12 @@ class XCoreDrawingProtocolTest {
 
     private fun renderSetPictureClipRectanglesRaw(body: ByteArray): ByteArray =
         renderRequest(6, body)
+
+    private fun renderFreePictureRequest(picture: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, picture)
+        return renderRequest(7, body)
+    }
 
     private fun readReply(input: InputStream, byteOrderByte: Int = 0x6c): ByteArray {
         val header = input.readExactly(32)
