@@ -2423,6 +2423,64 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ListFontsWithInfo returns terminal reply for empty synthetic font catalog`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(listFontsWithInfoRequest("*", maxNames = 100))
+                out.write(listFontsWithInfoRequest("fixed", maxNames = 1))
+                out.flush()
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(60, reply.size)
+                assertEquals(1, reply[0].toInt())
+                assertEquals(0, reply[1].toInt() and 0xff)
+                assertEquals(1, u16le(reply, 2))
+                assertEquals(7, u32le(reply, 4))
+                assertZeroBytes(reply, 8, 60)
+
+                val paddedPatternReply = readReply(socket.getInputStream())
+                assertEquals(60, paddedPatternReply.size)
+                assertEquals(1, paddedPatternReply[0].toInt())
+                assertEquals(0, paddedPatternReply[1].toInt() and 0xff)
+                assertEquals(2, u16le(paddedPatternReply, 2))
+                assertEquals(7, u32le(paddedPatternReply, 4))
+                assertZeroBytes(paddedPatternReply, 8, 60)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ListFontsWithInfo validates pattern length and preserves stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(50, 0, ByteArray(0)))
+                out.write(malformedListFontsWithInfoRequest(declaredPatternLength = 5, patternBytes = byteArrayOf()))
+                out.write(getFontPathRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 50, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 50, badValue = 0, sequence = 2)
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(1, recovered[0].toInt())
+                assertEquals(3, u16le(recovered, 2))
+                assertEquals(emptyList(), fontPathEntries(recovered))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GetFontPath returns default empty server font path`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7193,6 +7251,23 @@ class XCoreDrawingProtocolTest {
             offset += 2
         }
         return request(48, oddLength, body)
+    }
+
+    private fun listFontsWithInfoRequest(pattern: String, maxNames: Int): ByteArray {
+        val patternBytes = pattern.toByteArray(StandardCharsets.ISO_8859_1)
+        val body = ByteArray(4 + paddedLength(patternBytes.size))
+        put16le(body, 0, maxNames)
+        put16le(body, 2, patternBytes.size)
+        patternBytes.copyInto(body, 4)
+        return request(50, 0, body)
+    }
+
+    private fun malformedListFontsWithInfoRequest(declaredPatternLength: Int, patternBytes: ByteArray): ByteArray {
+        val body = ByteArray(4 + paddedLength(patternBytes.size))
+        put16le(body, 0, 100)
+        put16le(body, 2, declaredPatternLength)
+        patternBytes.copyInto(body, 4)
+        return request(50, 0, body)
     }
 
     private fun setFontPathRequest(vararg path: String): ByteArray {

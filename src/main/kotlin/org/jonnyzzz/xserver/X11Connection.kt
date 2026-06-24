@@ -160,6 +160,7 @@ internal class X11Connection(
             47 -> queryFont(body)
             48 -> queryTextExtents(minorOpcode, body)
             49 -> listFonts()
+            50 -> listFontsWithInfo(body)
             51 -> setFontPath(body)
             52 -> getFontPath()
             53 -> createPixmap(minorOpcode, body)
@@ -1901,6 +1902,13 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun listFontsWithInfo(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 50, badValue = 0)
+        val patternLength = byteOrder.u16(body, 2)
+        if (body.size != 4 + paddedLength(patternLength)) return writeError(error = 16, opcode = 50, badValue = 0)
+        write(reply(extra = 0, payloadUnits = 7))
+    }
+
     private fun getFontPath() {
         val path = state.fontPath().map { it.toByteArray(StandardCharsets.ISO_8859_1) }
         val payloadBytes = path.sumOf { 1 + it.size }
@@ -2937,6 +2945,7 @@ internal class X11Connection(
             47 -> "QueryFont"
             48 -> "QueryTextExtents"
             49 -> "ListFonts"
+            50 -> "ListFontsWithInfo"
             51 -> "SetFontPath"
             52 -> "GetFontPath"
             53 -> "CreatePixmap"
