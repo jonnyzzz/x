@@ -859,9 +859,13 @@ internal class X11Connection(
     }
 
     private fun renderCreateCursor(body: ByteArray) {
-        if (body.size < 4) return
+        if (body.size != 12) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = id)
+        val source = byteOrder.u32(body, 4)
+        if (state.picture(source) == null) {
+            return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = source)
+        }
         state.putCursor(id)
         own(id)
     }
