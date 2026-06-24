@@ -198,6 +198,46 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX UseXFont accepts valid context tag and font without a reply`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0128
+            val font = 0x0020_0129
+            val gc = 0x0020_012a
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, 45, 0, openFontBody(font))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.UseXFont, useXFontBody(contextTag = contextId, fontable = font))
+            writeRequest(socket, 55, 0, createGcBody(gc))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.UseXFont, useXFontBody(contextTag = contextId, fontable = gc))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX UseXFont validates request length context tag and fontable`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_012a
+            val badTag = 0x0020_012b
+            val missingFont = 0x0020_012c
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.UseXFont, u32(contextId) + u32(missingFont))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.UseXFont, useXFontBody(contextTag = badTag, fontable = missingFont))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.UseXFont, useXFontBody(contextTag = contextId, fontable = missingFont))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.UseXFont, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.UseXFont, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = 7, badValue = missingFont, minorOpcode = XGlx.UseXFont, sequence = 4)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX CopyContext accepts modeled contexts without a reply`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -952,6 +992,23 @@ class XGlxProtocolTest {
         contextTag: Int = 0,
     ): ByteArray =
         u32(source) + u32(destination) + u32(mask) + u32(contextTag)
+
+    private fun useXFontBody(
+        contextTag: Int,
+        fontable: Int,
+        first: Int = 0,
+        count: Int = 1,
+        listBase: Int = 1,
+    ): ByteArray =
+        u32(contextTag) + u32(fontable) + u32(first) + u32(count) + u32(listBase)
+
+    private fun openFontBody(font: Int, name: String = "fixed"): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        return u32(font) + u16(nameBytes.size) + byteArrayOf(0, 0) + padded(nameBytes)
+    }
+
+    private fun createGcBody(gc: Int, drawable: Int = X11Ids.RootWindow): ByteArray =
+        u32(gc) + u32(drawable) + u32(0)
 
     private fun glxClientInfoBody(extensions: String): ByteArray {
         val extensionBytes = extensions.encodeToByteArray()

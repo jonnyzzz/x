@@ -252,6 +252,7 @@ internal class X11Connection(
             XGlx.WaitGL, XGlx.WaitX -> glxWait(body, minorOpcode)
             XGlx.CopyContext -> glxCopyContext(body)
             XGlx.SwapBuffers -> glxSwapBuffers(body)
+            XGlx.UseXFont -> glxUseXFont(body)
             1, 2 -> Unit
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
@@ -1616,6 +1617,18 @@ internal class X11Connection(
         }
     }
 
+    private fun glxUseXFont(body: ByteArray) {
+        if (body.size != 20) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.UseXFont, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        val fontable = byteOrder.u32(body, 4)
+        if (state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.UseXFont, badValue = contextTag)
+        }
+        if (!state.hasFontable(fontable)) {
+            return writeError(error = 7, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.UseXFont, badValue = fontable)
+        }
+    }
+
     private fun glxCopyContext(body: ByteArray) {
         if (body.size < 16) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = 0)
         val source = byteOrder.u32(body, 0)
@@ -1769,6 +1782,7 @@ internal class X11Connection(
             XGlx.WaitGL, XGlx.WaitX -> "contextTag=${hex(0)}"
             XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
+            XGlx.UseXFont -> "contextTag=${hex(0)} font=${hex(4)} first=${u32(8)} count=${u32(12)} listBase=${u32(16)}"
             else -> ""
         }
     }

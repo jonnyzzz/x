@@ -20,6 +20,7 @@ internal object XGlx {
     const val WaitX = 9
     const val CopyContext = 10
     const val SwapBuffers = 11
+    const val UseXFont = 12
     const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
     const val DestroyGLXPixmap = 15
@@ -82,7 +83,7 @@ internal object XGlx {
             WaitX -> "WaitX"
             CopyContext -> "CopyContext"
             SwapBuffers -> "SwapBuffers"
-            12 -> "UseXFont"
+            UseXFont -> "UseXFont"
             CreateGLXPixmap -> "CreateGLXPixmap"
             GetVisualConfigs -> "GetVisualConfigs"
             DestroyGLXPixmap -> "DestroyGLXPixmap"
