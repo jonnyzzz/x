@@ -258,7 +258,7 @@ internal class X11Connection(
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
             XGlx.DestroyGLXPixmap -> glxDestroyPixmap(body)
-            XGlx.QueryExtensionsString -> glxStringReply(XGlx.serverString(XGlx.ExtensionsName))
+            XGlx.QueryExtensionsString -> glxQueryExtensionsString(body)
             XGlx.QueryServerString -> glxQueryServerString(body)
             XGlx.ClientInfo -> glxClientInfo(body)
             XGlx.GetFBConfigs -> glxGetFbConfigs(body)
@@ -1267,7 +1267,8 @@ internal class X11Connection(
     }
 
     private fun glxGetVisualConfigs(body: ByteArray) {
-        if (!glxScreenIsValid(body, offset = 0)) return
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetVisualConfigs, badValue = 0)
+        if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.GetVisualConfigs)) return
         val config = XGlx.visualConfig()
         val reply = reply(extra = 0, payloadUnits = config.size)
         byteOrder.put32(reply, 8, 1)
@@ -1277,7 +1278,8 @@ internal class X11Connection(
     }
 
     private fun glxGetFbConfigs(body: ByteArray) {
-        if (!glxScreenIsValid(body, offset = 0)) return
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetFBConfigs, badValue = 0)
+        if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.GetFBConfigs)) return
         val config = XGlx.fbConfig()
         val reply = reply(extra = 0, payloadUnits = config.size)
         byteOrder.put32(reply, 8, 1)
@@ -1286,9 +1288,15 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun glxQueryExtensionsString(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryExtensionsString, badValue = 0)
+        if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.QueryExtensionsString)) return
+        glxStringReply(XGlx.serverString(XGlx.ExtensionsName))
+    }
+
     private fun glxQueryServerString(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.QueryServerString, badValue = 0)
-        if (!glxScreenIsValid(body, offset = 0)) return
+        if (!glxScreenIsValid(body, offset = 0, minorOpcode = XGlx.QueryServerString)) return
         val name = byteOrder.u32(body, 4)
         glxStringReply(XGlx.serverString(name))
     }
@@ -1837,10 +1845,11 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun glxScreenIsValid(body: ByteArray, offset: Int): Boolean {
-        val screen = if (body.size >= offset + 4) byteOrder.u32(body, offset) else 0
+    private fun glxScreenIsValid(body: ByteArray, offset: Int, minorOpcode: Int): Boolean {
+        // Callers validate fixed request length before using this shared screen check.
+        val screen = byteOrder.u32(body, offset)
         if (screen == 0) return true
-        writeError(error = 2, opcode = XGlx.MajorOpcode, badValue = screen)
+        writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = screen)
         return false
     }
 

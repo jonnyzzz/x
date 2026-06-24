@@ -57,6 +57,48 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX screen query requests validate fixed length and screen value`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetVisualConfigs, u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.GetFBConfigs, u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryExtensionsString, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryExtensionsString, u32(1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryExtensionsString, u32(0) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryExtensionsString, u32(0))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetVisualConfigs, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.GetVisualConfigs, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetVisualConfigs, sequence = 3)
+            val visuals = readReply(socket.getInputStream())
+            assertEquals(4, u16le(visuals, 2))
+            assertEquals(1, u32le(visuals, 8))
+            assertEquals(XGlx.VisualConfigValues, u32le(visuals, 12))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.GetFBConfigs, sequence = 6)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.GetFBConfigs, sequence = 7)
+            val fbConfigs = readReply(socket.getInputStream())
+            assertEquals(8, u16le(fbConfigs, 2))
+            assertEquals(1, u32le(fbConfigs, 8))
+            assertEquals(XGlx.FbConfigAttributePairs, u32le(fbConfigs, 12))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 9)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.QueryExtensionsString, sequence = 10)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryExtensionsString, sequence = 11)
+            val extensions = readReply(socket.getInputStream())
+            assertEquals(12, u16le(extensions, 2))
+            assertEquals(0, u32le(extensions, 12))
+        }
+    }
+
+    @Test
     fun `GLX client info requests accept framed metadata without replies`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -143,6 +185,7 @@ class XGlxProtocolTest {
             val contextId = 0x0020_0103
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0) + u32(XGlx.VendorName) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(1) + u32(XGlx.VendorName))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryServerString, u32(0) + u32(XGlx.VendorName))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.IsDirect, ByteArray(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = true))
@@ -151,17 +194,18 @@ class XGlxProtocolTest {
 
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryServerString, sequence = 1)
             assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.QueryServerString, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.QueryServerString, sequence = 3)
 
             val vendor = readReply(socket.getInputStream())
-            assertEquals(3, u16le(vendor, 2))
+            assertEquals(4, u16le(vendor, 2))
             val vendorLength = u32le(vendor, 12)
             assertEquals("jonnyzzz/x", vendor.copyOfRange(32, 32 + vendorLength).decodeToString())
 
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 4)
-            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 6)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.IsDirect, sequence = 7)
 
             val direct = readReply(socket.getInputStream())
-            assertEquals(7, u16le(direct, 2))
+            assertEquals(8, u16le(direct, 2))
             assertEquals(1, direct[8].toInt())
         }
     }
