@@ -1378,7 +1378,9 @@ internal class X11Connection(
     }
 
     private fun getWindowAttributes(body: ByteArray) {
-        val window = state.window(byteOrder.u32(body, 0)) ?: return writeError(3, 3, badValue = byteOrder.u32(body, 0))
+        if (body.size != 4) return writeError(error = 16, opcode = 3, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 3, badValue = windowId)
         val reply = reply(extra = 0, payloadUnits = 3)
         byteOrder.put32(reply, 8, X11Ids.RootVisual)
         byteOrder.put16(reply, 12, 1)
