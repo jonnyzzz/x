@@ -38,7 +38,9 @@ internal object XGlx {
     const val ChangeDrawableAttributes = 30
     const val CreateWindow = 31
     const val DestroyWindow = 32
+    const val SetClientInfoARB = 33
     const val CreateContextAttribsARB = 34
+    const val SetClientInfo2ARB = 35
 
     const val VendorName = 1
     const val VersionName = 2
@@ -101,9 +103,9 @@ internal object XGlx {
             ChangeDrawableAttributes -> "ChangeDrawableAttributes"
             CreateWindow -> "CreateWindow"
             DestroyWindow -> "DestroyWindow"
-            33 -> "SetClientInfoARB"
+            SetClientInfoARB -> "SetClientInfoARB"
             CreateContextAttribsARB -> "CreateContextAttribsARB"
-            35 -> "SetClientInfo2ARB"
+            SetClientInfo2ARB -> "SetClientInfo2ARB"
             else -> "Unknown"
         }
 

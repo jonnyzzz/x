@@ -57,6 +57,52 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX client info requests accept framed metadata without replies`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, glxClientInfoBody("GLX_EXT_visual_info\u0000"))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.SetClientInfoARB,
+                glxSetClientInfoBody(wordsPerVersion = 2, versionWords = listOf(4, 6), glExtensions = "GL_ARB_multisample!", glxExtensions = "GLX_ARB_create_context?"),
+            )
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.SetClientInfo2ARB,
+                glxSetClientInfoBody(wordsPerVersion = 3, versionWords = listOf(4, 6, 0), glExtensions = "GL_EXT_texture!", glxExtensions = "GLX_EXT_texture_from_pixmap?"),
+            )
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX client info requests validate advertised payload lengths`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.ClientInfo, u32(1) + u32(4) + u32(4))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SetClientInfoARB, u32(1) + u32(1) + u32(1) + u32(4) + u32(6) + padded(byteArrayOf(1, 2)))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.SetClientInfo2ARB,
+                u32(1) + u32(1) + u32(1) + u32(4) + u32(6) + u32(0) + padded(byteArrayOf(3, 4)),
+            )
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.ClientInfo, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfoARB, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.SetClientInfo2ARB, sequence = 3)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX context lifecycle is modeled and make current returns a tag`() {
         withServer { socket ->
             val contextId = 0x0020_0100
@@ -907,6 +953,28 @@ class XGlxProtocolTest {
     ): ByteArray =
         u32(source) + u32(destination) + u32(mask) + u32(contextTag)
 
+    private fun glxClientInfoBody(extensions: String): ByteArray {
+        val extensionBytes = extensions.encodeToByteArray()
+        return u32(1) + u32(4) + u32(extensionBytes.size) + padded(extensionBytes)
+    }
+
+    private fun glxSetClientInfoBody(
+        wordsPerVersion: Int,
+        versionWords: List<Int>,
+        glExtensions: String,
+        glxExtensions: String,
+    ): ByteArray {
+        val glBytes = glExtensions.encodeToByteArray()
+        val glxBytes = glxExtensions.encodeToByteArray()
+        require(versionWords.size % wordsPerVersion == 0)
+        return u32(versionWords.size / wordsPerVersion) +
+            u32(glBytes.size) +
+            u32(glxBytes.size) +
+            versionWords.flatMap { u32(it).toList() }.toByteArray() +
+            padded(glBytes) +
+            padded(glxBytes)
+    }
+
     private fun createGlxPixmapBody(pixmap: Int, glxPixmap: Int, visual: Int = X11Ids.RootVisual): ByteArray =
         u32(0) + u32(visual) + u32(pixmap) + u32(glxPixmap)
 
@@ -986,6 +1054,16 @@ class XGlxProtocolTest {
         (0 until count).associate { index ->
             u32le(reply, offset + index * 8) to u32le(reply, offset + index * 8 + 4)
         }
+
+    private fun assertGlxError(input: InputStream, error: Int, badValue: Int, minorOpcode: Int, sequence: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(minorOpcode, u16le(reply, 8))
+        assertEquals(XGlx.MajorOpcode, reply[10].toInt() and 0xff)
+    }
 
     private fun padded(bytes: ByteArray): ByteArray =
         bytes + ByteArray(((bytes.size + 3) and -4) - bytes.size)

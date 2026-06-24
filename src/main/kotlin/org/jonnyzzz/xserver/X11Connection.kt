@@ -258,7 +258,7 @@ internal class X11Connection(
             XGlx.DestroyGLXPixmap -> glxDestroyPixmap(body)
             XGlx.QueryExtensionsString -> glxStringReply(XGlx.serverString(XGlx.ExtensionsName))
             XGlx.QueryServerString -> glxQueryServerString(body)
-            XGlx.ClientInfo -> Unit
+            XGlx.ClientInfo -> glxClientInfo(body)
             XGlx.GetFBConfigs -> glxGetFbConfigs(body)
             XGlx.CreatePixmap -> glxCreateFbConfigPixmap(body)
             XGlx.DestroyPixmap -> glxDestroyFbConfigPixmap(body)
@@ -271,7 +271,9 @@ internal class X11Connection(
             XGlx.ChangeDrawableAttributes -> glxChangeDrawableAttributes(body)
             XGlx.CreateWindow -> glxCreateWindow(body)
             XGlx.DestroyWindow -> glxDestroyWindow(body)
+            XGlx.SetClientInfoARB -> glxSetClientInfo(body, minorOpcode = XGlx.SetClientInfoARB, versionWords = 2)
             XGlx.CreateContextAttribsARB -> glxCreateContextAttribs(body)
+            XGlx.SetClientInfo2ARB -> glxSetClientInfo(body, minorOpcode = XGlx.SetClientInfo2ARB, versionWords = 3)
             else -> unsupportedRequest(majorOpcode, minorOpcode, operation)
         }
     }
@@ -1288,6 +1290,35 @@ internal class X11Connection(
         glxStringReply(XGlx.serverString(name))
     }
 
+    private fun glxClientInfo(body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ClientInfo, badValue = 0)
+        if (body.copyOfRange(12, body.size).none { it == 0.toByte() }) {
+            writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.ClientInfo, badValue = 0)
+        }
+    }
+
+    private fun glxSetClientInfo(body: ByteArray, minorOpcode: Int, versionWords: Int) {
+        if (body.size < 12) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val versions = byteOrder.u32(body, 0).toUInt().toLong()
+        val glExtensionBytes = byteOrder.u32(body, 4).toUInt().toLong()
+        val glxExtensionBytes = byteOrder.u32(body, 8).toUInt().toLong()
+        val expectedBytes = 12L +
+            versions * versionWords * 4L +
+            paddedLength(glExtensionBytes) +
+            paddedLength(glxExtensionBytes)
+        glxCheckBodyLength(body, expectedBytes = expectedBytes, minorOpcode = minorOpcode)
+    }
+
+    private fun glxCheckBodyLength(
+        body: ByteArray,
+        expectedBytes: Long,
+        minorOpcode: Int,
+    ) {
+        if (expectedBytes > Int.MAX_VALUE || body.size.toLong() != expectedBytes) {
+            writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        }
+    }
+
     private fun glxStringReply(value: String) {
         val bytes = value.encodeToByteArray()
         val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
@@ -1721,6 +1752,8 @@ internal class X11Connection(
             XGlx.QueryExtensionsString -> "screen=${u32(0)}"
             XGlx.QueryServerString -> "screen=${u32(0)} name=${u32(4)}"
             XGlx.ClientInfo -> "client=${u32(0)}.${u32(4)} bytes=${u32(8)}"
+            XGlx.SetClientInfoARB -> "versions=${u32(0)} glBytes=${u32(4)} glxBytes=${u32(8)}"
+            XGlx.SetClientInfo2ARB -> "versions=${u32(0)} glBytes=${u32(4)} glxBytes=${u32(8)}"
             XGlx.GetFBConfigs -> "screen=${u32(0)}"
             XGlx.CreateNewContext -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} renderType=${hex(12)} direct=${body.getOrNull(20)?.toInt() == 1}"
             XGlx.QueryContext -> "context=${hex(0)}"
