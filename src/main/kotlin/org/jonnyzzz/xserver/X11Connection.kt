@@ -2111,7 +2111,7 @@ internal class X11Connection(
     }
 
     private fun copyGc(body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size != 12) return writeError(error = 16, opcode = 57, badValue = 0)
         val sourceId = byteOrder.u32(body, 0)
         val destinationId = byteOrder.u32(body, 4)
         val mask = byteOrder.u32(body, 8)

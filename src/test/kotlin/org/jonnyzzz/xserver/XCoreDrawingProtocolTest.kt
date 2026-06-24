@@ -349,11 +349,16 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
                 out.write(createGcRequest(GcId, foreground = Red))
+                out.write(copyGcBadLengthRequest(bodySize = 8))
+                out.write(copyGcBadLengthRequest(bodySize = 16))
                 out.write(copyGcRequest(GcId + 1, GcId, mask = 0x0000_0004))
                 out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0000_0004))
                 out.write(createGcRequest(GcId + 1, foreground = Blue))
                 out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0080_0000))
                 out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 57, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 57, badValue = 0, sequence = 4)
 
                 val missingSource = socket.getInputStream().readExactly(32)
                 assertEquals(0, missingSource[0].toInt())
@@ -9190,6 +9195,9 @@ class XCoreDrawingProtocolTest {
         put32le(body, 8, mask)
         return request(57, 0, body)
     }
+
+    private fun copyGcBadLengthRequest(bodySize: Int): ByteArray =
+        request(57, 0, ByteArray(bodySize))
 
     private fun setDashesRequest(gc: Int, dashOffset: Int, dashes: List<Int>): ByteArray {
         val paddedDashBytes = (dashes.size + 3) and -4
