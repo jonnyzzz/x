@@ -3042,8 +3042,21 @@ internal class X11Connection(
         val source = byteOrder.u32(body, 4)
         val mask = byteOrder.u32(body, 8)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 93, badValue = id)
-        if (!state.hasPixmap(source)) return writeError(error = 4, opcode = 93, badValue = source)
-        if (mask != 0 && !state.hasPixmap(mask)) return writeError(error = 4, opcode = 93, badValue = mask)
+        val sourcePixmap = state.pixmap(source) ?: return writeError(error = 4, opcode = 93, badValue = source)
+        val maskPixmap = mask.takeIf { it != 0 }?.let {
+            state.pixmap(it) ?: return writeError(error = 4, opcode = 93, badValue = it)
+        }
+        if (sourcePixmap.depth != 1 || maskPixmap?.depth?.let { it != 1 } == true) {
+            return writeError(error = 8, opcode = 93, badValue = 0)
+        }
+        if (maskPixmap != null && (maskPixmap.width != sourcePixmap.width || maskPixmap.height != sourcePixmap.height)) {
+            return writeError(error = 8, opcode = 93, badValue = 0)
+        }
+        val hotspotX = byteOrder.u16(body, 24)
+        val hotspotY = byteOrder.u16(body, 26)
+        if (hotspotX >= sourcePixmap.width || hotspotY >= sourcePixmap.height) {
+            return writeError(error = 8, opcode = 93, badValue = 0)
+        }
         state.putCursor(id)
         own(id)
     }

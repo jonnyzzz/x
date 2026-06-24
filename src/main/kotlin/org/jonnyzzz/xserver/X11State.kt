@@ -2609,6 +2609,9 @@ internal class X11State(
     fun hasPixmap(id: Int): Boolean = pixmaps.containsKey(id)
 
     @Synchronized
+    fun pixmap(id: Int): XPixmap? = pixmaps[id]
+
+    @Synchronized
     fun hasFont(id: Int): Boolean = fonts.contains(id)
 
     @Synchronized

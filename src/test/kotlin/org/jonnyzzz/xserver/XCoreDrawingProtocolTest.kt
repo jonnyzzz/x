@@ -622,6 +622,50 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateCursor validates pixmap depth size and hotspot with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val source = PixmapId + 30
+                val mask = PixmapId + 31
+                val deepSource = PixmapId + 32
+                val deepMask = PixmapId + 33
+                val smallMask = PixmapId + 34
+                val cursor = PixmapId + 35
+                val out = socket.getOutputStream()
+                out.write(createPixmapRequest(source, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(mask, width = 2, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(deepSource, width = 2, height = 2, depth = 24, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(deepMask, width = 2, height = 2, depth = 24, drawable = X11Ids.RootWindow))
+                out.write(createPixmapRequest(smallMask, width = 1, height = 2, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = deepSource, mask = 0))
+                out.write(createCursorRequest(cursor, source = source, mask = deepMask))
+                out.write(createCursorRequest(cursor, source = source, mask = smallMask))
+                out.write(createCursorRequest(cursor, source = source, mask = 0, x = 2, y = 0))
+                out.write(createCursorRequest(cursor, source = source, mask = 0, x = 0, y = 2))
+                out.write(createCursorRequest(cursor, source = source, mask = mask, x = 1, y = 1))
+                out.write(recolorCursorRequest(cursor))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0xffff, green = 0, blue = 0))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 93, badValue = 0, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 93, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = 93, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 8, opcode = 93, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 93, badValue = 0, sequence = 10)
+
+                val red = readReply(socket.getInputStream())
+                assertEquals(13, u16le(red, 2))
+                assertEquals(Red, u32le(red, 16))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateGlyphCursor rejects duplicate resource id with glyph cursor opcode`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8840,13 +8884,15 @@ class XCoreDrawingProtocolTest {
         return request(60, 0, body)
     }
 
-    private fun createCursorRequest(cursor: Int, source: Int, mask: Int): ByteArray {
+    private fun createCursorRequest(cursor: Int, source: Int, mask: Int, x: Int = 0, y: Int = 0): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, cursor)
         put32le(body, 4, source)
         put32le(body, 8, mask)
         put16le(body, 12, 0xffff)
         put16le(body, 18, 0xffff)
+        put16le(body, 24, x)
+        put16le(body, 26, y)
         return request(93, 0, body)
     }
 
