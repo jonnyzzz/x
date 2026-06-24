@@ -211,7 +211,7 @@ internal class X11Connection(
             96 -> recolorCursor(body)
             97 -> queryBestSize(minorOpcode, body)
             98 -> queryExtension(body)
-            99 -> listExtensions()
+            99 -> listExtensions(body)
             100 -> changeKeyboardMapping(minorOpcode, body)
             101 -> getKeyboardMapping(body)
             102 -> changeKeyboardControl(body)
@@ -3249,7 +3249,8 @@ internal class X11Connection(
             else -> "Opcode$opcode/$minorOpcode"
         }
 
-    private fun listExtensions() {
+    private fun listExtensions(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 99, badValue = 0)
         val names = state.extensions.map { it.name.encodeToByteArray() }
         val size = names.sumOf { 1 + it.size }
         val reply = reply(extra = names.size, payloadUnits = paddedLength(size) / 4)

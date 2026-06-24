@@ -833,6 +833,38 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ListExtensions validates length and returns names with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(99, 0, ByteArray(4)))
+                out.write(request(99, 0, ByteArray(0)))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
+
+                val reply = readReply(socket.getInputStream())
+                assertEquals(3, reply[1].toInt() and 0xff)
+                assertEquals(2, u16le(reply, 2))
+                assertEquals(6, u32le(reply, 4))
+                var offset = 32
+                val names = mutableListOf<String>()
+                repeat(reply[1].toInt() and 0xff) {
+                    val length = reply[offset++].toInt() and 0xff
+                    names += reply.copyOfRange(offset, offset + length).decodeToString()
+                    offset += length
+                }
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER"), names)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
