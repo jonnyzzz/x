@@ -91,6 +91,67 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX WaitGL WaitX and SwapBuffers accept valid modeled resources without replies`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0110
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitGL, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitX, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(0) + u32(X11Ids.RootWindow))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX WaitGL WaitX and SwapBuffers validate context tags and drawables`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val badTag = 0x0020_0120
+            val missingDrawable = 0x0020_0121
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitGL, u32(badTag))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.WaitX, u32(badTag))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(badTag) + u32(X11Ids.RootWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.SwapBuffers, u32(0) + u32(missingDrawable))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val waitGlError = socket.getInputStream().readExactly(32)
+            assertEquals(0, waitGlError[0].toInt())
+            assertEquals(XGlx.BadContextTag, waitGlError[1].toInt() and 0xff)
+            assertEquals(badTag, u32le(waitGlError, 4))
+            assertEquals(XGlx.WaitGL, u16le(waitGlError, 8))
+            assertEquals(XGlx.MajorOpcode, waitGlError[10].toInt() and 0xff)
+
+            val waitXError = socket.getInputStream().readExactly(32)
+            assertEquals(0, waitXError[0].toInt())
+            assertEquals(XGlx.BadContextTag, waitXError[1].toInt() and 0xff)
+            assertEquals(badTag, u32le(waitXError, 4))
+            assertEquals(XGlx.WaitX, u16le(waitXError, 8))
+            assertEquals(XGlx.MajorOpcode, waitXError[10].toInt() and 0xff)
+
+            val swapTagError = socket.getInputStream().readExactly(32)
+            assertEquals(0, swapTagError[0].toInt())
+            assertEquals(XGlx.BadContextTag, swapTagError[1].toInt() and 0xff)
+            assertEquals(badTag, u32le(swapTagError, 4))
+            assertEquals(XGlx.SwapBuffers, u16le(swapTagError, 8))
+            assertEquals(XGlx.MajorOpcode, swapTagError[10].toInt() and 0xff)
+
+            val swapDrawableError = socket.getInputStream().readExactly(32)
+            assertEquals(0, swapDrawableError[0].toInt())
+            assertEquals(XGlx.BadDrawable, swapDrawableError[1].toInt() and 0xff)
+            assertEquals(missingDrawable, u32le(swapDrawableError, 4))
+            assertEquals(XGlx.SwapBuffers, u16le(swapDrawableError, 8))
+            assertEquals(XGlx.MajorOpcode, swapDrawableError[10].toInt() and 0xff)
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX CreateNewContext rejects duplicate resource id without replacing existing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000

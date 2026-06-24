@@ -249,7 +249,8 @@ internal class X11Connection(
             4 -> glxDestroyContext(body)
             5 -> glxMakeCurrent(body, isContextCurrent = false)
             XGlx.IsDirect -> glxIsDirect(body)
-            8, 9, 11 -> Unit
+            XGlx.WaitGL, XGlx.WaitX -> glxWait(body, minorOpcode)
+            XGlx.SwapBuffers -> glxSwapBuffers(body)
             1, 2 -> Unit
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
@@ -1559,6 +1560,30 @@ internal class X11Connection(
         write(reply)
     }
 
+    private fun glxWait(body: ByteArray, minorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        if (contextTag != 0 && state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = contextTag)
+        }
+    }
+
+    private fun glxSwapBuffers(body: ByteArray) {
+        if (body.size < 8) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        val drawable = byteOrder.u32(body, 4)
+        if (contextTag != 0 && state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = contextTag)
+        }
+        if (state.glxPixmap(drawable) == null &&
+            state.glxWindow(drawable) == null &&
+            state.glxPbuffer(drawable) == null &&
+            state.window(drawable) == null
+        ) {
+            return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = drawable)
+        }
+    }
+
     private fun glxGetDrawableAttributes(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.GetDrawableAttributes, badValue = 0)
         val drawableId = byteOrder.u32(body, 0)
@@ -1689,7 +1714,8 @@ internal class X11Connection(
             XGlx.DestroyWindow -> "glxWindow=${hex(0)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
             1, 2 -> "contextTag=${hex(0)}"
-            8, 9, 11 -> "drawable/context=${hex(0)}"
+            XGlx.WaitGL, XGlx.WaitX -> "contextTag=${hex(0)}"
+            XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             else -> ""
         }
     }

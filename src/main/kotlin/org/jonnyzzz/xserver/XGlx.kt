@@ -7,6 +7,7 @@ internal object XGlx {
     const val BadContext = FirstError
     const val BadDrawable = FirstError + 2
     const val BadPixmap = FirstError + 3
+    const val BadContextTag = FirstError + 4
     const val BadFBConfig = FirstError + 9
     const val BadPbuffer = FirstError + 10
     const val BadWindow = FirstError + 12
@@ -15,6 +16,9 @@ internal object XGlx {
 
     const val QueryVersion = 7
     const val IsDirect = 6
+    const val WaitGL = 8
+    const val WaitX = 9
+    const val SwapBuffers = 11
     const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
     const val DestroyGLXPixmap = 15
@@ -71,10 +75,10 @@ internal object XGlx {
             5 -> "MakeCurrent"
             IsDirect -> "IsDirect"
             QueryVersion -> "QueryVersion"
-            8 -> "WaitGL"
-            9 -> "WaitX"
+            WaitGL -> "WaitGL"
+            WaitX -> "WaitX"
             10 -> "CopyContext"
-            11 -> "SwapBuffers"
+            SwapBuffers -> "SwapBuffers"
             12 -> "UseXFont"
             CreateGLXPixmap -> "CreateGLXPixmap"
             GetVisualConfigs -> "GetVisualConfigs"
