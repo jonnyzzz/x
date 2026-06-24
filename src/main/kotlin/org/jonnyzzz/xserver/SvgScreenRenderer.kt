@@ -71,6 +71,11 @@ internal object SvgScreenRenderer {
                 }
                 append("""]}""")
             }
+            append("""]},"keyboardControl":{"keyClickPercent":${snapshot.keyboardControl.keyClickPercent},"bellPercent":${snapshot.keyboardControl.bellPercent},"bellPitch":${snapshot.keyboardControl.bellPitch},"bellDuration":${snapshot.keyboardControl.bellDuration},"ledMask":"${snapshot.keyboardControl.ledMaskHex}","globalAutoRepeat":${snapshot.keyboardControl.globalAutoRepeat},"autoRepeats":[""")
+            snapshot.keyboardControl.autoRepeatsHex.forEachIndexed { index, value ->
+                if (index > 0) append(',')
+                append('"').append(value).append('"')
+            }
             append("""]},"windows":[""")
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')

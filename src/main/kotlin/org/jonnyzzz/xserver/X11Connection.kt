@@ -211,7 +211,8 @@ internal class X11Connection(
             99 -> listExtensions()
             100 -> changeKeyboardMapping(minorOpcode, body)
             101 -> getKeyboardMapping(body)
-            103 -> getKeyboardControl()
+            102 -> changeKeyboardControl(body)
+            103 -> getKeyboardControl(body)
             104 -> bell(minorOpcode, body)
             105 -> changePointerControl(body)
             106 -> getPointerControl(body)
@@ -2958,6 +2959,7 @@ internal class X11Connection(
             99 -> "ListExtensions"
             100 -> "ChangeKeyboardMapping"
             101 -> "GetKeyboardMapping"
+            102 -> "ChangeKeyboardControl"
             103 -> "GetKeyboardControl"
             104 -> "Bell"
             105 -> "ChangePointerControl"
@@ -3014,11 +3016,96 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun getKeyboardControl() {
+    private fun getKeyboardControl(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 103, badValue = 0)
+        val keyboardControl = state.keyboardControl()
         val reply = reply(extra = 1, payloadUnits = 5)
-        byteOrder.put32(reply, 8, 0)
-        reply[12] = 50
+        reply[1] = if (keyboardControl.globalAutoRepeat) 1 else 0
+        byteOrder.put32(reply, 8, keyboardControl.ledMask)
+        reply[12] = keyboardControl.keyClickPercent.toByte()
+        reply[13] = keyboardControl.bellPercent.toByte()
+        byteOrder.put16(reply, 14, keyboardControl.bellPitch)
+        byteOrder.put16(reply, 16, keyboardControl.bellDuration)
+        keyboardControl.autoRepeats.copyInto(reply, 20)
         write(reply)
+    }
+
+    private fun changeKeyboardControl(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 102, badValue = 0)
+        val valueMask = byteOrder.u32(body, 0)
+        if ((valueMask and XKeyboard.ControlMask.inv()) != 0) {
+            return writeError(error = 2, opcode = 102, badValue = valueMask)
+        }
+        val valueCount = valueMask.countOneBits()
+        if (body.size != 4 + valueCount * 4) return writeError(error = 16, opcode = 102, badValue = 0)
+        var valueIndex = 0
+        fun nextValueOffset(width: Int): Int {
+            val offset = 4 + valueIndex++ * 4
+            return when (byteOrder) {
+                ByteOrder.LsbFirst -> offset
+                ByteOrder.MsbFirst -> offset + 4 - width
+            }
+        }
+        fun nextU8(): Int = body[nextValueOffset(1)].toInt() and 0xff
+        fun nextI8(): Int = nextU8().let { if ((it and 0x80) == 0) it else it - 0x100 }
+        fun nextI16(): Int = byteOrder.i16(body, nextValueOffset(2))
+        var keyClickPercent: Int? = null
+        var bellPercent: Int? = null
+        var bellPitch: Int? = null
+        var bellDuration: Int? = null
+        var led: Int? = null
+        var ledMode: Int? = null
+        var key: Int? = null
+        var autoRepeatMode: Int? = null
+
+        if ((valueMask and XKeyboard.ControlKeyClickPercent) != 0) {
+            keyClickPercent = nextI8()
+            if (keyClickPercent !in -1..100) return writeError(error = 2, opcode = 102, badValue = keyClickPercent)
+        }
+        if ((valueMask and XKeyboard.ControlBellPercent) != 0) {
+            bellPercent = nextI8()
+            if (bellPercent !in -1..100) return writeError(error = 2, opcode = 102, badValue = bellPercent)
+        }
+        if ((valueMask and XKeyboard.ControlBellPitch) != 0) {
+            bellPitch = nextI16()
+            if (bellPitch < -1 || bellPitch > Short.MAX_VALUE) return writeError(error = 2, opcode = 102, badValue = bellPitch)
+        }
+        if ((valueMask and XKeyboard.ControlBellDuration) != 0) {
+            bellDuration = nextI16()
+            if (bellDuration < -1 || bellDuration > Short.MAX_VALUE) return writeError(error = 2, opcode = 102, badValue = bellDuration)
+        }
+        if ((valueMask and XKeyboard.ControlLed) != 0) {
+            led = nextU8()
+            if (led !in 1..32) return writeError(error = 2, opcode = 102, badValue = led)
+        }
+        if ((valueMask and XKeyboard.ControlLedMode) != 0) {
+            ledMode = nextU8()
+            if (ledMode !in XKeyboardLedMode.Off..XKeyboardLedMode.On) return writeError(error = 2, opcode = 102, badValue = ledMode)
+        }
+        if ((valueMask and XKeyboard.ControlKey) != 0) {
+            key = nextU8()
+            if (key !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) return writeError(error = 2, opcode = 102, badValue = key)
+        }
+        if ((valueMask and XKeyboard.ControlAutoRepeatMode) != 0) {
+            autoRepeatMode = nextU8()
+            if (autoRepeatMode !in XKeyboardAutoRepeatMode.Off..XKeyboardAutoRepeatMode.Default) {
+                return writeError(error = 2, opcode = 102, badValue = autoRepeatMode)
+            }
+        }
+        if (led != null && ledMode == null) return writeError(error = 8, opcode = 102, badValue = led)
+        if (key != null && autoRepeatMode == null) return writeError(error = 8, opcode = 102, badValue = key)
+        state.updateKeyboardControl(
+            XKeyboardControlUpdate(
+                keyClickPercent = keyClickPercent,
+                bellPercent = bellPercent,
+                bellPitch = bellPitch,
+                bellDuration = bellDuration,
+                led = led,
+                ledMode = ledMode,
+                key = key,
+                autoRepeatMode = autoRepeatMode,
+            ),
+        )
     }
 
     private fun getPointerControl(body: ByteArray) {

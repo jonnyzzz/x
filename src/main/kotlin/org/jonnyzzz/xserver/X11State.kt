@@ -57,6 +57,7 @@ internal class X11State(
     private var pointerMapping = XPointerMapping.Default
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
+    private var keyboardControl = XKeyboardControlSettings.Default
     private var activePointerGrab: XInputGrab? = null
     private var activeKeyboardGrab: XInputGrab? = null
     private val passiveButtonGrabs = mutableListOf<XPassiveButtonGrab>()
@@ -348,6 +349,53 @@ internal class X11State(
             keysymsByKeycode = rows.toSortedMap(),
         )
         return keycodeCount
+    }
+
+    @Synchronized
+    fun keyboardControl(): XKeyboardControlSettings = keyboardControl.copy(
+        autoRepeats = keyboardControl.autoRepeats.copyOf(),
+    )
+
+    @Synchronized
+    fun updateKeyboardControl(update: XKeyboardControlUpdate) {
+        var next = keyboardControl
+        update.keyClickPercent?.let {
+            next = next.copy(keyClickPercent = if (it == -1) XKeyboardControlSettings.DefaultKeyClickPercent else it)
+        }
+        update.bellPercent?.let {
+            next = next.copy(bellPercent = if (it == -1) XKeyboardControlSettings.DefaultBellPercent else it)
+        }
+        update.bellPitch?.let {
+            next = next.copy(bellPitch = if (it == -1) XKeyboardControlSettings.DefaultBellPitch else it)
+        }
+        update.bellDuration?.let {
+            next = next.copy(bellDuration = if (it == -1) XKeyboardControlSettings.DefaultBellDuration else it)
+        }
+        update.ledMode?.let { mode ->
+            next = if (update.led != null) {
+                val bit = 1 shl (update.led - 1)
+                next.copy(ledMask = if (mode == XKeyboardLedMode.On) next.ledMask or bit else next.ledMask and bit.inv())
+            } else {
+                next.copy(ledMask = if (mode == XKeyboardLedMode.On) -1 else 0)
+            }
+        }
+        update.autoRepeatMode?.let { mode ->
+            if (update.key != null) {
+                val autoRepeats = next.autoRepeats.copyOf()
+                val enabled = mode != XKeyboardAutoRepeatMode.Off
+                val index = update.key / 8
+                val bit = 1 shl (update.key % 8)
+                autoRepeats[index] = if (enabled) {
+                    (autoRepeats[index].toInt() or bit).toByte()
+                } else {
+                    (autoRepeats[index].toInt() and bit.inv()).toByte()
+                }
+                next = next.copy(autoRepeats = autoRepeats)
+            } else {
+                next = next.copy(globalAutoRepeat = mode != XKeyboardAutoRepeatMode.Off)
+            }
+        }
+        keyboardControl = next
     }
 
     @Synchronized
@@ -1077,6 +1125,7 @@ internal class X11State(
             ),
             fontPath = fontPath.toList(),
             keyboardMapping = keyboardMapping.snapshot(),
+            keyboardControl = keyboardControl.snapshot(),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
             overlaps = overlaps(windowSnapshots),
@@ -2986,6 +3035,23 @@ internal object XModifierMapping {
 internal object XKeyboard {
     const val MinKeycode = 8
     const val MaxKeycode = 255
+    const val ControlKeyClickPercent = 1 shl 0
+    const val ControlBellPercent = 1 shl 1
+    const val ControlBellPitch = 1 shl 2
+    const val ControlBellDuration = 1 shl 3
+    const val ControlLed = 1 shl 4
+    const val ControlLedMode = 1 shl 5
+    const val ControlKey = 1 shl 6
+    const val ControlAutoRepeatMode = 1 shl 7
+    const val ControlMask =
+        ControlKeyClickPercent or
+            ControlBellPercent or
+            ControlBellPitch or
+            ControlBellDuration or
+            ControlLed or
+            ControlLedMode or
+            ControlKey or
+            ControlAutoRepeatMode
 }
 
 internal data class XKeyboardMapping(
@@ -3011,6 +3077,57 @@ internal data class XKeyboardMapping(
             keysymsByKeycode = emptyMap(),
         )
     }
+}
+
+internal data class XKeyboardControlSettings(
+    val keyClickPercent: Int = DefaultKeyClickPercent,
+    val bellPercent: Int = DefaultBellPercent,
+    val bellPitch: Int = DefaultBellPitch,
+    val bellDuration: Int = DefaultBellDuration,
+    val ledMask: Int = 0,
+    val globalAutoRepeat: Boolean = true,
+    val autoRepeats: ByteArray = ByteArray(32) { 0xff.toByte() },
+) {
+    fun snapshot(): XKeyboardControlSnapshot =
+        XKeyboardControlSnapshot(
+            keyClickPercent = keyClickPercent,
+            bellPercent = bellPercent,
+            bellPitch = bellPitch,
+            bellDuration = bellDuration,
+            ledMask = ledMask,
+            globalAutoRepeat = globalAutoRepeat,
+            autoRepeats = autoRepeats.map { it.toInt() and 0xff },
+        )
+
+    companion object {
+        const val DefaultKeyClickPercent = 0
+        const val DefaultBellPercent = 50
+        const val DefaultBellPitch = 400
+        const val DefaultBellDuration = 100
+        val Default = XKeyboardControlSettings()
+    }
+}
+
+internal data class XKeyboardControlUpdate(
+    val keyClickPercent: Int? = null,
+    val bellPercent: Int? = null,
+    val bellPitch: Int? = null,
+    val bellDuration: Int? = null,
+    val led: Int? = null,
+    val ledMode: Int? = null,
+    val key: Int? = null,
+    val autoRepeatMode: Int? = null,
+)
+
+internal object XKeyboardLedMode {
+    const val Off = 0
+    const val On = 1
+}
+
+internal object XKeyboardAutoRepeatMode {
+    const val Off = 0
+    const val On = 1
+    const val Default = 2
 }
 
 internal data class XAccessHost(
@@ -3343,6 +3460,7 @@ internal data class XScreenSnapshot(
     val pointer: XPointerStateSnapshot,
     val fontPath: List<String>,
     val keyboardMapping: XKeyboardMappingSnapshot,
+    val keyboardControl: XKeyboardControlSnapshot,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
     val overlaps: List<XWindowOverlap>,
@@ -3372,6 +3490,19 @@ internal data class XKeycodeMappingSnapshot(
     val keysyms: List<Int>,
 ) {
     val keysymHexes: List<String> get() = keysyms.map { "0x${it.toUInt().toString(16)}" }
+}
+
+internal data class XKeyboardControlSnapshot(
+    val keyClickPercent: Int,
+    val bellPercent: Int,
+    val bellPitch: Int,
+    val bellDuration: Int,
+    val ledMask: Int,
+    val globalAutoRepeat: Boolean,
+    val autoRepeats: List<Int>,
+) {
+    val ledMaskHex: String get() = "0x${ledMask.toUInt().toString(16)}"
+    val autoRepeatsHex: List<String> get() = autoRepeats.map { "0x${it.toString(16)}" }
 }
 
 internal data class XPointerStateSnapshot(

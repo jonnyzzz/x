@@ -4122,6 +4122,320 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeKeyboardControl updates GetKeyboardControl and state snapshot`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(getKeyboardControlRequest())
+                out.write(
+                    changeKeyboardControlRequest(
+                        0x01 to 25,
+                        0x02 to 70,
+                        0x04 to 440,
+                        0x08 to 120,
+                        0x10 to 3,
+                        0x20 to 1,
+                        0x40 to 40,
+                        0x80 to 0,
+                    ),
+                )
+                out.write(getKeyboardControlRequest())
+                out.write(changeKeyboardControlRequest(0x20 to 0))
+                out.write(changeKeyboardControlRequest(0x80 to 0))
+                out.write(getKeyboardControlRequest())
+                out.write(changeKeyboardControlRequest(0x01 to -1, 0x02 to -1, 0x04 to -1, 0x08 to -1, 0x80 to 2))
+                out.write(getKeyboardControlRequest())
+                out.flush()
+
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 1,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = 0,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = emptySet(),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 3,
+                    keyClickPercent = 25,
+                    bellPercent = 70,
+                    bellPitch = 440,
+                    bellDuration = 120,
+                    ledMask = 0x4,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 6,
+                    keyClickPercent = 25,
+                    bellPercent = 70,
+                    bellPitch = 440,
+                    bellDuration = 120,
+                    ledMask = 0,
+                    globalAutoRepeat = false,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 8,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = 0,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"keyboardControl":{"keyClickPercent":0,"bellPercent":50,"bellPitch":400,"bellDuration":100,"ledMask":"0x0","globalAutoRepeat":true""")
+                assertContains(json, """"autoRepeats":["0xff","0xff","0xff","0xff","0xff","0xfe"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeKeyboardControl reads typed LISTofVALUE slots in mask order`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(
+                    changeKeyboardControlRawRequest(
+                        0x01 or 0x02 or 0x04 or 0x08 or 0x10 or 0x20 or 0x40 or 0x80,
+                        keyboardControlValueSlot(25, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(70, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(0xb8, 0x01, 0xbb, 0xcc),
+                        keyboardControlValueSlot(120, 0, 0xbb, 0xcc),
+                        keyboardControlValueSlot(3, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(1, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(40, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(0, 0xaa, 0xbb, 0xcc),
+                    ),
+                )
+                out.write(getKeyboardControlRequest())
+                out.write(
+                    changeKeyboardControlRawRequest(
+                        0x01 or 0x02 or 0x04 or 0x08,
+                        keyboardControlValueSlot(0xff, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(0xff, 0xaa, 0xbb, 0xcc),
+                        keyboardControlValueSlot(0xff, 0xff, 0xbb, 0xcc),
+                        keyboardControlValueSlot(0xff, 0xff, 0xbb, 0xcc),
+                    ),
+                )
+                out.write(getKeyboardControlRequest())
+                out.flush()
+
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 2,
+                    keyClickPercent = 25,
+                    bellPercent = 70,
+                    bellPitch = 440,
+                    bellDuration = 120,
+                    ledMask = 0x4,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 4,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = 0x4,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeKeyboardControl reads big-endian typed LISTofVALUE slots`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket, byteOrderByte = 0x42)
+                val out = socket.getOutputStream()
+                out.write(
+                    changeKeyboardControlRawRequestBigEndian(
+                        0x01 or 0x02 or 0x04 or 0x08 or 0x10 or 0x20 or 0x40 or 0x80,
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 25),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 70),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0x01, 0xb8),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0, 120),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 3),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 1),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 40),
+                        keyboardControlValueSlot(0xaa, 0xbb, 0xcc, 0),
+                    ),
+                )
+                out.write(getKeyboardControlRequestBigEndian())
+                out.flush()
+
+                assertKeyboardControl(
+                    readReply(socket.getInputStream(), byteOrderByte = 0x42),
+                    sequence = 2,
+                    keyClickPercent = 25,
+                    bellPercent = 70,
+                    bellPitch = 440,
+                    bellDuration = 120,
+                    ledMask = 0x4,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                    byteOrderByte = 0x42,
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeKeyboardControl handles LED and auto-repeat edge controls`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(changeKeyboardControlRequest(0x20 to 1))
+                out.write(getKeyboardControlRequest())
+                out.flush()
+
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 2,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = -1,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = emptySet(),
+                )
+                assertContains(httpGet(server.localPort, "/state.json"), """"ledMask":"0xffffffff"""")
+
+                out.write(changeKeyboardControlRequest(0x10 to 32, 0x20 to 0))
+                out.write(getKeyboardControlRequest())
+                out.write(changeKeyboardControlRequest(0x40 to 40, 0x80 to 0))
+                out.write(getKeyboardControlRequest())
+                out.write(changeKeyboardControlRequest(0x40 to 40, 0x80 to 2))
+                out.write(getKeyboardControlRequest())
+                out.flush()
+
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 4,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = Int.MAX_VALUE,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = emptySet(),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 6,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = Int.MAX_VALUE,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = setOf(40),
+                )
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 8,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = Int.MAX_VALUE,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = emptySet(),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeKeyboardControl validates values matches and length and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(changeKeyboardControlRequest(0x01 to -2))
+                out.write(changeKeyboardControlRequest(0x02 to 101))
+                out.write(changeKeyboardControlRequest(0x04 to -2))
+                out.write(changeKeyboardControlRequest(0x08 to -2))
+                out.write(changeKeyboardControlRequest(0x10 to 0))
+                out.write(changeKeyboardControlRequest(0x20 to 2))
+                out.write(changeKeyboardControlRequest(0x40 to 7))
+                out.write(changeKeyboardControlRequest(0x80 to 3))
+                out.write(changeKeyboardControlRequest(0x10 to 3))
+                out.write(changeKeyboardControlRequest(0x40 to 40))
+                out.write(changeKeyboardControlRequest(0x100 to 1))
+                out.write(request(102, 0, ByteArray(0)))
+                out.write(request(102, 0, ByteArray(8)))
+                out.write(request(103, 0, ByteArray(4)))
+                out.write(getKeyboardControlRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = -2, sequence = 1)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 101, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = -2, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = -2, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 2, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 7, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 3, sequence = 8)
+                assertError(socket.getInputStream(), error = 8, opcode = 102, badValue = 3, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 102, badValue = 40, sequence = 10)
+                assertError(socket.getInputStream(), error = 2, opcode = 102, badValue = 0x100, sequence = 11)
+                assertError(socket.getInputStream(), error = 16, opcode = 102, badValue = 0, sequence = 12)
+                assertError(socket.getInputStream(), error = 16, opcode = 102, badValue = 0, sequence = 13)
+                assertError(socket.getInputStream(), error = 16, opcode = 103, badValue = 0, sequence = 14)
+                assertKeyboardControl(
+                    readReply(socket.getInputStream()),
+                    sequence = 15,
+                    keyClickPercent = 0,
+                    bellPercent = 50,
+                    bellPitch = 400,
+                    bellDuration = 100,
+                    ledMask = 0,
+                    globalAutoRepeat = true,
+                    autoRepeatDisabledKeycodes = emptySet(),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetPointerMapping updates GetPointerMapping and validates failures`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6079,6 +6393,47 @@ class XCoreDrawingProtocolTest {
     private fun bellRequest(percent: Int): ByteArray =
         request(104, percent and 0xff, ByteArray(0))
 
+    private fun getKeyboardControlRequest(): ByteArray =
+        request(103, 0, ByteArray(0))
+
+    private fun getKeyboardControlRequestBigEndian(): ByteArray =
+        requestBigEndian(103, 0, ByteArray(0))
+
+    private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {
+        val mask = values.fold(0) { acc, (bit, _) -> acc or bit }
+        val body = ByteArray(4 + values.size * 4)
+        put32le(body, 0, mask)
+        values.forEachIndexed { index, (_, value) ->
+            put32le(body, 4 + index * 4, value)
+        }
+        return request(102, 0, body)
+    }
+
+    private fun changeKeyboardControlRawRequest(mask: Int, vararg valueSlots: ByteArray): ByteArray {
+        val body = ByteArray(4 + valueSlots.size * 4)
+        put32le(body, 0, mask)
+        valueSlots.forEachIndexed { index, bytes ->
+            assertEquals(4, bytes.size)
+            bytes.copyInto(body, 4 + index * 4)
+        }
+        return request(102, 0, body)
+    }
+
+    private fun changeKeyboardControlRawRequestBigEndian(mask: Int, vararg valueSlots: ByteArray): ByteArray {
+        val body = ByteArray(4 + valueSlots.size * 4)
+        put32be(body, 0, mask)
+        valueSlots.forEachIndexed { index, bytes ->
+            assertEquals(4, bytes.size)
+            bytes.copyInto(body, 4 + index * 4)
+        }
+        return requestBigEndian(102, 0, body)
+    }
+
+    private fun keyboardControlValueSlot(vararg bytes: Int): ByteArray {
+        assertEquals(4, bytes.size)
+        return ByteArray(4) { index -> bytes[index].toByte() }
+    }
+
     private fun setPointerMappingRequest(vararg mapping: Int): ByteArray {
         val body = ByteArray(paddedLength(mapping.size))
         mapping.forEachIndexed { index, value -> body[index] = value.toByte() }
@@ -6933,6 +7288,38 @@ class XCoreDrawingProtocolTest {
             assertEquals(keysym, u32le(reply, 32 + index * 4))
         }
         assertEquals(32 + keysyms.size * 4, reply.size)
+    }
+
+    private fun assertKeyboardControl(
+        reply: ByteArray,
+        sequence: Int,
+        keyClickPercent: Int,
+        bellPercent: Int,
+        bellPitch: Int,
+        bellDuration: Int,
+        ledMask: Int,
+        globalAutoRepeat: Boolean,
+        autoRepeatDisabledKeycodes: Set<Int>,
+        byteOrderByte: Int = 0x6c,
+    ) {
+        fun read16(offset: Int) = if (byteOrderByte == 0x42) u16be(reply, offset) else u16le(reply, offset)
+        fun read32(offset: Int) = if (byteOrderByte == 0x42) u32be(reply, offset) else u32le(reply, offset)
+        assertEquals(1, reply[0].toInt())
+        assertEquals(if (globalAutoRepeat) 1 else 0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, read16(2))
+        assertEquals(5, read32(4))
+        assertEquals(ledMask, read32(8))
+        assertEquals(keyClickPercent, reply[12].toInt() and 0xff)
+        assertEquals(bellPercent, reply[13].toInt() and 0xff)
+        assertEquals(bellPitch, read16(14))
+        assertEquals(bellDuration, read16(16))
+        assertZeroBytes(reply, 18, 20)
+        assertEquals(52, reply.size)
+        for (keycode in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+            val byte = reply[20 + keycode / 8].toInt() and 0xff
+            val enabled = (byte and (1 shl (keycode % 8))) != 0
+            assertEquals(keycode !in autoRepeatDisabledKeycodes, enabled, "auto-repeat keycode $keycode")
+        }
     }
 
     private fun assertListHosts(reply: ByteArray, sequence: Int, enabled: Boolean, vararg hosts: AccessHost) {
