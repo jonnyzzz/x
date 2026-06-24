@@ -158,7 +158,7 @@ internal object SvgScreenRenderer {
                 append(""","time":${grab.timeUnsigned}""")
                 append('}')
             }
-            append("""]}""")
+            append("""],"serverGrabbed":${snapshot.serverGrabbed}}""")
         }
 
     private fun screenCss(snapshot: XScreenSnapshot): String =

@@ -2783,6 +2783,130 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabServer and UngrabServer are replyless and update state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(grabServerRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointerWhileGrabbed = readReply(socket.getInputStream())
+                assertEquals(1, pointerWhileGrabbed[0].toInt())
+                assertEquals(2, u16le(pointerWhileGrabbed, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"serverGrabbed":true""")
+
+                out.write(ungrabServerRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val pointerAfterUngrab = readReply(socket.getInputStream())
+                assertEquals(1, pointerAfterUngrab[0].toInt())
+                assertEquals(4, u16le(pointerAfterUngrab, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"serverGrabbed":false""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabServer and UngrabServer validate empty request bodies`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(36, 0, ByteArray(4)))
+                out.write(request(37, 0, ByteArray(4)))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 36, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 37, badValue = 0, sequence = 2)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(3, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"serverGrabbed":false""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabServer delays other client requests until UngrabServer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 300
+                    setup(owner)
+                    setup(other)
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(grabServerRequest())
+                    ownerOut.flush()
+                    waitForStateContains(server.localPort, """"serverGrabbed":true""")
+
+                    other.getOutputStream().write(queryPointerRequest())
+                    other.getOutputStream().write(queryPointerRequest())
+                    other.getOutputStream().flush()
+                    assertFailsWith<SocketTimeoutException> {
+                        readReply(other.getInputStream())
+                    }
+
+                    ownerOut.write(ungrabServerRequest())
+                    ownerOut.flush()
+                    other.soTimeout = 2_000
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(1, u16le(pointer, 2))
+                    val secondPointer = readReply(other.getInputStream())
+                    assertEquals(1, secondPointer[0].toInt())
+                    assertEquals(2, u16le(secondPointer, 2))
+                    assertContains(httpGet(server.localPort, "/state.json"), """"serverGrabbed":false""")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabServer is released when owner disconnects`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { other ->
+                    owner.soTimeout = 2_000
+                    other.soTimeout = 2_000
+                    setup(owner)
+                    setup(other)
+                    owner.getOutputStream().write(grabServerRequest())
+                    owner.getOutputStream().flush()
+                    waitForStateContains(server.localPort, """"serverGrabbed":true""")
+
+                    owner.close()
+                    waitForStateContains(server.localPort, """"serverGrabbed":false""")
+
+                    other.getOutputStream().write(queryPointerRequest())
+                    other.getOutputStream().flush()
+                    val pointer = readReply(other.getInputStream())
+                    assertEquals(1, pointer[0].toInt())
+                    assertEquals(1, u16le(pointer, 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetInputFocus updates GetInputFocus reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4604,6 +4728,12 @@ class XCoreDrawingProtocolTest {
     private fun ungrabKeyboardBadLengthRequest(): ByteArray =
         request(32, 0, ByteArray(0))
 
+    private fun grabServerRequest(): ByteArray =
+        request(36, 0, ByteArray(0))
+
+    private fun ungrabServerRequest(): ByteArray =
+        request(37, 0, ByteArray(0))
+
     private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
         val body = ByteArray(8)
         put32le(body, 0, window)
@@ -5291,6 +5421,14 @@ class XCoreDrawingProtocolTest {
             socket.getOutputStream().flush()
             socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
         }
+
+    private fun waitForStateContains(port: Int, expected: String) {
+        repeat(20) {
+            if (httpGet(port, "/state.json").contains(expected)) return
+            Thread.sleep(50)
+        }
+        assertContains(httpGet(port, "/state.json"), expected)
+    }
 
     private fun windowJsonId(id: Int): String =
         """"id":"0x${id.toString(16)}""""

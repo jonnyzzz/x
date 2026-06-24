@@ -77,14 +77,17 @@ internal class X11Connection(
                 } else {
                     input.readExactly(units * 4 - 4)
                 }
-                sequence = (sequence + 1) and 0xffff
-                if (trace) {
-                    System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
+                state.processWhenServerGrabAllows(this) {
+                    sequence = (sequence + 1) and 0xffff
+                    if (trace) {
+                        System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
+                    }
+                    state.recordRequest(requestName(opcode, minorOpcode))
+                    dispatch(opcode, minorOpcode, body)
                 }
-                state.recordRequest(requestName(opcode, minorOpcode))
-                dispatch(opcode, minorOpcode, body)
             }
         } finally {
+            state.releaseServerGrab(this)
             if (closeDownMode == XCloseDownMode.Destroy) {
                 state.removeClientResources(this, ownedResources)
             }
@@ -142,8 +145,8 @@ internal class X11Connection(
             33 -> unitReplyless()
             34 -> unitReplyless()
             35 -> unitReplyless()
-            36 -> unitReplyless()
-            37 -> unitReplyless()
+            36 -> grabServer(body)
+            37 -> ungrabServer(body)
             38 -> queryPointer()
             40 -> translateCoordinates(body)
             42 -> setInputFocus(minorOpcode, body)
@@ -1592,6 +1595,16 @@ internal class X11Connection(
     private fun ungrabKeyboard(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 32, badValue = 0)
         state.ungrabKeyboard(this, byteOrder.u32(body, 0))
+    }
+
+    private fun grabServer(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 36, badValue = 0)
+        state.grabServer(this)
+    }
+
+    private fun ungrabServer(body: ByteArray) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = 37, badValue = 0)
+        state.ungrabServer(this)
     }
 
     private fun translateCoordinates(body: ByteArray) {

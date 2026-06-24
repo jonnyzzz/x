@@ -1,5 +1,7 @@
 package org.jonnyzzz.xserver
 
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.floor
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -53,6 +55,10 @@ internal class X11State(
     private var modifierMapping = XModifierMapping.Default
     private var activePointerGrab: XInputGrab? = null
     private var activeKeyboardGrab: XInputGrab? = null
+    private val requestProcessingLock = ReentrantLock()
+    private val serverGrabLock = ReentrantLock()
+    private val serverGrabReleased = serverGrabLock.newCondition()
+    private var serverGrabOwner: XEventSink? = null
     private var accessControlEnabled = false
     private val accessHosts = linkedSetOf<XAccessHost>()
 
@@ -357,6 +363,59 @@ internal class X11State(
     private fun validUngrabTime(requestTime: Int, grabTime: Int): Boolean =
         requestTime == 0 || Integer.compareUnsigned(requestTime, grabTime) >= 0
 
+    fun processWhenServerGrabAllows(owner: XEventSink, process: () -> Unit) {
+        while (true) {
+            requestProcessingLock.lock()
+            val allowed = serverGrabLock.withLock {
+                serverGrabOwner == null || serverGrabOwner == owner
+            }
+            if (allowed) {
+                try {
+                    process()
+                    return
+                } finally {
+                    requestProcessingLock.unlock()
+                }
+            }
+            requestProcessingLock.unlock()
+
+            serverGrabLock.withLock {
+                while (serverGrabOwner != null && serverGrabOwner != owner) {
+                    serverGrabReleased.await()
+                }
+            }
+        }
+    }
+
+    fun grabServer(owner: XEventSink) {
+        serverGrabLock.withLock {
+            serverGrabOwner = owner
+        }
+    }
+
+    fun ungrabServer(owner: XEventSink) {
+        serverGrabLock.withLock {
+            if (serverGrabOwner == owner) {
+                serverGrabOwner = null
+                serverGrabReleased.signalAll()
+            }
+        }
+    }
+
+    fun releaseServerGrab(owner: XEventSink) {
+        serverGrabLock.withLock {
+            if (serverGrabOwner == owner) {
+                serverGrabOwner = null
+                serverGrabReleased.signalAll()
+            }
+        }
+    }
+
+    fun serverGrabbed(): Boolean =
+        serverGrabLock.withLock {
+            serverGrabOwner != null
+        }
+
     @Synchronized
     fun accessControlEnabled(): Boolean = accessControlEnabled
 
@@ -405,6 +464,7 @@ internal class X11State(
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
         releaseInputGrabs(sink)
+        releaseServerGrab(sink)
     }
 
     @Synchronized
@@ -660,6 +720,7 @@ internal class X11State(
                 activePointerGrab?.snapshot(),
                 activeKeyboardGrab?.snapshot(),
             ),
+            serverGrabbed = serverGrabbed(),
             glxOperations = glxOperations.toList(),
             renderOperations = renderOperations.toList(),
             renderPictures = pictures.values.map { picture ->
@@ -2849,6 +2910,7 @@ internal data class XScreenSnapshot(
     val drawings: List<XDrawingCommand>,
     val inputOperations: List<XInputOperation>,
     val inputGrabs: List<XInputGrabSnapshot>,
+    val serverGrabbed: Boolean,
     val glxOperations: List<XGlxOperation>,
     val renderOperations: List<XRenderOperation>,
     val renderPictures: List<XRenderPictureSnapshot>,
