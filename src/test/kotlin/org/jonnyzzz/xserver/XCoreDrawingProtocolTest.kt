@@ -674,8 +674,9 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(openFontRequest(PixmapId))
                 out.write(createGcRequest(GcId, foreground = Blue))
-                out.write(createGlyphCursorRequest(WindowId, sourceFont = GcId, maskFont = GcId))
+                out.write(createGlyphCursorRequest(WindowId, sourceFont = PixmapId, maskFont = 0))
                 out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
                 out.flush()
@@ -688,6 +689,44 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateGlyphCursor validates fonts and length with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val sourceFont = PixmapId + 40
+                val maskFont = PixmapId + 41
+                val missingSourceFont = PixmapId + 42
+                val missingMaskFont = PixmapId + 43
+                val cursor = PixmapId + 44
+                val out = socket.getOutputStream()
+                out.write(openFontRequest(sourceFont))
+                out.write(openFontRequest(maskFont))
+                out.write(request(94, 0, ByteArray(24)))
+                out.write(request(94, 0, ByteArray(32)))
+                out.write(createGlyphCursorRequest(cursor, sourceFont = missingSourceFont, maskFont = 0))
+                out.write(createGlyphCursorRequest(cursor, sourceFont = sourceFont, maskFont = missingMaskFont))
+                out.write(createGlyphCursorRequest(cursor, sourceFont = sourceFont, maskFont = 0))
+                out.write(recolorCursorRequest(cursor))
+                out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0xffff, blue = 0))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 94, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 16, opcode = 94, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 7, opcode = 94, badValue = missingSourceFont, sequence = 5)
+                assertError(socket.getInputStream(), error = 7, opcode = 94, badValue = missingMaskFont, sequence = 6)
+
+                val green = readReply(socket.getInputStream())
+                assertEquals(9, u16le(green, 2))
+                assertEquals(0x0000_ff00, u32le(green, 16))
             }
             server.close()
             serverThread.join(1_000)

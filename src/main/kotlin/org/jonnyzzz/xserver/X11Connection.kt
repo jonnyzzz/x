@@ -3062,12 +3062,15 @@ internal class X11Connection(
     }
 
     private fun createGlyphCursor(body: ByteArray) {
-        if (body.size >= 4) {
-            val id = byteOrder.u32(body, 0)
-            if (state.hasResource(id)) return writeError(error = 14, opcode = 94, badValue = id)
-            state.putCursor(id)
-            own(id)
-        }
+        if (body.size != 28) return writeError(error = 16, opcode = 94, badValue = 0)
+        val id = byteOrder.u32(body, 0)
+        val sourceFont = byteOrder.u32(body, 4)
+        val maskFont = byteOrder.u32(body, 8)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 94, badValue = id)
+        if (!state.hasFont(sourceFont)) return writeError(error = 7, opcode = 94, badValue = sourceFont)
+        if (maskFont != 0 && !state.hasFont(maskFont)) return writeError(error = 7, opcode = 94, badValue = maskFont)
+        state.putCursor(id)
+        own(id)
     }
 
     private fun recolorCursor(body: ByteArray) {
