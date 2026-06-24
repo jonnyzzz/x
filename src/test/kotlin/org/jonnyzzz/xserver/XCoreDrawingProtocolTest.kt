@@ -6528,10 +6528,116 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, u32le(owner, 4))
                 assertEquals(WindowId, u32le(owner, 8))
 
+                val clear = socket.getInputStream().readExactly(32)
+                assertEquals(29, clear[0].toInt() and 0xff)
+                assertEquals(4, u16le(clear, 2))
+                assertEquals(WindowId, u32le(clear, 8))
+                assertEquals(PrimaryAtom, u32le(clear, 12))
+
                 val cleared = readReply(socket.getInputStream())
                 assertEquals(1, cleared[0].toInt())
                 assertEquals(0, u32le(cleared, 4))
                 assertEquals(0, u32le(cleared, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetSelectionOwner sends SelectionClear to displaced owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { firstOwnerSocket ->
+                Socket("127.0.0.1", server.localPort).use { secondOwnerSocket ->
+                    firstOwnerSocket.soTimeout = 2_000
+                    secondOwnerSocket.soTimeout = 2_000
+                    setup(firstOwnerSocket)
+                    setup(secondOwnerSocket)
+                    val secondWindow = WindowId + 1
+                    firstOwnerSocket.getOutputStream().write(createWindowRequest(WindowId))
+                    firstOwnerSocket.getOutputStream().write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    firstOwnerSocket.getOutputStream().flush()
+                    var observedOwner: ByteArray? = null
+                    var attempts = 0
+                    while (observedOwner == null && attempts < 20) {
+                        attempts += 1
+                        secondOwnerSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                        secondOwnerSocket.getOutputStream().flush()
+                        val reply = readReply(secondOwnerSocket.getInputStream())
+                        if (u32le(reply, 8) == WindowId) {
+                            observedOwner = reply
+                        } else {
+                            Thread.sleep(25)
+                        }
+                    }
+                    assertEquals(WindowId, u32le(observedOwner ?: error("selection owner was not set"), 8))
+
+                    secondOwnerSocket.getOutputStream().write(createWindowRequest(secondWindow))
+                    secondOwnerSocket.getOutputStream().write(setSelectionOwnerRequest(secondWindow, PrimaryAtom))
+                    secondOwnerSocket.getOutputStream().flush()
+
+                    val clear = firstOwnerSocket.getInputStream().readExactly(32)
+                    assertEquals(29, clear[0].toInt() and 0xff)
+                    assertEquals(2, u16le(clear, 2))
+                    assertEquals(1, u32le(clear, 4))
+                    assertEquals(WindowId, u32le(clear, 8))
+                    assertEquals(PrimaryAtom, u32le(clear, 12))
+
+                    secondOwnerSocket.getOutputStream().write(getSelectionOwnerRequest(PrimaryAtom))
+                    secondOwnerSocket.getOutputStream().flush()
+                    val owner = readReply(secondOwnerSocket.getInputStream())
+                    assertEquals(secondWindow, u32le(owner, 8))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetSelectionOwner ignores future timestamps without clearing current owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                out.write(setSelectionOwnerRequest(0, PrimaryAtom, time = 2))
+                out.write(getSelectionOwnerRequest(PrimaryAtom))
+                out.flush()
+
+                val owner = readReply(socket.getInputStream())
+                assertEquals(4, u16le(owner, 2))
+                assertEquals(WindowId, u32le(owner, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetSelectionOwner and GetSelectionOwner reject malformed lengths and recover stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom, extraBytes = 4))
+                out.write(getSelectionOwnerRequest(PrimaryAtom, extraBytes = 4))
+                out.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                out.write(getSelectionOwnerRequest(PrimaryAtom))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 22, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 23, badValue = 0, sequence = 3)
+                val owner = readReply(socket.getInputStream())
+                assertEquals(5, u16le(owner, 2))
+                assertEquals(WindowId, u32le(owner, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -7941,16 +8047,16 @@ class XCoreDrawingProtocolTest {
         return request(114, 0, body)
     }
 
-    private fun setSelectionOwnerRequest(owner: Int, selection: Int): ByteArray {
-        val body = ByteArray(12)
+    private fun setSelectionOwnerRequest(owner: Int, selection: Int, time: Int = 0, extraBytes: Int = 0): ByteArray {
+        val body = ByteArray(12 + extraBytes)
         put32le(body, 0, owner)
         put32le(body, 4, selection)
-        put32le(body, 8, 0)
+        put32le(body, 8, time)
         return request(22, 0, body)
     }
 
-    private fun getSelectionOwnerRequest(selection: Int): ByteArray =
-        request(23, 0, ByteArray(4).also { put32le(it, 0, selection) })
+    private fun getSelectionOwnerRequest(selection: Int, extraBytes: Int = 0): ByteArray =
+        request(23, 0, ByteArray(4 + extraBytes).also { put32le(it, 0, selection) })
 
     private fun convertSelectionRequest(
         requestor: Int,

@@ -27,6 +27,7 @@ internal class X11State(
     private val atomIds = linkedMapOf<String, Int>()
     private val atomNames = linkedMapOf<Int, String>()
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
+    private val selectionLastChangeTimes = linkedMapOf<Int, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -2646,12 +2647,34 @@ internal class X11State(
     fun atomName(id: Int): String? = atomNames[id]
 
     @Synchronized
-    fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink) {
+    fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink, time: Int): XSelectionClearDispatch? {
+        val current = selectionOwners[selection]
+        val lastChangeTime = selectionLastChangeTimes[selection] ?: 0
+        val serverTime = currentServerTime(lastChangeTime)
+        if (time != 0 &&
+            (
+                Integer.compareUnsigned(time, lastChangeTime) < 0 ||
+                    Integer.compareUnsigned(time, serverTime) > 0
+                )
+        ) {
+            return null
+        }
+        val effectiveTime = if (time == 0) serverTime else time
+        selectionLastChangeTimes[selection] = effectiveTime
         if (owner == 0) {
             selectionOwners.remove(selection)
         } else {
             selectionOwners[selection] = XSelectionOwner(owner, sink)
         }
+        if (current == null || (owner != 0 && current.sink == sink)) return null
+        return XSelectionClearDispatch(
+            sink = current.sink,
+            event = XSelectionClearEvent(
+                time = effectiveTime,
+                ownerWindowId = current.windowId,
+                selection = selection,
+            ),
+        )
     }
 
     @Synchronized

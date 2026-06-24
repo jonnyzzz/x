@@ -1589,16 +1589,20 @@ internal class X11Connection(
     }
 
     private fun setSelectionOwner(body: ByteArray) {
-        if (body.size < 12) return writeError(error = 16, opcode = 22, badValue = 0)
+        if (body.size != 12) return writeError(error = 16, opcode = 22, badValue = 0)
         val owner = byteOrder.u32(body, 0)
         val selection = byteOrder.u32(body, 4)
+        val time = byteOrder.u32(body, 8)
         if (state.atomName(selection) == null) return writeError(error = 5, opcode = 22, badValue = selection)
         if (owner != 0 && state.window(owner) == null) return writeError(error = 3, opcode = 22, badValue = owner)
-        state.setSelectionOwner(selection, owner, this)
+        val clear = state.setSelectionOwner(selection, owner, this, time)
+        if (clear != null) {
+            runCatching { clear.sink.sendSelectionClearEvent(clear.event) }
+        }
     }
 
     private fun getSelectionOwner(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = 23, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = 23, badValue = 0)
         val selection = byteOrder.u32(body, 0)
         if (state.atomName(selection) == null) return writeError(error = 5, opcode = 23, badValue = selection)
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -3561,6 +3565,16 @@ internal class X11Connection(
         byteOrder.put32(bytes, 8, event.atom)
         byteOrder.put32(bytes, 12, event.time)
         bytes[16] = event.state.toByte()
+        write(bytes)
+    }
+
+    override fun sendSelectionClearEvent(event: XSelectionClearEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 29
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.time)
+        byteOrder.put32(bytes, 8, event.ownerWindowId)
+        byteOrder.put32(bytes, 12, event.selection)
         write(bytes)
     }
 
