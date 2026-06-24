@@ -1422,8 +1422,11 @@ internal class X11Connection(
     }
 
     private fun internAtom(onlyIfExistsOpcode: Int, body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 16, badValue = 0)
         val onlyIfExists = onlyIfExistsOpcode != 0
         val nameLength = byteOrder.u16(body, 0)
+        val expectedSize = 4 + paddedLength(nameLength)
+        if (body.size != expectedSize) return writeError(error = 16, opcode = 16, badValue = 0)
         val name = body.copyOfRange(4, 4 + nameLength).decodeToString()
         val atom = state.internAtom(name, onlyIfExists)
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -1432,8 +1435,9 @@ internal class X11Connection(
     }
 
     private fun getAtomName(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 17, badValue = 0)
         val atom = byteOrder.u32(body, 0)
-        val name = state.atomName(atom) ?: return writeError(5, 17, badValue = atom)
+        val name = state.atomName(atom) ?: return writeError(error = 5, opcode = 17, badValue = atom)
         val bytes = name.encodeToByteArray()
         val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
         byteOrder.put16(reply, 8, bytes.size)

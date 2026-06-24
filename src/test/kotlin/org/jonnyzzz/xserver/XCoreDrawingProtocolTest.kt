@@ -4196,6 +4196,79 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `InternAtom validates padded name length and only-if-exists without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(16, 0, ByteArray(0)))
+                out.write(request(16, 0, ByteArray(4).also {
+                    put16le(it, 0, 4)
+                }))
+                out.write(request(16, 0, ByteArray(12).also {
+                    put16le(it, 0, 1)
+                    it[4] = 'A'.code.toByte()
+                }))
+                out.write(internAtomRequest("JONNYZZZ_TEST_ATOM"))
+                out.write(internAtomRequest("JONNYZZZ_MISSING_ATOM", onlyIfExists = true))
+                out.write(internAtomRequest("PRIMARY", onlyIfExists = true))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 16, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 16, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 16, badValue = 0, sequence = 3)
+                val created = readReply(socket.getInputStream())
+                assertEquals(4, u16le(created, 2))
+                assertTrue(u32le(created, 8) > 0)
+                val missing = readReply(socket.getInputStream())
+                assertEquals(5, u16le(missing, 2))
+                assertEquals(0, u32le(missing, 8))
+                val existing = readReply(socket.getInputStream())
+                assertEquals(6, u16le(existing, 2))
+                assertEquals(PrimaryAtom, u32le(existing, 8))
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(7, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetAtomName validates request length and atom id without closing caller`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missing = 0x00ff_ffff
+                val out = socket.getOutputStream()
+                out.write(request(17, 0, ByteArray(0)))
+                out.write(request(17, 0, ByteArray(8)))
+                out.write(getAtomNameRequest(missing))
+                out.write(getAtomNameRequest(PrimaryAtom))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 17, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 17, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 5, opcode = 17, badValue = missing, sequence = 3)
+                val primary = readReply(socket.getInputStream())
+                assertEquals(4, u16le(primary, 2))
+                val nameLength = u16le(primary, 8)
+                assertEquals("PRIMARY", primary.copyOfRange(32, 32 + nameLength).decodeToString())
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FreeCursor clears active pointer grab that references cursor`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7600,6 +7673,20 @@ class XCoreDrawingProtocolTest {
             put32le(body, 8 + index * 4, value)
         }
         return request(12, 0, body)
+    }
+
+    private fun internAtomRequest(name: String, onlyIfExists: Boolean = false): ByteArray {
+        val bytes = name.encodeToByteArray()
+        val body = ByteArray(4 + paddedLength(bytes.size))
+        put16le(body, 0, bytes.size)
+        bytes.copyInto(body, 4)
+        return request(16, if (onlyIfExists) 1 else 0, body)
+    }
+
+    private fun getAtomNameRequest(atom: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, atom)
+        return request(17, 0, body)
     }
 
     private fun changeWindowBackgroundPixmapRequest(id: Int, pixmap: Int): ByteArray {
