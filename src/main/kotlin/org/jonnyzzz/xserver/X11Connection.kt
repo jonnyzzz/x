@@ -1470,9 +1470,7 @@ internal class X11Connection(
             return writeError(error = 8, opcode = 18, badValue = 0)
         }
         if (mode != XPropertyMode.Replace && existing != null && byteLength == 0L) {
-            for (sink in state.propertyNotifySinks(windowId)) {
-                runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = 0)) }
-            }
+            sendPropertyNotify(windowId, property, XPropertyState.NewValue)
             return
         }
         window.properties[property] = when {
@@ -1480,13 +1478,18 @@ internal class X11Connection(
             mode == XPropertyMode.Prepend -> existing.copy(data = data + existing.data)
             else -> existing.copy(data = existing.data + data)
         }
-        for (sink in state.propertyNotifySinks(windowId)) {
-            runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = 0)) }
-        }
+        sendPropertyNotify(windowId, property, XPropertyState.NewValue)
     }
 
     private fun deleteProperty(body: ByteArray) {
-        state.window(byteOrder.u32(body, 0))?.properties?.remove(byteOrder.u32(body, 4))
+        if (body.size != 8) return writeError(error = 16, opcode = 19, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 19, badValue = windowId)
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = 19, badValue = property)
+        if (window.properties.remove(property) != null) {
+            sendPropertyNotify(windowId, property, XPropertyState.Deleted)
+        }
     }
 
     private fun getProperty(deleteOpcode: Int, body: ByteArray) {
@@ -3525,11 +3528,11 @@ internal class X11Connection(
     override fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 28
-        bytes[1] = event.state.toByte()
         byteOrder.put16(bytes, 2, sequence)
         byteOrder.put32(bytes, 4, event.windowId)
         byteOrder.put32(bytes, 8, event.atom)
         byteOrder.put32(bytes, 12, event.time)
+        bytes[16] = event.state.toByte()
         write(bytes)
     }
 
@@ -4242,6 +4245,12 @@ internal class X11Connection(
             }
         }
         return swapped
+    }
+
+    private fun sendPropertyNotify(windowId: Int, property: Int, propertyState: Int) {
+        for (sink in state.propertyNotifySinks(windowId)) {
+            runCatching { sink.sendPropertyNotifyEvent(XPropertyNotifyEvent(windowId = windowId, atom = property, state = propertyState)) }
+        }
     }
 
     private fun invalidHostValue(family: Int, address: List<Int>): Int? =
@@ -5014,6 +5023,11 @@ private object XPropertyMode {
 
 private object XPropertyFormat {
     val ValidFormats = setOf(8, 16, 32)
+}
+
+private object XPropertyState {
+    const val NewValue = 0
+    const val Deleted = 1
 }
 
 private data class XRenderPictureAttributes(

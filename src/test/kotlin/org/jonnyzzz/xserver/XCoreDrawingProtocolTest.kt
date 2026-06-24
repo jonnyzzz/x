@@ -6225,6 +6225,61 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DeleteProperty validates request fields and removes existing property`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingWindow = WindowId + 409
+                val missingProperty = 0x00ff_fffc
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(request(19, 0, ByteArray(0)))
+                out.write(request(19, 0, ByteArray(12)))
+                out.write(deletePropertyRequest(missingWindow, PrimaryAtom))
+                out.write(deletePropertyRequest(WindowId, missingProperty))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "one"))
+                out.write(deletePropertyRequest(WindowId, PrimaryAtom))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 19, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 19, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 3, opcode = 19, badValue = missingWindow, sequence = 4)
+                assertError(socket.getInputStream(), error = 5, opcode = 19, badValue = missingProperty, sequence = 5)
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 8)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DeleteProperty sends PropertyNotify only when property existed`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(changePropertyRequest(WindowId, PrimaryAtom, StringAtom, "one"))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PropertyChange))
+                out.write(deletePropertyRequest(WindowId, PrimaryAtom))
+                out.write(deletePropertyRequest(WindowId, PrimaryAtom))
+                out.write(getPropertyRequest(WindowId, PrimaryAtom, StringAtom))
+                out.flush()
+
+                assertPropertyNotifyEvent(socket.getInputStream().readExactly(32), sequence = 4, window = WindowId, atom = PrimaryAtom, state = 1)
+                assertNoPropertyReply(readReply(socket.getInputStream()), sequence = 6)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RotateProperties rotates property values by positive and negative delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7718,6 +7773,13 @@ class XCoreDrawingProtocolTest {
         return requestBigEndian(20, 0, body)
     }
 
+    private fun deletePropertyRequest(window: Int, property: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put32le(body, 4, property)
+        return request(19, 0, body)
+    }
+
     private fun rotatePropertiesRequest(window: Int, delta: Int, vararg properties: Int): ByteArray {
         val body = ByteArray(8 + properties.size * 4)
         put32le(body, 0, window)
@@ -8584,6 +8646,18 @@ class XCoreDrawingProtocolTest {
         assertEquals(value, reply.copyOfRange(32, 32 + bytes.size).decodeToString())
     }
 
+    private fun assertNoPropertyReply(reply: ByteArray, sequence: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(0, u32le(reply, 4))
+        assertEquals(0, u32le(reply, 8))
+        assertEquals(0, u32le(reply, 12))
+        assertEquals(0, u32le(reply, 16))
+        assertZeroBytes(reply, 20, 32)
+        assertEquals(32, reply.size)
+    }
+
     private fun assertPropertyReplyBytes(
         reply: ByteArray,
         sequence: Int,
@@ -8606,14 +8680,15 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(reply, 32 + data.size, reply.size)
     }
 
-    private fun assertPropertyNotifyEvent(event: ByteArray, sequence: Int, window: Int, atom: Int) {
+    private fun assertPropertyNotifyEvent(event: ByteArray, sequence: Int, window: Int, atom: Int, state: Int = 0) {
         assertEquals(28, event[0].toInt() and 0xff)
         assertEquals(0, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
         assertEquals(window, u32le(event, 4))
         assertEquals(atom, u32le(event, 8))
         assertEquals(0, u32le(event, 12))
-        assertZeroBytes(event, 16, 32)
+        assertEquals(state, event[16].toInt() and 0xff)
+        assertZeroBytes(event, 17, 32)
     }
 
     private fun assertPointerMapping(reply: ByteArray, sequence: Int, vararg mapping: Int) {
