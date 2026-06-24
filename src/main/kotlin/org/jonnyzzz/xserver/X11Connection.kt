@@ -186,8 +186,8 @@ internal class X11Connection(
             71 -> polyArc(body, filled = true)
             72 -> putImage(minorOpcode, body)
             73 -> getImage(minorOpcode, body)
-            74 -> polyText(body, is16Bit = false)
-            75 -> polyText(body, is16Bit = true)
+            74 -> polyText(opcode = 74, body = body, is16Bit = false)
+            75 -> polyText(opcode = 75, body = body, is16Bit = true)
             76 -> imageText(minorOpcode, body, is16Bit = false)
             77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(body)
@@ -2543,11 +2543,21 @@ internal class X11Connection(
         )
     }
 
-    private fun polyText(body: ByteArray, is16Bit: Boolean) {
-        if (body.size < 12) return
-        val gc = state.gc(byteOrder.u32(body, 4))
+    private fun polyText(opcode: Int, body: ByteArray, is16Bit: Boolean) {
+        if (body.size < 12) return writeError(error = 16, opcode = opcode, badValue = 0)
+        val gcId = byteOrder.u32(body, 4)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
+        val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        val runs = decodePolyText(body, is16Bit)
+        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = opcode, badValue = drawableId)
+        if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
+            return writeError(error = 8, opcode = opcode, badValue = drawableId)
+        }
+        val decoded = decodePolyText(body, is16Bit) ?: return writeError(error = 16, opcode = opcode, badValue = 0)
+        val missingFont = decoded.fontIds.firstOrNull { !state.hasFont(it) }
+        if (missingFont != null) return writeError(error = 7, opcode = opcode, badValue = missingFont)
+        decoded.fontIds.lastOrNull()?.let { state.updateGc(id = gcId, fontId = it) }
+        val runs = decoded.runs
         if (runs.isEmpty()) return
         for (run in runs) {
             state.drawText(
@@ -4207,21 +4217,31 @@ internal class X11Connection(
             }
         }
 
-    private fun decodePolyText(body: ByteArray, is16Bit: Boolean): List<XTextRun> {
+    private fun decodePolyText(body: ByteArray, is16Bit: Boolean): XPolyTextDecode? {
         val runs = mutableListOf<XTextRun>()
+        val fontIds = mutableListOf<Int>()
         var offset = 12
         var x = byteOrder.i16(body, 8)
         val y = byteOrder.i16(body, 10)
         while (offset < body.size) {
+            val remaining = body.size - offset
+            if (remaining < 2) break
             val length = body[offset].toInt() and 0xff
             if (length == 255) {
+                if (remaining < 5) {
+                    if (remaining <= 3) break
+                    return null
+                }
+                fontIds += ByteOrder.MsbFirst.u32(body, offset + 1)
                 offset += 5
                 continue
             }
-            if (offset + 2 > body.size) break
             x += body[offset + 1].toInt().toByte().toInt()
             val byteLength = length * if (is16Bit) 2 else 1
-            if (offset + 2 + byteLength > body.size) break
+            if (offset + 2 + byteLength > body.size) {
+                if (remaining <= 3) break
+                return null
+            }
             val bytes = body.copyOfRange(offset + 2, offset + 2 + byteLength)
             val text = if (is16Bit) decodeText16(bytes) else decodeText8(bytes)
             if (text.isNotEmpty()) {
@@ -4230,7 +4250,7 @@ internal class X11Connection(
             }
             offset += 2 + byteLength
         }
-        return runs
+        return XPolyTextDecode(runs, fontIds)
     }
 
     private fun decodePutImage(
@@ -5282,6 +5302,11 @@ private data class XTextRun(
     val x: Int,
     val y: Int,
     val text: String,
+)
+
+private data class XPolyTextDecode(
+    val runs: List<XTextRun>,
+    val fontIds: List<Int>,
 )
 
 private data class XNamedColor(

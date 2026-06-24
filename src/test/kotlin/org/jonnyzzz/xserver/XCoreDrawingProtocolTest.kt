@@ -3184,17 +3184,88 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `PolyText reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingDrawable = WindowId + 0x7777
+                val missingFont = WindowId + 0x7778
+                val font = WindowId + 0x7779
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(polyTextBadLengthRequest(opcode = 74, bodySize = 8))
+                out.write(polyTextBadLengthRequest(opcode = 75, bodySize = 8))
+                out.write(polyText8Request(WindowId, GcId, x = 2, y = 14, delta = 0, text = "I"))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyText8Request(missingDrawable, GcId, x = 2, y = 14, delta = 0, text = "I"))
+                out.write(createPixmapRequest(PixmapId, width = 40, height = 36, depth = 8))
+                out.write(polyText8Request(PixmapId, GcId, x = 2, y = 14, delta = 0, text = "I"))
+                out.write(polyTextMalformedElementRequest(WindowId, GcId))
+                out.write(polyTextFontItemRequest(WindowId, GcId, font = missingFont))
+                out.write(openFontRequest(font))
+                out.write(polyTextFontItemRequest(WindowId, GcId, font = font, text = "I"))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 20))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 74, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 75, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 74, badValue = GcId, sequence = 4)
+                assertError(socket.getInputStream(), error = 9, opcode = 74, badValue = missingDrawable, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 74, badValue = PixmapId, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = 74, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 7, opcode = 74, badValue = missingFont, sequence = 10)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(13, u16le(image, 2))
+                assertTrue(countPixels(image, 20, 20, 0xff00_ff00.toInt()) > 0)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyText8 paints pixmap framebuffer content and honors item delta`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
                 out.write(createPixmapRequest(PixmapId, width = 40, height = 36))
                 out.write(createGcRequest(GcId, foreground = Green))
-                out.write(polyText8Request(PixmapId, GcId, x = 2, y = 14, delta = 0, text = "I"))
+                out.write(polyText8Request(PixmapId, GcId, x = 2, y = 14, delta = 0, text = "III", padding = byteArrayOf(255.toByte(), 1, 2)))
                 out.write(polyText8Request(PixmapId, GcId, x = 2, y = 30, delta = 10, text = "I"))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 40, height = 36))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 40, 36, 0xff00_ff00.toInt()) > 0)
+                val baselineLeft = firstPixelX(image, 40, yRange = 2 until 16, pixel = 0xff00_ff00.toInt()) ?: error("missing baseline text pixels")
+                val shiftedLeft = firstPixelX(image, 40, yRange = 18 until 32, pixel = 0xff00_ff00.toInt()) ?: error("missing shifted text pixels")
+                assertEquals(10, shiftedLeft - baselineLeft)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyText16 paints pixmap framebuffer content and honors item delta`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 40, height = 36))
+                out.write(createGcRequest(GcId, foreground = Green))
+                out.write(polyText16Request(PixmapId, GcId, x = 2, y = 14, delta = 0, char2b = listOf(0 to 'I'.code)))
+                out.write(polyText16Request(PixmapId, GcId, x = 2, y = 30, delta = 10, char2b = listOf(0 to 'I'.code)))
                 out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 40, height = 36))
                 out.flush()
 
@@ -10016,10 +10087,19 @@ class XCoreDrawingProtocolTest {
         return request(77, char2b.size, body)
     }
 
-    private fun polyText8Request(drawable: Int, gc: Int, x: Int, y: Int, delta: Int, text: String): ByteArray {
+    private fun polyText8Request(
+        drawable: Int,
+        gc: Int,
+        x: Int,
+        y: Int,
+        delta: Int,
+        text: String,
+        padding: ByteArray = ByteArray(0),
+    ): ByteArray {
         val bytes = text.encodeToByteArray()
         require(bytes.size in 0..254)
         val body = ByteArray(paddedLength(14 + bytes.size))
+        require(padding.size <= body.size - 14 - bytes.size)
         put32le(body, 0, drawable)
         put32le(body, 4, gc)
         put16le(body, 8, x)
@@ -10027,6 +10107,62 @@ class XCoreDrawingProtocolTest {
         body[12] = bytes.size.toByte()
         body[13] = delta.toByte()
         bytes.copyInto(body, 14)
+        padding.copyInto(body, 14 + bytes.size)
+        return request(74, 0, body)
+    }
+
+    private fun polyText16Request(drawable: Int, gc: Int, x: Int, y: Int, delta: Int, char2b: List<Pair<Int, Int>>): ByteArray {
+        require(char2b.size in 0..254)
+        val body = ByteArray(paddedLength(14 + char2b.size * 2))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, x)
+        put16le(body, 10, y)
+        body[12] = char2b.size.toByte()
+        body[13] = delta.toByte()
+        var offset = 14
+        for ((byte1, byte2) in char2b) {
+            body[offset] = byte1.toByte()
+            body[offset + 1] = byte2.toByte()
+            offset += 2
+        }
+        return request(75, 0, body)
+    }
+
+    private fun polyTextBadLengthRequest(opcode: Int, bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, WindowId)
+        if (bodySize >= 8) put32le(body, 4, GcId)
+        return request(opcode, 0, body)
+    }
+
+    private fun polyTextMalformedElementRequest(drawable: Int, gc: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, 2)
+        put16le(body, 10, 14)
+        body[12] = 4
+        body[13] = 0
+        body[14] = 'I'.code.toByte()
+        return request(74, 0, body)
+    }
+
+    private fun polyTextFontItemRequest(drawable: Int, gc: Int, font: Int, text: String = ""): ByteArray {
+        val bytes = text.encodeToByteArray()
+        require(bytes.size in 0..254)
+        val body = ByteArray(paddedLength(17 + if (bytes.isEmpty()) 0 else 2 + bytes.size))
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        put16le(body, 8, 2)
+        put16le(body, 10, 14)
+        body[12] = 255.toByte()
+        put32be(body, 13, font)
+        if (bytes.isNotEmpty()) {
+            body[17] = bytes.size.toByte()
+            body[18] = 0
+            bytes.copyInto(body, 19)
+        }
         return request(74, 0, body)
     }
 
