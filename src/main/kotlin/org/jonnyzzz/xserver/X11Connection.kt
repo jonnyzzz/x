@@ -765,54 +765,66 @@ internal class X11Connection(
     }
 
     private fun renderAddGlyphs(body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = 0)
         val glyphSet = byteOrder.u32(body, 0)
         val format = state.glyphSetFormat(glyphSet)
-        val glyphsLength = byteOrder.u32(body, 4).coerceAtMost((body.size - 8) / 16)
+            ?: return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = glyphSet)
+        val glyphsLength = byteOrder.u32(body, 4).toUInt().toLong()
+        val imageTableOffset = 8L + glyphsLength * 16L
+        if (imageTableOffset > body.size) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = 0)
+        }
         var idOffset = 8
-        var infoOffset = idOffset + glyphsLength * 4
-        var imageOffset = infoOffset + glyphsLength * 12
+        var infoOffset = idOffset + (glyphsLength * 4).toInt()
+        var imageOffset = imageTableOffset.toInt()
         val glyphs = mutableListOf<XGlyph>()
-        repeat(glyphsLength) { index ->
-            if (infoOffset + 12 <= body.size) {
-                val width = byteOrder.u16(body, infoOffset)
-                val height = byteOrder.u16(body, infoOffset + 2)
-                val mask = format?.let {
-                    decodeGlyphMask(
-                        format = it,
-                        width = width,
-                        height = height,
-                        data = body,
-                        offset = imageOffset,
-                    )
-                }
-                glyphs += XGlyph(
-                    id = byteOrder.u32(body, idOffset + index * 4),
-                    width = width,
-                    height = height,
-                    x = byteOrder.i16(body, infoOffset + 4),
-                    y = byteOrder.i16(body, infoOffset + 6),
-                    xOff = byteOrder.i16(body, infoOffset + 8),
-                    yOff = byteOrder.i16(body, infoOffset + 10),
-                    mask = mask,
-                )
-                imageOffset += glyphImageByteSize(format, width, height)
+        repeat(glyphsLength.toInt()) { index ->
+            val width = byteOrder.u16(body, infoOffset)
+            val height = byteOrder.u16(body, infoOffset + 2)
+            val imageSize = glyphImageByteSizeLong(format, width, height)
+            if (imageOffset.toLong() + imageSize > body.size) {
+                return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = 0)
             }
+            val mask = decodeGlyphMask(
+                format = format,
+                width = width,
+                height = height,
+                data = body,
+                offset = imageOffset,
+            )
+            glyphs += XGlyph(
+                id = byteOrder.u32(body, idOffset + index * 4),
+                width = width,
+                height = height,
+                x = byteOrder.i16(body, infoOffset + 4),
+                y = byteOrder.i16(body, infoOffset + 6),
+                xOff = byteOrder.i16(body, infoOffset + 8),
+                yOff = byteOrder.i16(body, infoOffset + 10),
+                mask = mask,
+            )
+            imageOffset += imageSize.toInt()
             infoOffset += 12
         }
+        if (imageOffset != body.size) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 20, badValue = 0)
         state.addGlyphs(glyphSet, glyphs)
     }
 
     private fun renderFreeGlyphs(body: ByteArray) {
-        if (body.size < 4) return
+        if (body.size < 4 || (body.size - 4) % 4 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 22, badValue = 0)
+        }
         val glyphSet = byteOrder.u32(body, 0)
-        val glyphIds = mutableListOf<Int>()
+        if (!state.hasGlyphSet(glyphSet)) {
+            return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 22, badValue = glyphSet)
+        }
         var offset = 4
         while (offset + 4 <= body.size) {
-            glyphIds += byteOrder.u32(body, offset)
+            val glyphId = byteOrder.u32(body, offset)
+            if (!state.removeGlyph(glyphSet, glyphId)) {
+                return writeError(error = XRender.GlyphError, opcode = XRender.MajorOpcode, minorOpcode = 22, badValue = glyphId)
+            }
             offset += 4
         }
-        state.removeGlyphs(glyphSet, glyphIds)
     }
 
     private fun renderCompositeGlyphs(minorOpcode: Int, body: ByteArray) {
@@ -4704,6 +4716,16 @@ internal class X11Connection(
             XRender.A8Format -> paddedLength(width) * height
             XRender.A1Format -> ((width + 31) / 32) * 4 * height
             XRender.Argb32Format, XRender.Rgb24Format -> width * 4 * height
+            else -> 0
+        }
+    }
+
+    private fun glyphImageByteSizeLong(format: Int, width: Int, height: Int): Long {
+        if (width <= 0 || height <= 0) return 0
+        return when (format) {
+            XRender.A8Format -> paddedLength(width.toLong()) * height.toLong()
+            XRender.A1Format -> ((width.toLong() + 31L) / 32L) * 4L * height.toLong()
+            XRender.Argb32Format, XRender.Rgb24Format -> width.toLong() * 4L * height.toLong()
             else -> 0
         }
     }

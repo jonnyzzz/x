@@ -2432,6 +2432,62 @@ class XRenderProtocolTest {
         }
     }
 
+    @Test
+    fun `RENDER AddGlyphs and FreeGlyphs validate glyph tables and resources`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingGlyphSet = GlyphSetId + 0x200
+                val missingGlyph = GlyphId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddGlyphsRaw(ByteArray(4)))
+                out.write(renderAddGlyphsRaw(ByteArray(8).also {
+                    put32le(it, 0, GlyphSetId)
+                    put32le(it, 4, 1)
+                }))
+                out.write(renderAddGlyphsRaw(renderAddA8GlyphBody(missingGlyphSet, GlyphId, width = 1, height = 1, xOff = 1, alphas = byteArrayOf(0xff.toByte()))))
+                out.write(renderAddGlyphsRaw(renderAddA8GlyphBody(GlyphSetId, GlyphId, width = 2, height = 2, xOff = 2, alphas = ByteArray(4) { 0xff.toByte() }).copyOf(28)))
+                out.write(renderAddGlyphsRaw(renderAddA8GlyphBody(GlyphSetId, GlyphId, width = 2, height = 2, xOff = 2, alphas = ByteArray(4) { 0xff.toByte() })))
+                out.write(renderFreeGlyphsRaw(ByteArray(0)))
+                out.write(renderFreeGlyphs(missingGlyphSet, emptyList()))
+                out.write(renderFreeGlyphs(GlyphSetId, listOf(missingGlyph)))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 1,
+                        glyphIds = listOf(GlyphId),
+                        operation = XRender.OpSrc,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = 20)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 20)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 6, minorOpcode = 20)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 7, minorOpcode = 20)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 9, minorOpcode = 22)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 10, minorOpcode = 22)
+                assertError(socket.getInputStream(), error = XRender.GlyphError, badValue = missingGlyph, sequence = 11, minorOpcode = 22)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
     private fun setup(socket: Socket) {
         socket.getOutputStream().write(byteArrayOf(0x6c, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0))
         socket.getOutputStream().flush()
@@ -2824,7 +2880,36 @@ class XRenderProtocolTest {
     private fun renderFreeGlyphSetRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 19, body)
 
+    private fun renderAddGlyphsRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 20, body)
+
+    private fun renderFreeGlyphs(glyphSet: Int, glyphIds: List<Int>): ByteArray {
+        val body = ByteArray(4 + glyphIds.size * 4)
+        put32le(body, 0, glyphSet)
+        glyphIds.forEachIndexed { index, glyphId ->
+            put32le(body, 4 + index * 4, glyphId)
+        }
+        return request(XRender.MajorOpcode, 22, body)
+    }
+
+    private fun renderFreeGlyphsRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 22, body)
+
     private fun renderAddA8Glyph(
+        glyphSet: Int,
+        glyphId: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        xOff: Int = 0,
+        yOff: Int = 0,
+        alphas: ByteArray,
+    ): ByteArray {
+        return renderAddGlyphsRaw(renderAddA8GlyphBody(glyphSet, glyphId, width, height, x, y, xOff, yOff, alphas))
+    }
+
+    private fun renderAddA8GlyphBody(
         glyphSet: Int,
         glyphId: Int,
         width: Int,
@@ -2854,7 +2939,7 @@ class XRenderProtocolTest {
                 endIndex = row * width + width,
             )
         }
-        return request(XRender.MajorOpcode, 20, body)
+        return body
     }
 
     private fun renderCompositeGlyphs32(

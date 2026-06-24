@@ -1580,6 +1580,12 @@ internal class X11State(
     }
 
     @Synchronized
+    fun removeGlyph(glyphSetId: Int, glyphId: Int): Boolean {
+        val glyphSet = glyphSets[glyphSetId] ?: return false
+        return glyphSet.glyphs.remove(glyphId) != null
+    }
+
+    @Synchronized
     fun recordRenderOperation(
         minorOpcode: Int,
         operation: String,
