@@ -1522,7 +1522,7 @@ internal class X11Connection(
     }
 
     private fun glxDestroyWindow(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyWindow, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyWindow, badValue = 0)
         val glxWindow = byteOrder.u32(body, 0)
         if (!state.hasGlxWindow(glxWindow)) return writeError(error = XGlx.BadWindow, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyWindow, badValue = glxWindow)
         state.removeGlxWindow(glxWindow)

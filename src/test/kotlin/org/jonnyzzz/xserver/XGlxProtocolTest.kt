@@ -1116,7 +1116,9 @@ class XGlxProtocolTest {
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(missingWindow, glxWindow))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, glxWindow))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateWindow, createGlxWindowBody(window, secondGlxWindow))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, ByteArray(0))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, u32(glxWindow) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, u32(glxWindow))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyWindow, u32(missingGlxWindow))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
@@ -1141,6 +1143,20 @@ class XGlxProtocolTest {
             assertEquals(XGlx.CreateWindow, u16le(duplicateBackingError, 8))
             assertEquals(XGlx.MajorOpcode, duplicateBackingError[10].toInt() and 0xff)
 
+            val shortDestroyError = socket.getInputStream().readExactly(32)
+            assertEquals(0, shortDestroyError[0].toInt())
+            assertEquals(16, shortDestroyError[1].toInt() and 0xff)
+            assertEquals(0, u32le(shortDestroyError, 4))
+            assertEquals(XGlx.DestroyWindow, u16le(shortDestroyError, 8))
+            assertEquals(XGlx.MajorOpcode, shortDestroyError[10].toInt() and 0xff)
+
+            val longDestroyError = socket.getInputStream().readExactly(32)
+            assertEquals(0, longDestroyError[0].toInt())
+            assertEquals(16, longDestroyError[1].toInt() and 0xff)
+            assertEquals(0, u32le(longDestroyError, 4))
+            assertEquals(XGlx.DestroyWindow, u16le(longDestroyError, 8))
+            assertEquals(XGlx.MajorOpcode, longDestroyError[10].toInt() and 0xff)
+
             val missingGlxWindowError = socket.getInputStream().readExactly(32)
             assertEquals(0, missingGlxWindowError[0].toInt())
             assertEquals(XGlx.BadWindow, missingGlxWindowError[1].toInt() and 0xff)
@@ -1149,7 +1165,7 @@ class XGlxProtocolTest {
             assertEquals(XGlx.MajorOpcode, missingGlxWindowError[10].toInt() and 0xff)
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(8, u16le(pointer, 2))
+            assertEquals(10, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(json.contains(""""glxWindows":[]"""), json)
         }
