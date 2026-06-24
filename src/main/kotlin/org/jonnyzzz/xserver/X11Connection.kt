@@ -950,9 +950,23 @@ internal class X11Connection(
     }
 
     private fun renderCreateAnimCursor(body: ByteArray) {
-        if (body.size < 4) return
+        if (body.size < 4) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = 0)
+        }
         val id = byteOrder.u32(body, 0)
         if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = id)
+        if ((body.size - 4) % 8 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = 0)
+        }
+        if (body.size == 4) return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = 0)
+        var offset = 4
+        while (offset < body.size) {
+            val cursor = byteOrder.u32(body, offset)
+            if (!state.hasCursor(cursor)) {
+                return writeError(error = 6, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = cursor)
+            }
+            offset += 8
+        }
         state.putCursor(id)
         own(id)
     }

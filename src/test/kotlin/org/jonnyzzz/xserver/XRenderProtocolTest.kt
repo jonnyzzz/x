@@ -368,6 +368,49 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER CreateAnimCursor validates framing source cursors and duplicate ids`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val sourceCursor = WindowId + 0x180
+                val animatedCursor = sourceCursor + 1
+                val missingCursor = sourceCursor + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateCursor(sourceCursor, PictureId))
+                out.write(request(XRender.MajorOpcode, 31, ByteArray(0)))
+                out.write(renderCreateAnimCursorRaw(ByteArray(8).also {
+                    put32le(it, 0, animatedCursor)
+                    put32le(it, 4, sourceCursor)
+                }))
+                out.write(renderCreateAnimCursor(animatedCursor))
+                out.write(renderCreateAnimCursor(animatedCursor, missingCursor to 75))
+                out.write(renderCreateAnimCursor(animatedCursor, sourceCursor to 75))
+                out.write(renderCreateAnimCursorRaw(ByteArray(8).also {
+                    put32le(it, 0, animatedCursor)
+                    put32le(it, 4, sourceCursor)
+                }))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = 31)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 31)
+                assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 6, minorOpcode = 31)
+                assertError(socket.getInputStream(), error = 6, badValue = missingCursor, sequence = 7, minorOpcode = 31)
+                assertError(socket.getInputStream(), error = 14, badValue = animatedCursor, sequence = 9, minorOpcode = 31)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture transform and filter are retained in semantic snapshot`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1977,11 +2020,19 @@ class XRenderProtocolTest {
         return request(XRender.MajorOpcode, 27, body)
     }
 
-    private fun renderCreateAnimCursor(cursor: Int): ByteArray {
-        val body = ByteArray(4)
+    private fun renderCreateAnimCursor(cursor: Int, vararg elements: Pair<Int, Int>): ByteArray {
+        val body = ByteArray(4 + elements.size * 8)
         put32le(body, 0, cursor)
-        return request(XRender.MajorOpcode, 31, body)
+        elements.forEachIndexed { index, (sourceCursor, delay) ->
+            val offset = 4 + index * 8
+            put32le(body, offset, sourceCursor)
+            put32le(body, offset + 4, delay)
+        }
+        return renderCreateAnimCursorRaw(body)
     }
+
+    private fun renderCreateAnimCursorRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 31, body)
 
     private fun renderComposite(
         source: Int,
@@ -2407,6 +2458,20 @@ class XRenderProtocolTest {
         val header = input.readExactly(32)
         val payloadUnits = u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun assertError(input: InputStream, error: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
+        val reply = input.readExactly(32)
+        assertEquals(0, reply[0].toInt())
+        assertEquals(error, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(badValue, u32le(reply, 4))
+        assertEquals(minorOpcode, u16le(reply, 8))
+        assertEquals(XRender.MajorOpcode, reply[10].toInt() and 0xff)
+        assertEquals(0, reply[11].toInt() and 0xff)
+        for (index in 12 until 32) {
+            assertEquals(0, reply[index].toInt() and 0xff, "byte $index")
+        }
     }
 
     private fun filterNames(reply: ByteArray): List<String> {
