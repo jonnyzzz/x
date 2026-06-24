@@ -8,12 +8,16 @@ internal object XGlx {
     const val BadDrawable = FirstError + 2
     const val BadPixmap = FirstError + 3
     const val BadContextTag = FirstError + 4
+    const val BadRenderRequest = FirstError + 6
+    const val BadLargeRequest = FirstError + 7
     const val BadFBConfig = FirstError + 9
     const val BadPbuffer = FirstError + 10
     const val BadWindow = FirstError + 12
     const val MajorVersion = 1
     const val MinorVersion = 4
 
+    const val Render = 1
+    const val RenderLarge = 2
     const val QueryVersion = 7
     const val IsDirect = 6
     const val WaitGL = 8
@@ -72,8 +76,8 @@ internal object XGlx {
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
-            1 -> "Render"
-            2 -> "RenderLarge"
+            Render -> "Render"
+            RenderLarge -> "RenderLarge"
             3 -> "CreateContext"
             4 -> "DestroyContext"
             5 -> "MakeCurrent"

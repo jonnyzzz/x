@@ -50,6 +50,7 @@ internal class X11State(
     private var nextInputControlOperationId: Int = 1
     private val inputControlOperations = mutableListOf<XInputControlOperation>()
     private val glxContexts = linkedMapOf<Int, XGlxContext>()
+    private val glxLargeRenders = linkedMapOf<Int, XGlxLargeRenderState>()
     private val glxPixmaps = linkedMapOf<Int, XGlxPixmap>()
     private val glxWindows = linkedMapOf<Int, XGlxWindow>()
     private val glxPbuffers = linkedMapOf<Int, XGlxPbuffer>()
@@ -197,6 +198,7 @@ internal class X11State(
                 installedColormaps.remove(id)
             }
             glxContexts.remove(id)
+            glxLargeRenders.remove(id)
             glxPixmaps.remove(id)
             glxWindows.remove(id)
             glxPbuffers.remove(id)
@@ -1529,11 +1531,25 @@ internal class X11State(
     @Synchronized
     fun removeGlxContext(id: Int) {
         glxContexts.remove(id)
+        glxLargeRenders.remove(id)
         discardRetainedResourceIds(setOf(id))
     }
 
     @Synchronized
     fun glxContext(id: Int): XGlxContext? = glxContexts[id]
+
+    @Synchronized
+    fun glxLargeRender(contextTag: Int): XGlxLargeRenderState? = glxLargeRenders[contextTag]
+
+    @Synchronized
+    fun putGlxLargeRender(state: XGlxLargeRenderState) {
+        glxLargeRenders[state.contextTag] = state
+    }
+
+    @Synchronized
+    fun removeGlxLargeRender(contextTag: Int) {
+        glxLargeRenders.remove(contextTag)
+    }
 
     @Synchronized
     fun putGlxPixmap(pixmap: XGlxPixmap) {
@@ -4184,6 +4200,14 @@ internal data class XGlxContext(
     val screen: Int,
     val renderType: Int,
     val direct: Boolean,
+)
+
+internal data class XGlxLargeRenderState(
+    val contextTag: Int,
+    val requestTotal: Int,
+    val requestsSoFar: Int,
+    val bytesSoFar: Long,
+    val paddedTotalBytes: Long,
 )
 
 internal data class XGlxPixmap(

@@ -238,6 +238,159 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX Render accepts valid context tag and validates missing context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_012d
+            val badTag = 0x0020_012e
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.Render, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.Render, u32(badTag))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.Render, sequence = 3)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX RenderLarge accepts sequenced chunks without replies`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_012f
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.Render, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(9, 8, 7, 6), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.Render, minorOpcode = XGlx.Render, sequence = 3)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(5, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX RenderLarge accepts Xorg padded command totals`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_013b
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1) + byteArrayOf(7), requestNumber = 1, requestTotal = 1))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(3, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX RenderLarge tracks pending chunks per context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val firstContext = 0x0020_0134
+            val secondContext = 0x0020_0135
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(firstContext, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(secondContext, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(firstContext, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(secondContext, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(secondContext, data = byteArrayOf(9, 8, 7, 6), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(firstContext, data = byteArrayOf(5, 4, 3, 2), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(7, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX RenderLarge pending state is shared across clients for same context`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            connect(server.localPort).use { firstClient ->
+                connect(server.localPort).use { secondClient ->
+                    firstClient.soTimeout = 2_000
+                    secondClient.soTimeout = 2_000
+                    val contextId = 0x0020_0139
+                    writeRequest(firstClient, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+                    writeRequest(firstClient, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+                    writeRequest(firstClient, 38, 0, u32(X11Ids.RootWindow))
+                    assertEquals(3, u16le(readReply(firstClient.getInputStream()), 2))
+                    writeRequest(secondClient, XGlx.MajorOpcode, XGlx.Render, u32(contextId))
+                    assertGlxError(secondClient.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.Render, minorOpcode = XGlx.Render, sequence = 1)
+                    writeRequest(firstClient, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
+                    writeRequest(firstClient, 38, 0, u32(X11Ids.RootWindow))
+
+                    val pointer = readReply(firstClient.getInputStream())
+                    assertEquals(5, u16le(pointer, 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GLX DestroyContext clears pending large render state`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0138
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, 4, u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.Render, u32(contextId))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX MakeCurrent requests reject pending large render for old context tag`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_013a
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(contextId) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, 5, u32(X11Ids.RootWindow) + u32(0) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.MakeContextCurrent, minorOpcode = XGlx.MakeContextCurrent, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = 5, minorOpcode = 5, sequence = 4)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX RenderLarge validates length context tag and sequence`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_0132
+            val badTag = 0x0020_0133
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, u32(contextId) + u16(1) + u16(1) + u32(5) + byteArrayOf(1, 2, 3, 4))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(badTag, data = u32(8) + u32(1), requestNumber = 1, requestTotal = 1))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(contextId, data = byteArrayOf(1, 2, 3, 4), requestNumber = 3, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.RenderLarge, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContextTag, badValue = badTag, minorOpcode = XGlx.RenderLarge, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = 2, minorOpcode = XGlx.RenderLarge, sequence = 4)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = 3, minorOpcode = XGlx.RenderLarge, sequence = 6)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(7, u16le(pointer, 2))
+        }
+    }
+
+    @Test
     fun `GLX CopyContext accepts modeled contexts without a reply`() {
         withServer { socket ->
             socket.soTimeout = 2_000
@@ -250,6 +403,25 @@ class XGlxProtocolTest {
 
             val pointer = readReply(socket.getInputStream())
             assertEquals(4, u16le(pointer, 2))
+        }
+    }
+
+    @Test
+    fun `GLX CopyContext rejects pending large render for context tag`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val source = 0x0020_0136
+            val destination = 0x0020_0137
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(source, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(destination, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(source, data = u32(12) + u32(1), requestNumber = 1, requestTotal = 2))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CopyContext, copyContextBody(source, destination, mask = 0, contextTag = source))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.RenderLarge, renderLargeBody(source, data = byteArrayOf(1, 2, 3, 4), requestNumber = 2, requestTotal = 2))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadLargeRequest, badValue = XGlx.CopyContext, minorOpcode = XGlx.CopyContext, sequence = 4)
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(6, u16le(pointer, 2))
         }
     }
 
@@ -927,32 +1099,42 @@ class XGlxProtocolTest {
     private fun withServer(block: (Socket) -> Unit) {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
-            Socket("127.0.0.1", server.localPort).use { socket ->
-                socket.getOutputStream().write(
-                    byteArrayOf(
-                        0x6c,
-                        0,
-                        11,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ),
-                )
-                socket.getOutputStream().flush()
-
-                val prefix = socket.getInputStream().readExactly(8)
-                val additionalUnits = u16le(prefix, 6)
-                socket.getInputStream().readExactly(additionalUnits * 4)
+            connect(server.localPort).use { socket ->
                 block(socket)
             }
             server.close()
             serverThread.join(1_000)
+        }
+    }
+
+    private fun connect(port: Int): Socket {
+        val socket = Socket("127.0.0.1", port)
+        try {
+            socket.getOutputStream().write(
+                byteArrayOf(
+                    0x6c,
+                    0,
+                    11,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            )
+            socket.getOutputStream().flush()
+
+            val prefix = socket.getInputStream().readExactly(8)
+            val additionalUnits = u16le(prefix, 6)
+            socket.getInputStream().readExactly(additionalUnits * 4)
+            return socket
+        } catch (failure: Throwable) {
+            socket.close()
+            throw failure
         }
     }
 
@@ -1009,6 +1191,14 @@ class XGlxProtocolTest {
 
     private fun createGcBody(gc: Int, drawable: Int = X11Ids.RootWindow): ByteArray =
         u32(gc) + u32(drawable) + u32(0)
+
+    private fun renderLargeBody(
+        contextTag: Int,
+        data: ByteArray,
+        requestNumber: Int,
+        requestTotal: Int,
+    ): ByteArray =
+        u32(contextTag) + u16(requestNumber) + u16(requestTotal) + u32(data.size) + padded(data)
 
     private fun glxClientInfoBody(extensions: String): ByteArray {
         val extensionBytes = extensions.encodeToByteArray()

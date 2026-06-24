@@ -253,7 +253,8 @@ internal class X11Connection(
             XGlx.CopyContext -> glxCopyContext(body)
             XGlx.SwapBuffers -> glxSwapBuffers(body)
             XGlx.UseXFont -> glxUseXFont(body)
-            1, 2 -> Unit
+            XGlx.Render -> glxRender(body)
+            XGlx.RenderLarge -> glxRenderLarge(body)
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
             XGlx.DestroyGLXPixmap -> glxDestroyPixmap(body)
@@ -1583,9 +1584,15 @@ internal class X11Connection(
     }
 
     private fun glxMakeCurrent(body: ByteArray, isContextCurrent: Boolean) {
+        val minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else 5
+        val oldTagOffset = if (isContextCurrent) 0 else 8
         val contextOffset = if (isContextCurrent) 12 else 4
         if (body.size < contextOffset + 4) {
-            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = if (isContextCurrent) XGlx.MakeContextCurrent else 5, badValue = 0)
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        }
+        if (body.size >= oldTagOffset + 4) {
+            val oldTag = byteOrder.u32(body, oldTagOffset)
+            if (oldTag != 0 && state.glxContext(oldTag) != null && glxRejectPendingLargeRender(oldTag, minorOpcode)) return
         }
         val context = byteOrder.u32(body, contextOffset)
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -1599,6 +1606,7 @@ internal class X11Connection(
         if (contextTag != 0 && state.glxContext(contextTag) == null) {
             return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = contextTag)
         }
+        if (contextTag != 0 && glxRejectPendingLargeRender(contextTag, minorOpcode)) return
     }
 
     private fun glxSwapBuffers(body: ByteArray) {
@@ -1608,6 +1616,7 @@ internal class X11Connection(
         if (contextTag != 0 && state.glxContext(contextTag) == null) {
             return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.SwapBuffers, badValue = contextTag)
         }
+        if (contextTag != 0 && glxRejectPendingLargeRender(contextTag, XGlx.SwapBuffers)) return
         if (state.glxPixmap(drawable) == null &&
             state.glxWindow(drawable) == null &&
             state.glxPbuffer(drawable) == null &&
@@ -1624,9 +1633,91 @@ internal class X11Connection(
         if (state.glxContext(contextTag) == null) {
             return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.UseXFont, badValue = contextTag)
         }
+        if (glxRejectPendingLargeRender(contextTag, XGlx.UseXFont)) return
         if (!state.hasFontable(fontable)) {
             return writeError(error = 7, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.UseXFont, badValue = fontable)
         }
+    }
+
+    private fun glxRender(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.Render, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        if (state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.Render, badValue = contextTag)
+        }
+        if (glxRejectPendingLargeRender(contextTag, XGlx.Render)) return
+    }
+
+    private fun glxRenderLarge(body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = 0)
+        val contextTag = byteOrder.u32(body, 0)
+        val requestNumber = byteOrder.u16(body, 4)
+        val requestTotal = byteOrder.u16(body, 6)
+        val dataBytes = byteOrder.u32(body, 8).toUInt().toLong()
+        if (state.glxContext(contextTag) == null) {
+            return writeError(error = XGlx.BadContextTag, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = contextTag)
+        }
+        val expectedBytes = 12L + paddedLength(dataBytes)
+        if (expectedBytes > Int.MAX_VALUE || body.size.toLong() != expectedBytes) {
+            state.removeGlxLargeRender(contextTag)
+            return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = 0)
+        }
+        val pending = state.glxLargeRender(contextTag)
+        if (pending == null) {
+            if (requestNumber != 1 || requestTotal < 1) {
+                return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = requestNumber)
+            }
+            if (dataBytes < 8 || body.size < 20) {
+                return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = 0)
+            }
+            val commandBytes = byteOrder.u32(body, 12).toUInt().toLong()
+            val paddedTotalBytes = paddedLength(commandBytes)
+            if (paddedTotalBytes < paddedLength(dataBytes)) {
+                return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = dataBytes.toInt())
+            }
+            if (requestNumber == requestTotal) {
+                if (paddedLength(dataBytes) != paddedTotalBytes) {
+                    return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = dataBytes.toInt())
+                }
+                return
+            }
+            state.putGlxLargeRender(
+                XGlxLargeRenderState(
+                    contextTag = contextTag,
+                    requestTotal = requestTotal,
+                    requestsSoFar = 1,
+                    bytesSoFar = dataBytes,
+                    paddedTotalBytes = paddedTotalBytes,
+                ),
+            )
+            return
+        }
+        if (pending.contextTag != contextTag || requestNumber != pending.requestsSoFar + 1 || requestTotal != pending.requestTotal) {
+            state.removeGlxLargeRender(contextTag)
+            return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = requestNumber)
+        }
+        val bytesSoFar = pending.bytesSoFar + dataBytes
+        if (bytesSoFar > pending.paddedTotalBytes) {
+            state.removeGlxLargeRender(contextTag)
+            return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = dataBytes.toInt())
+        }
+        if (requestNumber == requestTotal) {
+            state.removeGlxLargeRender(contextTag)
+            // Xorg/Xvfb compare the padded accumulated count here because common
+            // clients pad the large-command total but not per-request dataBytes.
+            if (paddedLength(bytesSoFar) != pending.paddedTotalBytes) {
+                return writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.RenderLarge, badValue = dataBytes.toInt())
+            }
+        } else {
+            state.putGlxLargeRender(pending.copy(requestsSoFar = requestNumber, bytesSoFar = bytesSoFar))
+        }
+    }
+
+    private fun glxRejectPendingLargeRender(contextTag: Int, minorOpcode: Int): Boolean {
+        val pending = state.glxLargeRender(contextTag) ?: return false
+        if (pending.contextTag != contextTag) return false
+        writeError(error = XGlx.BadLargeRequest, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = minorOpcode)
+        return true
     }
 
     private fun glxCopyContext(body: ByteArray) {
@@ -1644,6 +1735,7 @@ internal class X11Connection(
             if (tagContext.id != sourceContext.id) {
                 return writeError(error = 8, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CopyContext, badValue = source)
             }
+            if (glxRejectPendingLargeRender(contextTag, XGlx.CopyContext)) return
         }
     }
 
@@ -1778,7 +1870,8 @@ internal class X11Connection(
             XGlx.CreateWindow -> "screen=${u32(0)} fbconfig=${hex(4)} window=${hex(8)} glxWindow=${hex(12)} attribs=${u32(16)}"
             XGlx.DestroyWindow -> "glxWindow=${hex(0)}"
             XGlx.CreateContextAttribsARB -> "context=${hex(0)} fbconfig=${hex(4)} screen=${u32(8)} share=${hex(12)} direct=${body.getOrNull(16)?.toInt() == 1} attribs=${u32(20)}"
-            1, 2 -> "contextTag=${hex(0)}"
+            XGlx.Render -> "contextTag=${hex(0)} bytes=${(body.size - 4).coerceAtLeast(0)}"
+            XGlx.RenderLarge -> "contextTag=${hex(0)} dataBytes=${u32(8)} request=${if (body.size >= 12) "${byteOrder.u16(body, 4)}/${byteOrder.u16(body, 6)}" else "n/a"}"
             XGlx.WaitGL, XGlx.WaitX -> "contextTag=${hex(0)}"
             XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
