@@ -787,6 +787,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateColormap validates request fields and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingWindow = WindowId + 100
+                val unsupportedVisual = X11Ids.RootVisual + 1
+                val validColormap = ColormapId + 40
+                val out = socket.getOutputStream()
+                out.write(request(78, 0, ByteArray(8)))
+                out.write(request(78, 0, ByteArray(16)))
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, alloc = 2))
+                out.write(createColormapRequest(X11Ids.DefaultColormap, window = X11Ids.RootWindow))
+                out.write(createColormapRequest(ColormapId, window = missingWindow))
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, visual = unsupportedVisual))
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow, alloc = 1))
+                out.write(createColormapRequest(validColormap, window = X11Ids.RootWindow))
+                out.write(installColormapRequest(validColormap))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 78, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 78, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 78, badValue = 2, sequence = 3)
+                assertError(socket.getInputStream(), error = 14, opcode = 78, badValue = X11Ids.DefaultColormap, sequence = 4)
+                assertError(socket.getInputStream(), error = 3, opcode = 78, badValue = missingWindow, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 78, badValue = unsupportedVisual, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 78, badValue = 1, sequence = 7)
+
+                assertEquals(listOf(validColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CopyColormapAndFree creates an installable colormap from an existing source`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8814,12 +8852,17 @@ class XCoreDrawingProtocolTest {
         return request(46, 0, body)
     }
 
-    private fun createColormapRequest(colormap: Int, window: Int): ByteArray {
+    private fun createColormapRequest(
+        colormap: Int,
+        window: Int,
+        visual: Int = X11Ids.RootVisual,
+        alloc: Int = 0,
+    ): ByteArray {
         val body = ByteArray(12)
         put32le(body, 0, colormap)
         put32le(body, 4, window)
-        put32le(body, 8, X11Ids.RootVisual)
-        return request(78, 0, body)
+        put32le(body, 8, visual)
+        return request(78, alloc, body)
     }
 
     private fun freeColormapRequest(colormap: Int): ByteArray {

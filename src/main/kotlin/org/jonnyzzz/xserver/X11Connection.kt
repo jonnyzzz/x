@@ -190,7 +190,7 @@ internal class X11Connection(
             75 -> polyText(opcode = 75, body = body, is16Bit = true)
             76 -> imageText(minorOpcode, body, is16Bit = false)
             77 -> imageText(minorOpcode, body, is16Bit = true)
-            78 -> createColormap(body)
+            78 -> createColormap(minorOpcode, body)
             79 -> closeResource(opcode = 79, body = body, error = 12, exists = state::hasColormap)
             80 -> copyColormapAndFree(body)
             81 -> installColormap(body)
@@ -2683,13 +2683,18 @@ internal class X11Connection(
         return bytes
     }
 
-    private fun createColormap(body: ByteArray) {
-        if (body.size >= 4) {
-            val id = byteOrder.u32(body, 0)
-            if (state.hasResource(id)) return writeError(error = 14, opcode = 78, badValue = id)
-            state.putColormap(id)
-            own(id)
-        }
+    private fun createColormap(alloc: Int, body: ByteArray) {
+        if (body.size != 12) return writeError(error = 16, opcode = 78, badValue = 0)
+        if (alloc !in 0..1) return writeError(error = 2, opcode = 78, badValue = alloc)
+        val id = byteOrder.u32(body, 0)
+        val windowId = byteOrder.u32(body, 4)
+        val visual = byteOrder.u32(body, 8)
+        if (state.hasResource(id)) return writeError(error = 14, opcode = 78, badValue = id)
+        if (state.window(windowId) == null) return writeError(error = 3, opcode = 78, badValue = windowId)
+        if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 78, badValue = visual)
+        if (alloc == 1) return writeError(error = 8, opcode = 78, badValue = alloc)
+        state.putColormap(id)
+        own(id)
     }
 
     private fun copyColormapAndFree(body: ByteArray) {
