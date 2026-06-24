@@ -42,6 +42,7 @@ internal class X11State(
     private var pointerState: Int = 0
     private var inputTime: Int = 1
     private var lastPointerGrabTime: Int = 0
+    private var lastKeyboardGrabTime: Int = 0
     private var nextInputOperationId: Int = 1
     private val inputOperations = mutableListOf<XInputOperation>()
     private var nextInputControlOperationId: Int = 1
@@ -574,10 +575,22 @@ internal class X11State(
     }
 
     @Synchronized
-    fun grabKeyboard(grab: XInputGrab): Boolean {
-        if (activeKeyboardGrab?.owner != null && activeKeyboardGrab?.owner != grab.owner) return false
-        activeKeyboardGrab = grab
-        return true
+    fun grabKeyboard(grab: XInputGrab): Int {
+        if (!windowIsViewable(grab.windowId)) return XGrabStatus.NotViewable
+        val serverTime = currentServerTime(lastKeyboardGrabTime)
+        if (grab.time != 0 &&
+            (
+                Integer.compareUnsigned(grab.time, lastKeyboardGrabTime) < 0 ||
+                    Integer.compareUnsigned(grab.time, serverTime) > 0
+                )
+        ) {
+            return XGrabStatus.InvalidTime
+        }
+        if (activeKeyboardGrab?.owner != null && activeKeyboardGrab?.owner != grab.owner) return XGrabStatus.AlreadyGrabbed
+        val effectiveTime = if (grab.time == 0) serverTime else grab.time
+        lastKeyboardGrabTime = effectiveTime
+        activeKeyboardGrab = grab.copy(time = effectiveTime)
+        return XGrabStatus.Success
     }
 
     @Synchronized

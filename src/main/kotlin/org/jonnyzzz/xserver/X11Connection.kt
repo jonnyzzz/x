@@ -1776,7 +1776,7 @@ internal class X11Connection(
     }
 
     private fun grabKeyboard(ownerEvents: Int, body: ByteArray) {
-        if (body.size < 12) return writeError(error = 16, opcode = 31, badValue = 0)
+        if (body.size != 12) return writeError(error = 16, opcode = 31, badValue = 0)
         if (ownerEvents !in 0..1) return writeError(error = 2, opcode = 31, badValue = ownerEvents)
         val grabWindow = byteOrder.u32(body, 0)
         if (state.window(grabWindow) == null) return writeError(error = 3, opcode = 31, badValue = grabWindow)
@@ -1786,7 +1786,7 @@ internal class X11Connection(
         val keyboardMode = body[9].toInt() and 0xff
         if (keyboardMode !in 0..1) return writeError(error = 2, opcode = 31, badValue = keyboardMode)
 
-        val grabbed = state.grabKeyboard(
+        val status = state.grabKeyboard(
             XInputGrab(
                 owner = this,
                 kind = "keyboard",
@@ -1800,7 +1800,7 @@ internal class X11Connection(
                 time = time,
             ),
         )
-        write(reply(extra = if (grabbed) 0 else 1, payloadUnits = 0))
+        write(reply(extra = status, payloadUnits = 0))
     }
 
     private fun ungrabKeyboard(body: ByteArray) {

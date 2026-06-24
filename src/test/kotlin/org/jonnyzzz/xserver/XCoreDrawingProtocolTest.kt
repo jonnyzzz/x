@@ -3797,8 +3797,7 @@ class XCoreDrawingProtocolTest {
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
                 out.write(ungrabPointerRequest(time = 2))
-                out.write(createWindowRequest(WindowId))
-                out.write(grabKeyboardRequest(WindowId, time = 2))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow, time = 2))
                 out.flush()
                 assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
 
@@ -4618,8 +4617,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabKeyboardRequest(WindowId))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow))
                 out.write(queryPointerRequest())
                 out.flush()
 
@@ -4638,6 +4636,77 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabKeyboard reports NotViewable or InvalidTime without activating grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.pointerDown(1, 1)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabKeyboardRequest(WindowId))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow, time = 3))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow, time = 2))
+                out.write(ungrabKeyboardRequest(time = 2))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow, time = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val notViewable = readReply(socket.getInputStream())
+                assertEquals(1, notViewable[0].toInt())
+                assertEquals(4, notViewable[1].toInt() and 0xff)
+                assertEquals(2, u16le(notViewable, 2))
+
+                val futureGrab = readReply(socket.getInputStream())
+                assertEquals(1, futureGrab[0].toInt())
+                assertEquals(3, futureGrab[1].toInt() and 0xff)
+                assertEquals(3, u16le(futureGrab, 2))
+
+                val validGrab = readReply(socket.getInputStream())
+                assertEquals(1, validGrab[0].toInt())
+                assertEquals(0, validGrab[1].toInt() and 0xff)
+                assertEquals(4, u16le(validGrab, 2))
+
+                val staleGrab = readReply(socket.getInputStream())
+                assertEquals(1, staleGrab[0].toInt())
+                assertEquals(3, staleGrab[1].toInt() and 0xff)
+                assertEquals(6, u16le(staleGrab, 2))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GrabKeyboard validates request length and stream recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(grabKeyboardOversizedRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 31, badValue = 0, sequence = 1)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(2, u16le(pointer, 2))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UngrabKeyboard clears active grab and is replyless`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -4645,8 +4714,7 @@ class XCoreDrawingProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                out.write(createWindowRequest(WindowId))
-                out.write(grabKeyboardRequest(WindowId))
+                out.write(grabKeyboardRequest(X11Ids.RootWindow))
                 out.flush()
 
                 val grab = readReply(socket.getInputStream())
@@ -8102,6 +8170,9 @@ class XCoreDrawingProtocolTest {
         body[9] = 0
         return request(31, 0, body)
     }
+
+    private fun grabKeyboardOversizedRequest(): ByteArray =
+        request(31, 0, ByteArray(16))
 
     private fun ungrabKeyboardRequest(time: Int = 0): ByteArray {
         val body = ByteArray(4)
