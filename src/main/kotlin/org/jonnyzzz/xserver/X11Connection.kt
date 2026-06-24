@@ -3095,7 +3095,9 @@ internal class X11Connection(
     }
 
     private fun queryExtension(body: ByteArray) {
+        if (body.size < 4) return writeError(error = 16, opcode = 98, badValue = 0)
         val nameLength = byteOrder.u16(body, 0)
+        if (body.size != 4 + paddedLength(nameLength)) return writeError(error = 16, opcode = 98, badValue = 0)
         val name = body.copyOfRange(4, 4 + nameLength).decodeToString()
         val reply = reply(extra = 0, payloadUnits = 0)
         val extension = state.extension(name)

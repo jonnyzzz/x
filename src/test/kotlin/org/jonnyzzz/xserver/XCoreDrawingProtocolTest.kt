@@ -795,6 +795,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryExtension validates length and returns extension presence with stream recovery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val truncatedName = ByteArray(4)
+                put16le(truncatedName, 0, 1)
+                val overlongEmptyName = ByteArray(8)
+                val out = socket.getOutputStream()
+                out.write(request(98, 0, ByteArray(0)))
+                out.write(request(98, 0, truncatedName))
+                out.write(request(98, 0, overlongEmptyName))
+                out.write(queryExtensionRequest("NOT-PRESENT"))
+                out.write(queryExtensionRequest("GLX"))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 1)
+                assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 3)
+
+                val missing = readReply(socket.getInputStream())
+                assertEquals(4, u16le(missing, 2))
+                assertEquals(0, missing[8].toInt())
+
+                val glx = readReply(socket.getInputStream())
+                assertEquals(5, u16le(glx, 2))
+                assertEquals(1, glx[8].toInt())
+                assertEquals(128, glx[9].toInt() and 0xff)
+                assertEquals(0, glx[10].toInt() and 0xff)
+                assertEquals(128, glx[11].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `OpenFont rejects duplicate resource id without replacing existing resource`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8996,6 +9034,14 @@ class XCoreDrawingProtocolTest {
         put16le(body, 4, width)
         put16le(body, 6, height)
         return request(97, sizeClass, body)
+    }
+
+    private fun queryExtensionRequest(name: String): ByteArray {
+        val nameBytes = name.encodeToByteArray()
+        val body = ByteArray(4 + paddedLength(nameBytes.size))
+        put16le(body, 0, nameBytes.size)
+        nameBytes.copyInto(body, 4)
+        return request(98, 0, body)
     }
 
     private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {
