@@ -3856,6 +3856,87 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ReparentWindow validates length windows and ancestry without mutating tree`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val grandchild = WindowId + 2
+                val missingWindow = WindowId + 403
+                val missingParent = WindowId + 404
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, parent = parent))
+                out.write(createWindowRequest(grandchild, parent = child))
+                out.write(request(7, 0, ByteArray(8)))
+                out.write(request(7, 0, ByteArray(16)))
+                out.write(reparentWindowRequest(missingWindow, X11Ids.RootWindow, x = 1, y = 2))
+                out.write(reparentWindowRequest(child, missingParent, x = 1, y = 2))
+                out.write(reparentWindowRequest(X11Ids.RootWindow, parent, x = 1, y = 2))
+                out.write(reparentWindowRequest(child, child, x = 1, y = 2))
+                out.write(reparentWindowRequest(parent, grandchild, x = 1, y = 2))
+                out.write(queryTreeRequest(parent))
+                out.write(queryTreeRequest(child))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 7, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 16, opcode = 7, badValue = 0, sequence = 5)
+                assertError(socket.getInputStream(), error = 3, opcode = 7, badValue = missingWindow, sequence = 6)
+                assertError(socket.getInputStream(), error = 3, opcode = 7, badValue = missingParent, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = 7, badValue = 0, sequence = 8)
+                assertError(socket.getInputStream(), error = 8, opcode = 7, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 7, badValue = 0, sequence = 10)
+                val parentTree = readReply(socket.getInputStream())
+                assertEquals(11, u16le(parentTree, 2))
+                assertEquals(listOf(child), treeChildren(parentTree))
+                val childTree = readReply(socket.getInputStream())
+                assertEquals(12, u16le(childTree, 2))
+                assertEquals(listOf(grandchild), treeChildren(childTree))
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(13, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ReparentWindow moves window to new parent and updates local coordinates`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val firstParent = WindowId
+                val secondParent = WindowId + 1
+                val child = WindowId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(firstParent))
+                out.write(createWindowRequest(secondParent))
+                out.write(createWindowRequest(child, parent = firstParent, x = 3, y = 4))
+                out.write(reparentWindowRequest(child, secondParent, x = 7, y = 8))
+                out.write(queryTreeRequest(firstParent))
+                out.write(queryTreeRequest(secondParent))
+                out.flush()
+
+                assertTrue(treeChildren(readReply(socket.getInputStream())).isEmpty())
+                assertEquals(listOf(child), treeChildren(readReply(socket.getInputStream())))
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    json,
+                    windowJsonId(child) + ""","parent":"${secondParent.toJsonHex()}","x":7,"y":8,"localX":7,"localY":8,"width":40,"height":30""",
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

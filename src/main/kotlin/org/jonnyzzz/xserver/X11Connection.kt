@@ -1277,10 +1277,17 @@ internal class X11Connection(
     }
 
     private fun reparentWindow(body: ByteArray) {
-        if (body.size < 12) return
+        if (body.size != 12) return writeError(error = 16, opcode = 7, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        val parentId = byteOrder.u32(body, 4)
+        state.window(windowId) ?: return writeError(error = 3, opcode = 7, badValue = windowId)
+        state.window(parentId) ?: return writeError(error = 3, opcode = 7, badValue = parentId)
+        if (!state.canReparentWindow(windowId, parentId)) {
+            return writeError(error = 8, opcode = 7, badValue = 0)
+        }
         state.reparentWindow(
-            id = byteOrder.u32(body, 0),
-            parentId = byteOrder.u32(body, 4),
+            id = windowId,
+            parentId = parentId,
             x = byteOrder.i16(body, 8),
             y = byteOrder.i16(body, 10),
         )

@@ -266,6 +266,13 @@ internal class X11State(
     fun childrenOf(id: Int): List<XWindow> = windows.values.filter { it.parentId == id }
 
     @Synchronized
+    fun canReparentWindow(id: Int, parentId: Int): Boolean {
+        if (id == X11Ids.RootWindow) return false
+        if (!windows.containsKey(id) || !windows.containsKey(parentId)) return false
+        return !windowIsAncestorOrSelf(id, parentId)
+    }
+
+    @Synchronized
     fun circulateWindow(id: Int, direction: Int): XCirculateResult? {
         if (!windows.containsKey(id)) return null
         val children = childrenOf(id)
@@ -287,7 +294,7 @@ internal class X11State(
     @Synchronized
     fun reparentWindow(id: Int, parentId: Int, x: Int, y: Int): XWindow? {
         val window = windows[id] ?: return null
-        if (!windows.containsKey(parentId)) return null
+        if (!canReparentWindow(id, parentId)) return null
         window.parentId = parentId
         window.x = x
         window.y = y
