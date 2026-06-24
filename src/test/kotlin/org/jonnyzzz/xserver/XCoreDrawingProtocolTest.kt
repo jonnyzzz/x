@@ -1886,6 +1886,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetClipRectangles reports request errors and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(setClipRectanglesBadLengthRequest(bodySize = 4))
+                out.write(setClipRectanglesBadLengthRequest(bodySize = 12))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = emptyList(), ordering = 4))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = emptyList()))
+                out.write(freeGcRequest(GcId))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(1, 0, 2, 1)), ordering = 3))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(0 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = 59, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 16, opcode = 59, badValue = 0, sequence = 3)
+                assertError(socket.getInputStream(), error = 2, opcode = 59, badValue = 4, sequence = 4)
+                assertError(socket.getInputStream(), error = 13, opcode = 59, badValue = GcId, sequence = 5)
+                assertError(socket.getInputStream(), error = 13, opcode = 60, badValue = GcId, sequence = 6)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 2, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `core drawing honors GC clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9311,6 +9347,7 @@ class XCoreDrawingProtocolTest {
         clipXOrigin: Int,
         clipYOrigin: Int,
         rectangles: List<XRectangleCommand>,
+        ordering: Int = 0,
     ): ByteArray {
         val body = ByteArray(8 + rectangles.size * 8)
         put32le(body, 0, gc)
@@ -9324,6 +9361,12 @@ class XCoreDrawingProtocolTest {
             put16le(body, offset + 6, rectangle.height)
             offset += 8
         }
+        return request(59, ordering, body)
+    }
+
+    private fun setClipRectanglesBadLengthRequest(bodySize: Int): ByteArray {
+        val body = ByteArray(bodySize)
+        if (bodySize >= 4) put32le(body, 0, GcId)
         return request(59, 0, body)
     }
 

@@ -2137,9 +2137,10 @@ internal class X11Connection(
     }
 
     private fun setClipRectangles(ordering: Int, body: ByteArray) {
-        if (body.size < 8) return
+        if (body.size < 8 || (body.size - 8) % 8 != 0) return writeError(error = 16, opcode = 59, badValue = 0)
         if (ordering !in 0..3) return writeError(error = 2, opcode = 59, badValue = ordering)
         val gcId = byteOrder.u32(body, 0)
+        if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 59, badValue = gcId)
         state.updateGcClip(
             id = gcId,
             clipXOrigin = byteOrder.i16(body, 4),
