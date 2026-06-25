@@ -8975,6 +8975,47 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `client disconnect delivers DestroyNotify to clients selecting parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+                    val window = WindowId + 420
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(window))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    closeClientAndWait(ownerSocket)
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertDestroyNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        eventWindow = X11Ids.RootWindow,
+                        window = window,
+                    )
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `KillClient validates request length and resource id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -8992,6 +9033,50 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 2, opcode = 113, badValue = missing, sequence = 2)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(3, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient retained resource delivers DestroyNotify to clients selecting parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val window = WindowId + 422
+            Socket("127.0.0.1", server.localPort).use { retainedSocket ->
+                retainedSocket.soTimeout = 2_000
+                setup(retainedSocket)
+                val retainedOut = retainedSocket.getOutputStream()
+                retainedOut.write(createWindowRequest(window))
+                retainedOut.write(setCloseDownModeRequest(XCloseDownMode.RetainTemporary))
+                retainedOut.write(queryPointerRequest())
+                retainedOut.flush()
+                assertEquals(3, u16le(readReply(retainedSocket.getInputStream()), 2))
+                closeClientAndWait(retainedSocket)
+            }
+
+            waitForRootChildren(server.localPort) { window in it }
+
+            Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                observerSocket.soTimeout = 2_000
+                setup(observerSocket)
+                val observerOut = observerSocket.getOutputStream()
+                observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+                assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                observerOut.write(killClientRequest(window))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+                assertDestroyNotify(
+                    observerSocket.getInputStream().readExactly(32),
+                    sequence = 3,
+                    eventWindow = X11Ids.RootWindow,
+                    window = window,
+                )
+                assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
             }
             server.close()
             serverThread.join(1_000)

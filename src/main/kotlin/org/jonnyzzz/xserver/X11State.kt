@@ -149,19 +149,19 @@ internal class X11State(
 
     @Synchronized
     fun removeWindow(id: Int): Set<Int> =
-        removeWindow(id, sendDestroyNotify = false).removedResources
+        removeWindow(id, sendDestroyNotify = false, excludedSink = null).removedResources
 
     @Synchronized
     fun removeWindowWithDestroyNotify(id: Int): XWindowRemoval =
-        removeWindow(id, sendDestroyNotify = true)
+        removeWindow(id, sendDestroyNotify = true, excludedSink = null)
 
-    private fun removeWindow(id: Int, sendDestroyNotify: Boolean): XWindowRemoval {
+    private fun removeWindow(id: Int, sendDestroyNotify: Boolean, excludedSink: XEventSink?): XWindowRemoval {
         val initialRemoved = windowSubtreeIds(id)
         processRetainedSaveSetsForWindowSubtree(initialRemoved)
         val removed = windowSubtreeIds(id)
         if (removed.isEmpty()) return XWindowRemoval(removedResources = emptySet(), destroyNotifyDispatches = emptyList())
         val destroyNotifyDispatches = if (sendDestroyNotify) {
-            destroyNotifySinksInDestroyOrder(id)
+            destroyNotifySinksInDestroyOrder(id, excludedSink)
         } else {
             emptyList()
         }
@@ -193,21 +193,28 @@ internal class X11State(
     }
 
     @Synchronized
-    fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>) {
+    fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>): List<XDestroyNotifyDispatch> {
         val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
         processSaveSet(owner, currentResourceIds)
-        removeClientResources(currentResourceIds)
+        val notifications = removeClientResources(currentResourceIds, excludedSink = owner)
         saveSets.remove(owner)
         releaseInputGrabs(owner)
+        return notifications
     }
 
     @Synchronized
-    fun removeClientResources(resourceIds: Set<Int>) {
-        if (resourceIds.isEmpty()) return
+    fun removeClientResources(resourceIds: Set<Int>): List<XDestroyNotifyDispatch> =
+        removeClientResources(resourceIds, excludedSink = null)
+
+    private fun removeClientResources(resourceIds: Set<Int>, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> {
+        if (resourceIds.isEmpty()) return emptyList()
         val removedWindows = linkedSetOf<Int>()
+        val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         for (id in resourceIds) {
             if (id != X11Ids.RootWindow && windows.containsKey(id)) {
-                removedWindows += removeWindow(id)
+                val removal = removeWindow(id, sendDestroyNotify = true, excludedSink = excludedSink)
+                removedWindows += removal.removedResources
+                destroyNotifyDispatches += removal.destroyNotifyDispatches
             }
         }
         val ids = resourceIds - removedWindows
@@ -231,6 +238,7 @@ internal class X11State(
         releaseInputGrabsForResources(resourceIds)
         discardRetainedResourceIds(resourceIds)
         ensureDefaultColormapInstalled()
+        return destroyNotifyDispatches
     }
 
     @Synchronized
@@ -254,25 +262,26 @@ internal class X11State(
     }
 
     @Synchronized
-    fun destroyRetainedClientByResource(resourceId: Int): Boolean {
-        val retained = retainedClients.entries.firstOrNull { resourceId in it.value.resourceIds } ?: return false
+    fun destroyRetainedClientByResource(resourceId: Int): List<XDestroyNotifyDispatch>? {
+        val retained = retainedClients.entries.firstOrNull { resourceId in it.value.resourceIds } ?: return null
         retainedClients.remove(retained.key)
         processRetainedSaveSet(retained.value)
-        removeClientResources(retained.value.resourceIds)
-        return true
+        return removeClientResources(retained.value.resourceIds)
     }
 
     @Synchronized
-    fun destroyTemporaryRetainedClients() {
+    fun destroyTemporaryRetainedClients(): List<XDestroyNotifyDispatch> {
         val temporaryIds = retainedClients
             .filterValues { it.closeDownMode == XCloseDownMode.RetainTemporary }
             .keys
             .toList()
+        val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         for (id in temporaryIds) {
             val retained = retainedClients.remove(id) ?: continue
             processRetainedSaveSet(retained)
-            removeClientResources(retained.resourceIds)
+            destroyNotifyDispatches += removeClientResources(retained.resourceIds)
         }
+        return destroyNotifyDispatches
     }
 
     @Synchronized
@@ -3555,8 +3564,10 @@ internal class X11State(
             sink.takeIf { (selectedMask and eventMask) != 0 }
         }
 
-    private fun destroyNotifySinksInDestroyOrder(rootId: Int): List<XDestroyNotifyDispatch> =
-        windowsInDestroyNotifyOrder(rootId).flatMap { destroyNotifySinks(it) }
+    private fun destroyNotifySinksInDestroyOrder(rootId: Int, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> =
+        windowsInDestroyNotifyOrder(rootId).flatMap { window ->
+            destroyNotifySinks(window).filter { dispatch -> dispatch.sink != excludedSink }
+        }
 
     private fun windowsInDestroyNotifyOrder(rootId: Int): List<XWindow> {
         val window = windows[rootId] ?: return emptyList()

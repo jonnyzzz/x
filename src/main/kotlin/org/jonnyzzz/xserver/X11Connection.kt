@@ -4379,11 +4379,14 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 113, badValue = 0)
         val resource = byteOrder.u32(body, 0)
         if (resource == AllTemporary) {
-            state.destroyTemporaryRetainedClients()
+            sendDestroyNotify(state.destroyTemporaryRetainedClients())
             return
         }
         if (!state.hasResource(resource)) return writeError(error = 2, opcode = 113, badValue = resource)
-        if (state.destroyRetainedClientByResource(resource)) return
+        state.destroyRetainedClientByResource(resource)?.let { notifications ->
+            sendDestroyNotify(notifications)
+            return
+        }
         val client = state.liveClientOwningResource(resource)
             ?: return writeError(error = 2, opcode = 113, badValue = resource)
         client.killClient()
@@ -5570,10 +5573,14 @@ internal class X11Connection(
             resources = ownedResources.toSet()
         }
         state.releaseServerGrab(this)
-        when (mode) {
+        val destroyNotifyDispatches = when (mode) {
             XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
-            else -> state.retainClientResources(this, resources, mode)
+            else -> {
+                state.retainClientResources(this, resources, mode)
+                emptyList()
+            }
         }
+        sendDestroyNotify(destroyNotifyDispatches)
         state.unregisterEventSink(this)
     }
 
