@@ -2991,10 +2991,6 @@ internal class X11Connection(
         val height = byteOrder.u16(body, 22)
         coreDrawable(opcode = 62, drawableId = sourceDrawable) ?: return
         coreDrawable(opcode = 62, drawableId = destinationDrawable) ?: return
-        System.err.println(
-            "core seq=$sequence CopyArea src=${sourceDrawable.toHex()} dst=${destinationDrawable.toHex()}" +
-                " srcXY=$sourceX,$sourceY dstXY=$destinationX,$destinationY ${width}x$height",
-        )
         val image = state.copyArea(
             sourceDrawableId = sourceDrawable,
             destinationDrawableId = destinationDrawable,
