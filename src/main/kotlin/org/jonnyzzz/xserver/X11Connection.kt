@@ -1988,6 +1988,7 @@ internal class X11Connection(
         )
         state.putWindow(window, this)
         own(id)
+        sendCreateNotify(state.createNotifySinks(window))
         attributes.eventMask?.let { state.selectEvents(this, id, it) }
     }
 
@@ -4516,6 +4517,21 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendCreateNotifyEvent(event: XCreateNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 16
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.parentId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        byteOrder.put16(bytes, 12, event.x)
+        byteOrder.put16(bytes, 14, event.y)
+        byteOrder.put16(bytes, 16, event.width)
+        byteOrder.put16(bytes, 18, event.height)
+        byteOrder.put16(bytes, 20, event.borderWidth)
+        bytes[22] = if (event.overrideRedirect) 1 else 0
+        write(bytes)
+    }
+
     override fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 18
@@ -5431,6 +5447,12 @@ internal class X11Connection(
     private fun sendMapNotify(notifications: List<XMapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendMapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendCreateNotify(notifications: List<XCreateNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendCreateNotifyEvent(notification.event) }
         }
     }
 

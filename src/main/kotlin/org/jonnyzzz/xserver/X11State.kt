@@ -424,6 +424,24 @@ internal class X11State(
         }
 
     @Synchronized
+    fun createNotifySinks(window: XWindow): List<XCreateNotifyDispatch> =
+        eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XCreateNotifyDispatch(
+                sink = sink,
+                event = XCreateNotifyEvent(
+                    parentId = window.parentId,
+                    windowId = window.id,
+                    x = window.x,
+                    y = window.y,
+                    width = window.width,
+                    height = window.height,
+                    borderWidth = window.borderWidth,
+                    overrideRedirect = window.overrideRedirect,
+                ),
+            )
+        }
+
+    @Synchronized
     fun unmapNotifySinks(window: XWindow): List<XUnmapNotifyDispatch> =
         eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
             XUnmapNotifyDispatch(

@@ -5944,6 +5944,53 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateWindow delivers SubstructureNotify to another client selecting parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 403
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child, x = 7, y = 8, width = 33, height = 22, borderWidth = 2, overrideRedirect = true))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertCreateNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = child,
+                        x = 7,
+                        y = 8,
+                        width = 33,
+                        height = 22,
+                        borderWidth = 2,
+                        overrideRedirect = true,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow ignores already mapped window without duplicate events`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5995,6 +6042,12 @@ class XCoreDrawingProtocolTest {
 
                     assertExpose(ownerSocket.getInputStream().readExactly(32), child)
                     assertEquals(3, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertCreateNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = child,
+                    )
                     assertMapNotify(
                         observerSocket.getInputStream().readExactly(32),
                         sequence = 2,
@@ -6257,6 +6310,12 @@ class XCoreDrawingProtocolTest {
 
                     assertMapAndExpose(ownerSocket.getInputStream(), child)
                     assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertCreateNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = child,
+                    )
                     assertMapNotify(
                         observerSocket.getInputStream().readExactly(32),
                         sequence = 2,
@@ -6331,6 +6390,9 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
+                assertCreateNotify(input.readExactly(32), sequence = 2, parent = parent, window = bottom)
+                assertCreateNotify(input.readExactly(32), sequence = 3, parent = parent, window = middle)
+                assertCreateNotify(input.readExactly(32), sequence = 4, parent = parent, window = top)
                 assertSelectedMapAndExpose(input, bottom, eventWindow = parent)
                 assertSelectedMapAndExpose(input, middle, eventWindow = parent)
                 assertSelectedMapAndExpose(input, top, eventWindow = parent)
@@ -12304,6 +12366,32 @@ class XCoreDrawingProtocolTest {
         assertEquals(window, u32le(event, 8))
         assertEquals(0, event[12].toInt() and 0xff)
         assertZeroBytes(event, 13, 32)
+    }
+
+    private fun assertCreateNotify(
+        event: ByteArray,
+        sequence: Int,
+        parent: Int,
+        window: Int,
+        x: Int = 0,
+        y: Int = 0,
+        width: Int = 40,
+        height: Int = 30,
+        borderWidth: Int = 0,
+        overrideRedirect: Boolean = false,
+    ) {
+        assertEquals(16, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(parent, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(x, u16le(event, 12))
+        assertEquals(y, u16le(event, 14))
+        assertEquals(width, u16le(event, 16))
+        assertEquals(height, u16le(event, 18))
+        assertEquals(borderWidth, u16le(event, 20))
+        assertEquals(if (overrideRedirect) 1 else 0, event[22].toInt() and 0xff)
+        assertZeroBytes(event, 23, 32)
     }
 
     private fun assertExpose(expose: ByteArray, windowId: Int) {
