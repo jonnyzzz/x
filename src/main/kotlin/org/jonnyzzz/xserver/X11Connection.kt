@@ -2124,6 +2124,8 @@ internal class X11Connection(
         val borderWidth = if ((mask and 0x0010) != 0) next() else null
         if ((mask and 0x0020) != 0) next()
         if ((mask and 0x0040) != 0) next()
+        if (width == 0) return writeError(error = 2, opcode = 12, badValue = width)
+        if (height == 0) return writeError(error = 2, opcode = 12, badValue = height)
         if (window.windowClass == XWindowClass.InputOnly && borderWidth != null && borderWidth != 0) {
             return writeError(error = 8, opcode = 12, badValue = borderWidth)
         }

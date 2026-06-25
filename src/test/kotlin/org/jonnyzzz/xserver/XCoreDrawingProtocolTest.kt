@@ -6233,6 +6233,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow rejects zero dimensions without changing geometry`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 40, height = 30))
+                out.write(configureWindowRequest(WindowId, 0x0004, 0))
+                out.write(configureWindowRequest(WindowId, 0x0008, 0))
+                out.write(getGeometryRequest(WindowId))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 12, badValue = 0, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 12, badValue = 0, sequence = 3)
+                val geometry = readReply(socket.getInputStream())
+                assertEquals(4, u16le(geometry, 2))
+                assertEquals(40, u16le(geometry, 16))
+                assertEquals(30, u16le(geometry, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConfigureWindow updates modeled geometry fields`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
