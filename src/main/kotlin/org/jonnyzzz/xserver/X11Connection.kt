@@ -911,8 +911,8 @@ internal class X11Connection(
         while (offset < body.size) {
             if (offset + 8 > body.size) return XCompositeGlyphParseResult.badLength()
             val length = body[offset].toInt() and 0xff
-            val deltaX = byteOrder.i16(body, offset + 2)
-            val deltaY = byteOrder.i16(body, offset + 4)
+            val deltaX = byteOrder.i16(body, offset + 4)
+            val deltaY = byteOrder.i16(body, offset + 6)
             if (length == 0xff) {
                 if (offset + 12 > body.size) return XCompositeGlyphParseResult.badLength()
                 x += deltaX
@@ -939,10 +939,11 @@ internal class X11Connection(
                     2 -> byteOrder.u16(body, glyphOffset)
                     else -> byteOrder.u32(body, glyphOffset)
                 }
-                result.getOrPut(glyphSetId) { mutableListOf() } += XGlyphPlacement(glyphId, x, y)
                 val glyph = state.glyph(glyphSetId, glyphId)
-                x += glyph?.xOff ?: 0
-                y += glyph?.yOff ?: 0
+                    ?: return XCompositeGlyphParseResult.error(XRender.GlyphError, glyphId)
+                result.getOrPut(glyphSetId) { mutableListOf() } += XGlyphPlacement(glyphId, x, y)
+                x += glyph.xOff
+                y += glyph.yOff
             }
             offset += paddedGlyphBytes
         }

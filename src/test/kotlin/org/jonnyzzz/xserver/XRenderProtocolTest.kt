@@ -2259,6 +2259,77 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER CompositeGlyphs applies glyph element deltaY once`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 2, height = 2, xOff = 2, alphas = ByteArray(4) { 0xff.toByte() }))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 3,
+                        deltaY = 2,
+                        glyphIds = listOf(GlyphId),
+                        operation = XRender.OpSrc,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER CompositeGlyphs rejects missing glyph and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingGlyph = GlyphId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 5, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddA8Glyph(GlyphSetId, GlyphId, width = 2, height = 2, xOff = 2, alphas = ByteArray(4) { 0xff.toByte() }))
+                out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, GlyphSetId, sourceX = 0, sourceY = 0, deltaX = 1, deltaY = 1, glyphIds = listOf(GlyphId, missingGlyph), operation = XRender.OpSrc))
+                out.write(renderCompositeGlyphs32(SolidPictureId, PictureId, GlyphSetId, sourceX = 0, sourceY = 0, deltaX = 1, deltaY = 3, glyphIds = listOf(GlyphId), operation = XRender.OpSrc))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 5))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = XRender.GlyphError, badValue = missingGlyph, sequence = 7, minorOpcode = 25)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER picture targeting pixmap is exposed as painted offscreen surface`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3084,8 +3155,8 @@ class XRenderProtocolTest {
         val paddedSize = (idsOffset + glyphIds.size * 4 + 3) and -4
         val body = compositeGlyphsHeader(source, destination, glyphSet, operation, maskFormat, sourceX, sourceY).copyOf(paddedSize)
         body[24] = glyphIds.size.toByte()
-        put16le(body, 26, deltaX)
-        put16le(body, 28, deltaY)
+        put16le(body, 28, deltaX)
+        put16le(body, 30, deltaY)
         glyphIds.forEachIndexed { index, glyphId ->
             put32le(body, idsOffset + index * 4, glyphId)
         }
