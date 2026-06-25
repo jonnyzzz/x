@@ -453,6 +453,17 @@ internal class X11State(
         }
 
     @Synchronized
+    fun mapRequestSinks(requester: XEventSink, window: XWindow): List<XMapRequestDispatch> =
+        eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureRedirect)
+            .filter { sink -> sink != requester }
+            .map { sink ->
+                XMapRequestDispatch(
+                    sink = sink,
+                    event = XMapRequestEvent(parentId = window.parentId, windowId = window.id),
+                )
+            }
+
+    @Synchronized
     fun createNotifySinks(window: XWindow): List<XCreateNotifyDispatch> =
         eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
             XCreateNotifyDispatch(
@@ -1124,8 +1135,17 @@ internal class X11State(
     }
 
     @Synchronized
+    fun canSelectEvents(sink: XEventSink, windowId: Int, eventMask: Int): Boolean {
+        if (!windows.containsKey(windowId)) return false
+        if ((eventMask and XEventMasks.SubstructureRedirect) == 0) return true
+        return eventSinks.none { (otherSink, selections) ->
+            otherSink != sink && (selections[windowId]?.let { it and XEventMasks.SubstructureRedirect } ?: 0) != 0
+        }
+    }
+
+    @Synchronized
     fun selectEvents(sink: XEventSink, windowId: Int, eventMask: Int) {
-        if (!windows.containsKey(windowId)) return
+        if (!canSelectEvents(sink, windowId, eventMask)) return
         val selections = eventSinks.getOrPut(sink) { linkedMapOf() }
         if (eventMask == 0) {
             selections.remove(windowId)

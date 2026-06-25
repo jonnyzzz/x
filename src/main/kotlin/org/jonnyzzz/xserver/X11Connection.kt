@@ -2006,6 +2006,9 @@ internal class X11Connection(
             return writeError(error = 8, opcode = 2, badValue = mask)
         }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
+        attributes.eventMask?.let {
+            if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
+        }
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
         }
@@ -2090,6 +2093,13 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         val current = state.window(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
         if (current.mapped) return
+        if (!current.overrideRedirect) {
+            val mapRequests = state.mapRequestSinks(this, current)
+            if (mapRequests.isNotEmpty()) {
+                sendMapRequest(mapRequests)
+                return
+            }
+        }
         val notifications = state.mapNotifySinks(current)
         val window = state.mapWindow(windowId) ?: return
         if (window.windowClass == XWindowClass.InputOutput) {
@@ -4543,6 +4553,15 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendMapRequestEvent(event: XMapRequestEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 20
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.parentId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        write(bytes)
+    }
+
     override fun sendCreateNotifyEvent(event: XCreateNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 16
@@ -5495,6 +5514,12 @@ internal class X11Connection(
     private fun sendMapNotify(notifications: List<XMapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendMapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendMapRequest(notifications: List<XMapRequestDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendMapRequestEvent(notification.event) }
         }
     }
 

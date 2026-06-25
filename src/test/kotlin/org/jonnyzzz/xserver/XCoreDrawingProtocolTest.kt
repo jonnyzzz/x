@@ -6305,6 +6305,167 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow delivers MapRequest to another client selecting parent SubstructureRedirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 424
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(queryTreeRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+
+                    val children = treeChildren(readReply(ownerSocket.getInputStream()))
+                    assertTrue(child in children)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"mapped":false""")
+                    assertMapRequest(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = child,
+                    )
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapWindow override redirect bypasses parent SubstructureRedirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 426
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child, overrideRedirect = true))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertExpose(ownerSocket.getInputStream().readExactly(32), child)
+                    assertEquals(3, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeWindowAttributes rejects duplicate SubstructureRedirect selection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { firstSocket ->
+                Socket("127.0.0.1", server.localPort).use { secondSocket ->
+                    firstSocket.soTimeout = 2_000
+                    secondSocket.soTimeout = 2_000
+                    setup(firstSocket)
+                    setup(secondSocket)
+
+                    val firstOut = firstSocket.getOutputStream()
+                    firstOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    firstOut.write(queryPointerRequest())
+                    firstOut.flush()
+                    assertEquals(2, u16le(readReply(firstSocket.getInputStream()), 2))
+
+                    val secondOut = secondSocket.getOutputStream()
+                    secondOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    secondOut.write(queryPointerRequest())
+                    secondOut.flush()
+                    assertError(secondSocket.getInputStream(), error = 10, opcode = 2, badValue = 0, sequence = 1)
+                    assertEquals(2, u16le(readReply(secondSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeWindowAttributes duplicate SubstructureRedirect rejection has no attribute side effects`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { firstSocket ->
+                    Socket("127.0.0.1", server.localPort).use { secondSocket ->
+                        ownerSocket.soTimeout = 2_000
+                        firstSocket.soTimeout = 2_000
+                        secondSocket.soTimeout = 2_000
+                        setup(ownerSocket)
+                        setup(firstSocket)
+                        setup(secondSocket)
+
+                        val child = WindowId + 427
+                        val ownerOut = ownerSocket.getOutputStream()
+                        ownerOut.write(createWindowRequest(child))
+                        ownerOut.write(queryPointerRequest())
+                        ownerOut.flush()
+                        assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                        val firstOut = firstSocket.getOutputStream()
+                        firstOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                        firstOut.write(changeWindowEventMaskRequest(child, XEventMasks.SubstructureRedirect))
+                        firstOut.write(queryPointerRequest())
+                        firstOut.flush()
+                        assertEquals(3, u16le(readReply(firstSocket.getInputStream()), 2))
+
+                        val duplicateMask = (1 shl 9) or (1 shl 11)
+                        val secondOut = secondSocket.getOutputStream()
+                        secondOut.write(changeWindowAttributesRawRequest(child, duplicateMask, 1, XEventMasks.SubstructureRedirect))
+                        secondOut.write(queryPointerRequest())
+                        secondOut.flush()
+                        assertError(secondSocket.getInputStream(), error = 10, opcode = 2, badValue = 0, sequence = 1)
+                        assertEquals(2, u16le(readReply(secondSocket.getInputStream()), 2))
+
+                        ownerOut.write(mapWindowRequest(child))
+                        ownerOut.write(queryPointerRequest())
+                        ownerOut.flush()
+
+                        assertMapRequest(firstSocket.getInputStream().readExactly(32), sequence = 3, parent = X11Ids.RootWindow, window = child)
+                        val ownerReply = ownerSocket.getInputStream().readExactly(32)
+                        assertEquals(1, ownerReply[0].toInt() and 0xff)
+                        assertEquals(4, u16le(ownerReply, 2))
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapSubwindows validates request length and parent window without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12693,6 +12854,20 @@ class XCoreDrawingProtocolTest {
         assertEquals(window, u32le(event, 8))
         assertEquals(0, event[12].toInt() and 0xff)
         assertZeroBytes(event, 13, 32)
+    }
+
+    private fun assertMapRequest(
+        event: ByteArray,
+        sequence: Int,
+        parent: Int,
+        window: Int,
+    ) {
+        assertEquals(20, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(parent, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertZeroBytes(event, 12, 32)
     }
 
     private fun assertCreateNotify(
