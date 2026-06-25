@@ -1198,7 +1198,7 @@ internal class X11State(
     @Synchronized
     fun canSelectEvents(sink: XEventSink, windowId: Int, eventMask: Int): Boolean {
         if (!windows.containsKey(windowId)) return false
-        val exclusiveMask = eventMask and (XEventMasks.ResizeRedirect or XEventMasks.SubstructureRedirect)
+        val exclusiveMask = eventMask and (XEventMasks.ButtonPress or XEventMasks.ResizeRedirect or XEventMasks.SubstructureRedirect)
         if (exclusiveMask == 0) return true
         return eventSinks.none { (otherSink, selections) ->
             otherSink != sink && (selections[windowId]?.let { it and exclusiveMask } ?: 0) != 0

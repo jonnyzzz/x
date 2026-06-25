@@ -7384,6 +7384,36 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ChangeWindowAttributes rejects duplicate ButtonPress selection`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { firstSocket ->
+                Socket("127.0.0.1", server.localPort).use { secondSocket ->
+                    firstSocket.soTimeout = 2_000
+                    secondSocket.soTimeout = 2_000
+                    setup(firstSocket)
+                    setup(secondSocket)
+
+                    val firstOut = firstSocket.getOutputStream()
+                    firstOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.ButtonPress))
+                    firstOut.write(queryPointerRequest())
+                    firstOut.flush()
+                    assertEquals(2, u16le(readReply(firstSocket.getInputStream()), 2))
+
+                    val secondOut = secondSocket.getOutputStream()
+                    secondOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.ButtonPress))
+                    secondOut.write(queryPointerRequest())
+                    secondOut.flush()
+                    assertError(secondSocket.getInputStream(), error = 10, opcode = 2, badValue = 0, sequence = 1)
+                    assertEquals(2, u16le(readReply(secondSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConfigureWindow override redirect bypasses parent SubstructureRedirect`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
