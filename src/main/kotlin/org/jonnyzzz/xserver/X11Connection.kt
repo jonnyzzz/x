@@ -2127,6 +2127,13 @@ internal class X11Connection(
         state.window(windowId) ?: return writeError(error = 3, opcode = 9, badValue = windowId)
         for (child in state.childrenOf(windowId).asReversed()) {
             if (!child.mapped) {
+                if (!child.overrideRedirect) {
+                    val mapRequests = state.mapRequestSinks(this, child)
+                    if (mapRequests.isNotEmpty()) {
+                        sendMapRequest(mapRequests)
+                        continue
+                    }
+                }
                 val notifications = state.mapNotifySinks(child)
                 val mapped = state.mapWindow(child.id) ?: continue
                 if (mapped.windowClass == XWindowClass.InputOutput) {

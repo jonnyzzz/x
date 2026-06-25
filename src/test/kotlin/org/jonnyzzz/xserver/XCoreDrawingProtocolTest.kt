@@ -6526,6 +6526,58 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapSubwindows redirects unmapped children to parent SubstructureRedirect selector`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val parent = WindowId + 428
+                    val bottom = parent + 1
+                    val top = parent + 2
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(parent))
+                    ownerOut.write(createWindowRequest(bottom, parent = parent))
+                    ownerOut.write(createWindowRequest(top, parent = parent))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(parent, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(mapSubwindowsRequest(parent))
+                    ownerOut.write(getWindowAttributesRequest(top))
+                    ownerOut.write(getWindowAttributesRequest(bottom))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapRequest(observerSocket.getInputStream().readExactly(32), sequence = 2, parent = parent, window = top)
+                    assertMapRequest(observerSocket.getInputStream().readExactly(32), sequence = 2, parent = parent, window = bottom)
+                    val topAttributes = readReply(ownerSocket.getInputStream())
+                    val bottomAttributes = readReply(ownerSocket.getInputStream())
+                    assertEquals(0, topAttributes[26].toInt() and 0xff)
+                    assertEquals(0, bottomAttributes[26].toInt() and 0xff)
+                    assertEquals(8, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ReparentWindow clears active pointer grab for mapped grab window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
