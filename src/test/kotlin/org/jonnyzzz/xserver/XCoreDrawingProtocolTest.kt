@@ -7274,6 +7274,83 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow requester ResizeRedirect selection does not self redirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+
+                val window = WindowId + 442
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(window, x = 1, y = 2, width = 40, height = 30))
+                out.write(changeWindowEventMaskRequest(window, XEventMasks.ResizeRedirect))
+                out.write(queryPointerRequest())
+                out.flush()
+                assertEquals(3, u16le(readReply(input), 2))
+
+                out.write(configureWindowRequest(window, 0x000c, 33, 22))
+                out.write(getGeometryRequest(window))
+                out.flush()
+
+                val geometry = readReply(input)
+                assertEquals(5, u16le(geometry, 2))
+                assertEquals(33, u16le(geometry, 16))
+                assertEquals(22, u16le(geometry, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow override redirect does not bypass window ResizeRedirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val window = WindowId + 443
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(window, x = 1, y = 2, width = 40, height = 30, overrideRedirect = true))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(window, XEventMasks.ResizeRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(configureWindowRequest(window, 0x000c, 33, 22))
+                    ownerOut.write(getGeometryRequest(window))
+                    ownerOut.flush()
+
+                    assertResizeRequest(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = window,
+                        width = 33,
+                        height = 22,
+                    )
+                    val geometry = readReply(ownerSocket.getInputStream())
+                    assertEquals(4, u16le(geometry, 2))
+                    assertEquals(40, u16le(geometry, 16))
+                    assertEquals(30, u16le(geometry, 18))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConfigureWindow parent SubstructureRedirect takes precedence over window ResizeRedirect`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
