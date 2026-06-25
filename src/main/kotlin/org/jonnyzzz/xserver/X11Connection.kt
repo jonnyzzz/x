@@ -2058,12 +2058,14 @@ internal class X11Connection(
         if (!state.canReparentWindow(windowId, parentId)) {
             return writeError(error = 8, opcode = 7, badValue = 0)
         }
-        state.reparentWindow(
+        val oldParentId = window.parentId
+        val reparented = state.reparentWindow(
             id = windowId,
             parentId = parentId,
             x = byteOrder.i16(body, 8),
             y = byteOrder.i16(body, 10),
-        )
+        ) ?: return
+        sendReparentNotify(state.reparentNotifySinks(reparented, oldParentId))
     }
 
     private fun mapWindow(body: ByteArray) {
@@ -4555,6 +4557,19 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendReparentNotifyEvent(event: XReparentNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 21
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        byteOrder.put32(bytes, 12, event.parentId)
+        byteOrder.put16(bytes, 16, event.x)
+        byteOrder.put16(bytes, 18, event.y)
+        bytes[20] = if (event.overrideRedirect) 1 else 0
+        write(bytes)
+    }
+
     override fun sendCirculateNotifyEvent(event: XCirculateNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 26
@@ -5478,6 +5493,12 @@ internal class X11Connection(
     private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendUnmapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendReparentNotify(notifications: List<XReparentNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendReparentNotifyEvent(notification.event) }
         }
     }
 

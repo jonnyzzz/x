@@ -496,6 +496,33 @@ internal class X11State(
         }
 
     @Synchronized
+    fun reparentNotifySinks(window: XWindow, oldParentId: Int): List<XReparentNotifyDispatch> {
+        val event = XReparentNotifyEvent(
+            eventWindowId = window.id,
+            windowId = window.id,
+            parentId = window.parentId,
+            x = window.x,
+            y = window.y,
+            overrideRedirect = window.overrideRedirect,
+        )
+        val parentIds = if (oldParentId == window.parentId) {
+            listOf(oldParentId)
+        } else {
+            listOf(oldParentId, window.parentId)
+        }
+        return eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
+            XReparentNotifyDispatch(sink = sink, event = event)
+        } + parentIds.flatMap { parentId ->
+            eventSelectionsForWindow(parentId, XEventMasks.SubstructureNotify).map { sink ->
+                XReparentNotifyDispatch(
+                    sink = sink,
+                    event = event.copy(eventWindowId = parentId),
+                )
+            }
+        }
+    }
+
+    @Synchronized
     fun circulateNotifySinks(result: XCirculateResult): List<XCirculateNotifyDispatch> =
         eventSelectionsForWindow(result.window.id, XEventMasks.StructureNotify).map { sink ->
             XCirculateNotifyDispatch(

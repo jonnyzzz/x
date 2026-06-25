@@ -5794,6 +5794,77 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ReparentWindow delivers StructureNotify and old and new parent SubstructureNotify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val oldParent = WindowId + 411
+                    val newParent = WindowId + 412
+                    val child = WindowId + 413
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(oldParent))
+                    ownerOut.write(createWindowRequest(newParent))
+                    ownerOut.write(createWindowRequest(child, parent = oldParent, overrideRedirect = true, eventMask = XEventMasks.StructureNotify))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(oldParent, XEventMasks.SubstructureNotify))
+                    observerOut.write(changeWindowEventMaskRequest(newParent, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(reparentWindowRequest(child, newParent, x = 7, y = 8))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertReparentNotify(
+                        ownerSocket.getInputStream().readExactly(32),
+                        sequence = 5,
+                        eventWindow = child,
+                        window = child,
+                        parent = newParent,
+                        x = 7,
+                        y = 8,
+                        overrideRedirect = true,
+                    )
+                    assertEquals(6, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertReparentNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = oldParent,
+                        window = child,
+                        parent = newParent,
+                        x = 7,
+                        y = 8,
+                        overrideRedirect = true,
+                    )
+                    assertReparentNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = newParent,
+                        window = child,
+                        parent = newParent,
+                        x = 7,
+                        y = 8,
+                        overrideRedirect = true,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangeWindowAttributes validates value mask length and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12530,6 +12601,28 @@ class XCoreDrawingProtocolTest {
         assertEquals(eventWindow, u32le(event, 4))
         assertEquals(window, u32le(event, 8))
         assertZeroBytes(event, 12, 32)
+    }
+
+    private fun assertReparentNotify(
+        event: ByteArray,
+        sequence: Int,
+        eventWindow: Int,
+        window: Int,
+        parent: Int,
+        x: Int,
+        y: Int,
+        overrideRedirect: Boolean = false,
+    ) {
+        assertEquals(21, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(parent, u32le(event, 12))
+        assertEquals(x, u16le(event, 16))
+        assertEquals(y, u16le(event, 18))
+        assertEquals(if (overrideRedirect) 1 else 0, event[20].toInt() and 0xff)
+        assertZeroBytes(event, 21, 32)
     }
 
     private fun assertExpose(expose: ByteArray, windowId: Int) {
