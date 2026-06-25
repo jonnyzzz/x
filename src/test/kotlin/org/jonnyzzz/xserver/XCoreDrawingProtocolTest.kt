@@ -5865,6 +5865,50 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ReparentWindow automatically unmaps and remaps mapped window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val oldParent = WindowId + 414
+                val newParent = WindowId + 415
+                val child = WindowId + 416
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(oldParent))
+                out.write(createWindowRequest(newParent))
+                out.write(createWindowRequest(child, parent = oldParent, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(oldParent))
+                out.write(mapWindowRequest(newParent))
+                out.write(mapWindowRequest(child))
+                out.write(reparentWindowRequest(child, newParent, x = 9, y = 10))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertExpose(input.readExactly(32), oldParent)
+                assertExpose(input.readExactly(32), newParent)
+                assertSelectedMapAndExpose(input, child)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = child, window = child)
+                assertReparentNotify(
+                    input.readExactly(32),
+                    sequence = 7,
+                    eventWindow = child,
+                    window = child,
+                    parent = newParent,
+                    x = 9,
+                    y = 10,
+                )
+                assertMapNotify(input.readExactly(32), sequence = 7, eventWindow = child, window = child)
+                assertExpose(input.readExactly(32), child)
+                assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangeWindowAttributes validates value mask length and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -6345,6 +6389,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
+                assertExpose(socket.getInputStream().readExactly(32), child)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))
@@ -6380,6 +6425,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
+                assertExpose(socket.getInputStream().readExactly(32), confine)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))
@@ -6415,6 +6461,7 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
+                assertExpose(socket.getInputStream().readExactly(32), child)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(7, u16le(pointer, 2))

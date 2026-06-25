@@ -2058,6 +2058,12 @@ internal class X11Connection(
         if (!state.canReparentWindow(windowId, parentId)) {
             return writeError(error = 8, opcode = 7, badValue = 0)
         }
+        val wasMapped = window.mapped
+        if (wasMapped) {
+            val notifications = state.unmapNotifySinks(window)
+            state.unmapWindow(windowId)
+            sendUnmapNotify(notifications)
+        }
         val oldParentId = window.parentId
         val reparented = state.reparentWindow(
             id = windowId,
@@ -2066,6 +2072,17 @@ internal class X11Connection(
             y = byteOrder.i16(body, 10),
         ) ?: return
         sendReparentNotify(state.reparentNotifySinks(reparented, oldParentId))
+        if (wasMapped) {
+            val notifications = state.mapNotifySinks(reparented)
+            val mapped = state.mapWindow(windowId) ?: return
+            if (mapped.windowClass == XWindowClass.InputOutput) {
+                state.paintWindowBackground(mapped.id)
+            }
+            sendMapNotify(notifications)
+            if (mapped.windowClass == XWindowClass.InputOutput) {
+                sendExpose(mapped)
+            }
+        }
     }
 
     private fun mapWindow(body: ByteArray) {
