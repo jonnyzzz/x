@@ -7161,6 +7161,112 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ConfigureWindow delivers ConfigureRequest to parent SubstructureRedirect without changing geometry`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val window = WindowId + 433
+                    val sibling = WindowId + 435
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(sibling, x = 50, y = 2, width = 20, height = 20))
+                    ownerOut.write(createWindowRequest(window, x = 1, y = 2, width = 40, height = 30))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(3, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(configureWindowRequest(window, 0x006f, 11, 12, 33, 22, sibling, XStackMode.Below))
+                    ownerOut.write(getGeometryRequest(window))
+                    ownerOut.flush()
+
+                    assertConfigureRequest(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = X11Ids.RootWindow,
+                        window = window,
+                        sibling = sibling,
+                        x = 11,
+                        y = 12,
+                        width = 33,
+                        height = 22,
+                        borderWidth = 0,
+                        stackMode = XStackMode.Below,
+                        valueMask = 0x006f,
+                    )
+                    val geometry = readReply(ownerSocket.getInputStream())
+                    assertEquals(5, u16le(geometry, 2))
+                    assertEquals(1, u16le(geometry, 12))
+                    assertEquals(2, u16le(geometry, 14))
+                    assertEquals(40, u16le(geometry, 16))
+                    assertEquals(30, u16le(geometry, 18))
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow override redirect bypasses parent SubstructureRedirect`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    val window = WindowId + 434
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(window, x = 1, y = 2, width = 40, height = 30, overrideRedirect = true))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    ownerOut.write(configureWindowRequest(window, 0x000f, 11, 12, 33, 22))
+                    ownerOut.write(getGeometryRequest(window))
+                    ownerOut.flush()
+
+                    val geometry = readReply(ownerSocket.getInputStream())
+                    assertEquals(4, u16le(geometry, 2))
+                    assertEquals(11, u16le(geometry, 12))
+                    assertEquals(12, u16le(geometry, 14))
+                    assertEquals(33, u16le(geometry, 16))
+                    assertEquals(22, u16le(geometry, 18))
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ConfigureWindow conditional restack ignores unmapped occluding siblings`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -13243,6 +13349,35 @@ class XCoreDrawingProtocolTest {
         if (borderWidth != null) assertEquals(borderWidth, u16le(event, 24))
         assertEquals(if (overrideRedirect) 1 else 0, event[26].toInt() and 0xff)
         assertZeroBytes(event, 27, 32)
+    }
+
+    private fun assertConfigureRequest(
+        event: ByteArray,
+        sequence: Int,
+        parent: Int,
+        window: Int,
+        sibling: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        borderWidth: Int,
+        stackMode: Int,
+        valueMask: Int,
+    ) {
+        assertEquals(23, event[0].toInt() and 0xff)
+        assertEquals(stackMode, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(parent, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertEquals(sibling, u32le(event, 12))
+        assertEquals(x, u16le(event, 16))
+        assertEquals(y, u16le(event, 18))
+        assertEquals(width, u16le(event, 20))
+        assertEquals(height, u16le(event, 22))
+        assertEquals(borderWidth, u16le(event, 24))
+        assertEquals(valueMask, u16le(event, 26))
+        assertZeroBytes(event, 28, 32)
     }
 
     private fun assertCirculateNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int, place: Int) {

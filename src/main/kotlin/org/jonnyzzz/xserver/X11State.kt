@@ -571,6 +571,39 @@ internal class X11State(
         }
 
     @Synchronized
+    fun configureRequestSinks(
+        requester: XEventSink,
+        window: XWindow,
+        x: Int?,
+        y: Int?,
+        width: Int?,
+        height: Int?,
+        borderWidth: Int?,
+        siblingId: Int?,
+        stackMode: Int?,
+        valueMask: Int,
+    ): List<XConfigureRequestDispatch> =
+        eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureRedirect)
+            .filter { sink -> sink != requester }
+            .map { sink ->
+                XConfigureRequestDispatch(
+                    sink = sink,
+                    event = XConfigureRequestEvent(
+                        parentId = window.parentId,
+                        windowId = window.id,
+                        siblingId = siblingId ?: 0,
+                        x = x ?: window.x,
+                        y = y ?: window.y,
+                        width = width ?: window.width,
+                        height = height ?: window.height,
+                        borderWidth = borderWidth ?: window.borderWidth,
+                        stackMode = stackMode ?: XStackMode.Above,
+                        valueMask = valueMask,
+                    ),
+                )
+            }
+
+    @Synchronized
     fun pointerLogicalButton(physicalButton: Int): Int =
         pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
 

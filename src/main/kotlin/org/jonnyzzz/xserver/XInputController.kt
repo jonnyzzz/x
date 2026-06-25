@@ -106,6 +106,7 @@ internal interface XEventSink {
     fun sendMappingNotifyEvent(event: XMappingNotifyEvent)
     fun sendMapNotifyEvent(event: XMapNotifyEvent)
     fun sendMapRequestEvent(event: XMapRequestEvent)
+    fun sendConfigureRequestEvent(event: XConfigureRequestEvent)
     fun sendCreateNotifyEvent(event: XCreateNotifyEvent)
     fun sendDestroyNotifyEvent(event: XDestroyNotifyEvent)
     fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent)
@@ -268,6 +269,24 @@ internal data class XConfigureNotifyEvent(
 internal data class XConfigureNotifyDispatch(
     val sink: XEventSink,
     val event: XConfigureNotifyEvent,
+)
+
+internal data class XConfigureRequestEvent(
+    val parentId: Int,
+    val windowId: Int,
+    val siblingId: Int,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val borderWidth: Int,
+    val stackMode: Int,
+    val valueMask: Int,
+)
+
+internal data class XConfigureRequestDispatch(
+    val sink: XEventSink,
+    val event: XConfigureRequestEvent,
 )
 
 internal data class XSelectionClearEvent(

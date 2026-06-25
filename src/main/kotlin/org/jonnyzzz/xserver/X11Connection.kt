@@ -2193,6 +2193,24 @@ internal class X11Connection(
                 return writeError(error = 8, opcode = 12, badValue = siblingId)
             }
         }
+        if (!window.overrideRedirect) {
+            val configureRequests = state.configureRequestSinks(
+                requester = this,
+                window = window,
+                x = x,
+                y = y,
+                width = width,
+                height = height,
+                borderWidth = borderWidth,
+                siblingId = siblingId,
+                stackMode = stackMode,
+                valueMask = mask,
+            )
+            if (configureRequests.isNotEmpty()) {
+                sendConfigureRequest(configureRequests)
+                return
+            }
+        }
         val configured = state.configureWindow(
             window.id,
             x = x,
@@ -4635,6 +4653,23 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendConfigureRequestEvent(event: XConfigureRequestEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 23
+        bytes[1] = event.stackMode.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.parentId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        byteOrder.put32(bytes, 12, event.siblingId)
+        byteOrder.put16(bytes, 16, event.x)
+        byteOrder.put16(bytes, 18, event.y)
+        byteOrder.put16(bytes, 20, event.width)
+        byteOrder.put16(bytes, 22, event.height)
+        byteOrder.put16(bytes, 24, event.borderWidth)
+        byteOrder.put16(bytes, 26, event.valueMask)
+        write(bytes)
+    }
+
     override fun sendSelectionClearEvent(event: XSelectionClearEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 29
@@ -5556,6 +5591,12 @@ internal class X11Connection(
     private fun sendConfigureNotify(notifications: List<XConfigureNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendConfigureNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendConfigureRequest(notifications: List<XConfigureRequestDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendConfigureRequestEvent(notification.event) }
         }
     }
 
