@@ -2062,7 +2062,9 @@ internal class X11Connection(
     private fun mapWindow(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 8, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
-        val window = state.mapWindow(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
+        val current = state.window(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
+        if (current.mapped) return
+        val window = state.mapWindow(windowId) ?: return
         if (window.windowClass == XWindowClass.InputOutput) {
             state.paintWindowBackground(window.id)
         }
@@ -2083,11 +2085,16 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 9, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 9, badValue = windowId)
-        for (child in state.childrenOf(windowId)) {
-            state.mapWindow(child.id)
-            sendMapNotify(child)
-            if (child.windowClass == XWindowClass.InputOutput) {
-                sendExpose(child)
+        for (child in state.childrenOf(windowId).asReversed()) {
+            if (!child.mapped) {
+                val mapped = state.mapWindow(child.id) ?: continue
+                if (mapped.windowClass == XWindowClass.InputOutput) {
+                    state.paintWindowBackground(mapped.id)
+                }
+                sendMapNotify(mapped)
+                if (mapped.windowClass == XWindowClass.InputOutput) {
+                    sendExpose(mapped)
+                }
             }
         }
     }

@@ -5947,6 +5947,31 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow ignores already mapped window without duplicate events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapSubwindows validates request length and parent window without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5966,6 +5991,40 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 9, badValue = missing, sequence = 3)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `MapSubwindows maps only unmapped children in top to bottom order`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val bottom = WindowId + 1
+                val middle = WindowId + 2
+                val top = WindowId + 3
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(bottom, parent = parent))
+                out.write(createWindowRequest(middle, parent = parent))
+                out.write(createWindowRequest(top, parent = parent))
+                out.write(mapWindowRequest(middle))
+                out.write(mapSubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, middle)
+                assertMapAndExpose(input, top)
+                assertMapAndExpose(input, bottom)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(7, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
