@@ -5850,6 +5850,37 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `core drawing requests validate missing window and GC before mutation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val source = WindowId
+                val destination = WindowId + 1
+                val missingWindow = WindowId + 404
+                val missingGc = GcId + 404
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(source))
+                out.write(createWindowRequest(destination))
+                out.write(clearAreaRequest(missingWindow, x = 0, y = 0, width = 1, height = 1))
+                out.write(copyAreaRequest(source, destination, missingGc, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(copyPlaneRequest(source, destination, missingGc, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1, bitPlane = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 3, opcode = 61, badValue = missingWindow, sequence = 3)
+                assertError(socket.getInputStream(), error = 13, opcode = 62, badValue = missingGc, sequence = 4)
+                assertError(socket.getInputStream(), error = 13, opcode = 63, badValue = missingGc, sequence = 5)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(6, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
