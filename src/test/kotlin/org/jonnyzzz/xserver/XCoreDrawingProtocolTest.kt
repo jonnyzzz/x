@@ -8203,6 +8203,7 @@ class XCoreDrawingProtocolTest {
                 out.write(mapWindowRequest(second))
                 out.write(mapWindowRequest(third))
                 out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
                 out.write(circulateWindowRequest(0, X11Ids.RootWindow))
                 out.write(queryTreeRequest(X11Ids.RootWindow))
                 out.write(circulateWindowRequest(1, X11Ids.RootWindow))
@@ -8220,9 +8221,9 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, second)
                 assertMapAndExpose(input, third)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
-                assertCirculateNotify(input.readExactly(32), sequence = 10, eventWindow = X11Ids.RootWindow, window = first, place = 0)
+                assertCirculateNotify(input.readExactly(32), sequence = 11, eventWindow = X11Ids.RootWindow, window = first, place = 0)
                 assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
-                assertCirculateNotify(input.readExactly(32), sequence = 12, eventWindow = X11Ids.RootWindow, window = first, place = 1)
+                assertCirculateNotify(input.readExactly(32), sequence = 13, eventWindow = X11Ids.RootWindow, window = first, place = 1)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
                 val json = httpGet(server.localPort, "/state.json")
@@ -8231,10 +8232,76 @@ class XCoreDrawingProtocolTest {
                     json.indexOf(windowJsonId(first)) < json.indexOf(windowJsonId(nested)),
                     "CirculateWindow should keep a restacked window's descendants after the parent in snapshot/render order",
                 )
-                assertError(input, error = 2, opcode = 13, badValue = 2, sequence = 16)
-                assertError(input, error = 16, opcode = 13, badValue = 0, sequence = 17)
-                assertError(input, error = 3, opcode = 13, badValue = missing, sequence = 18)
+                assertError(input, error = 2, opcode = 13, badValue = 2, sequence = 17)
+                assertError(input, error = 16, opcode = 13, badValue = 0, sequence = 18)
+                assertError(input, error = 3, opcode = 13, badValue = missing, sequence = 19)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow delivers selected structure notifications without requester local event`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val first = WindowId + 420
+                    val second = WindowId + 421
+                    val third = WindowId + 422
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(first, x = 0, y = 0, width = 30, height = 30))
+                    ownerOut.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                    ownerOut.write(createWindowRequest(third, x = 80, y = 80, width = 20, height = 20))
+                    ownerOut.write(mapWindowRequest(first))
+                    ownerOut.write(mapWindowRequest(second))
+                    ownerOut.write(mapWindowRequest(third))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerSocket.getInputStream(), first)
+                    assertMapAndExpose(ownerSocket.getInputStream(), second)
+                    assertMapAndExpose(ownerSocket.getInputStream(), third)
+                    assertEquals(7, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(first, XEventMasks.StructureNotify))
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(circulateWindowRequest(0, X11Ids.RootWindow))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertEquals(9, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertCirculateNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = first,
+                        window = first,
+                        place = 0,
+                    )
+                    assertCirculateNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = X11Ids.RootWindow,
+                        window = first,
+                        place = 0,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
             }
             server.close()
             serverThread.join(1_000)

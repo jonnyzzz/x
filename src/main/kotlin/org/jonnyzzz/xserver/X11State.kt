@@ -438,6 +438,20 @@ internal class X11State(
         }
 
     @Synchronized
+    fun circulateNotifySinks(result: XCirculateResult): List<XCirculateNotifyDispatch> =
+        eventSelectionsForWindow(result.window.id, XEventMasks.StructureNotify).map { sink ->
+            XCirculateNotifyDispatch(
+                sink = sink,
+                event = XCirculateNotifyEvent(eventWindowId = result.window.id, windowId = result.window.id, place = result.place),
+            )
+        } + eventSelectionsForWindow(result.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XCirculateNotifyDispatch(
+                sink = sink,
+                event = XCirculateNotifyEvent(eventWindowId = result.parentId, windowId = result.window.id, place = result.place),
+            )
+        }
+
+    @Synchronized
     fun pointerLogicalButton(physicalButton: Int): Int =
         pointerMapping.getOrNull(physicalButton - 1) ?: physicalButton
 

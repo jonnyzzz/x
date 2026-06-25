@@ -2181,7 +2181,7 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 13, badValue = windowId)
         val result = state.circulateWindow(windowId, direction) ?: return
-        sendCirculateNotify(result)
+        sendCirculateNotify(state.circulateNotifySinks(result))
     }
 
     private fun getWindowAttributes(body: ByteArray) {
@@ -4468,16 +4468,6 @@ internal class X11Connection(
         write(event)
     }
 
-    private fun sendCirculateNotify(result: XCirculateResult) {
-        val event = ByteArray(32)
-        event[0] = 26
-        byteOrder.put16(event, 2, sequence)
-        byteOrder.put32(event, 4, result.parentId)
-        byteOrder.put32(event, 8, result.window.id)
-        event[16] = result.place.toByte()
-        write(event)
-    }
-
     private fun sendSelectionNotify(requestor: Int, selection: Int, target: Int, property: Int, time: Int) {
         val event = ByteArray(32)
         event[0] = 31
@@ -4546,6 +4536,16 @@ internal class X11Connection(
         byteOrder.put32(bytes, 4, event.eventWindowId)
         byteOrder.put32(bytes, 8, event.windowId)
         bytes[12] = if (event.fromConfigure) 1 else 0
+        write(bytes)
+    }
+
+    override fun sendCirculateNotifyEvent(event: XCirculateNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 26
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        bytes[16] = event.place.toByte()
         write(bytes)
     }
 
@@ -5432,6 +5432,12 @@ internal class X11Connection(
     private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendUnmapNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendCirculateNotify(notifications: List<XCirculateNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendCirculateNotifyEvent(notification.event) }
         }
     }
 
