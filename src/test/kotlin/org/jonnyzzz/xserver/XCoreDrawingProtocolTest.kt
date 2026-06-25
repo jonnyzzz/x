@@ -6578,6 +6578,70 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapSubwindows mixes redirected override and already mapped children independently`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val parent = WindowId + 431
+                    val redirected = parent + 1
+                    val overrideChild = parent + 2
+                    val alreadyMapped = parent + 3
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(parent))
+                    ownerOut.write(createWindowRequest(redirected, parent = parent))
+                    ownerOut.write(createWindowRequest(overrideChild, parent = parent, overrideRedirect = true))
+                    ownerOut.write(createWindowRequest(alreadyMapped, parent = parent))
+                    ownerOut.write(mapWindowRequest(alreadyMapped))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertExpose(ownerSocket.getInputStream().readExactly(32), alreadyMapped)
+                    assertEquals(6, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(parent, XEventMasks.SubstructureRedirect))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(mapSubwindowsRequest(parent))
+                    ownerOut.write(getWindowAttributesRequest(overrideChild))
+                    ownerOut.write(getWindowAttributesRequest(redirected))
+                    ownerOut.write(getWindowAttributesRequest(alreadyMapped))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertExpose(ownerSocket.getInputStream().readExactly(32), overrideChild)
+                    val overrideAttributes = readReply(ownerSocket.getInputStream())
+                    val redirectedAttributes = readReply(ownerSocket.getInputStream())
+                    val alreadyMappedAttributes = readReply(ownerSocket.getInputStream())
+                    assertEquals(2, overrideAttributes[26].toInt() and 0xff)
+                    assertEquals(0, redirectedAttributes[26].toInt() and 0xff)
+                    assertEquals(2, alreadyMappedAttributes[26].toInt() and 0xff)
+                    assertEquals(11, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    assertMapRequest(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        parent = parent,
+                        window = redirected,
+                    )
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ReparentWindow clears active pointer grab for mapped grab window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
