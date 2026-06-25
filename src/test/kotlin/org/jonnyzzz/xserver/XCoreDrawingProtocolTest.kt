@@ -5697,6 +5697,159 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateWindow validates depth class visual and InputOnly rules without reserving id`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val badVisual = X11Ids.RootVisual + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRawRequest(WindowId, windowClass = 3))
+                out.write(createWindowRawRequest(WindowId, depth = 32))
+                out.write(createWindowRawRequest(WindowId, visual = badVisual))
+                out.write(createWindowRawRequest(WindowId, depth = 24, windowClass = XWindowClass.InputOnly))
+                out.write(createWindowRawRequest(WindowId, depth = 0, windowClass = XWindowClass.InputOnly, borderWidth = 1))
+                out.write(createWindowRawRequest(WindowId, depth = 0, windowClass = XWindowClass.InputOnly, valueMask = 1 shl 1, values = listOf(0)))
+                out.write(createWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 1, badValue = 3, sequence = 1)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = 32, sequence = 2)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = badVisual, sequence = 3)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = 24, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = 1, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = 1 shl 1, sequence = 6)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(8, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `InputOnly windows stay observable but are not drawables or visible SVG surfaces`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 5, y = 7, width = 40, height = 30, depth = 0, windowClass = XWindowClass.InputOnly))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 55, badValue = WindowId, sequence = 2)
+                val mapNotify = socket.getInputStream().readExactly(32)
+                assertEquals(19, mapNotify[0].toInt() and 0xff)
+                assertFailsWith<SocketTimeoutException> {
+                    socket.getInputStream().readExactly(32)
+                }
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(json, """"id":"0x200001","parent":"0x26","x":5,"y":7""")
+                assertContains(json, """"class":"InputOnly","depth":0,"visual":"0x28"""")
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertFalse(svg.contains("""data-window-id="0x200001""""))
+                assertFalse(svg.contains("""data-drawable-id="0x200001""""))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `InputOnly windows preserve core protocol invariants after creation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val inputOnly = WindowId
+                val inputOutput = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(inputOnly, depth = 0, windowClass = XWindowClass.InputOnly))
+                out.write(createWindowRequest(inputOutput))
+                out.write(reparentWindowRequest(inputOutput, inputOnly, x = 1, y = 2))
+                out.write(changeWindowAttributesRawRequest(inputOnly, 1 shl 1, 0))
+                out.write(configureWindowRequest(inputOnly, 0x0010, 1))
+                out.write(getWindowAttributesRequest(inputOnly))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 7, badValue = inputOnly, sequence = 3)
+                assertError(socket.getInputStream(), error = 8, opcode = 2, badValue = 1 shl 1, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 12, badValue = 1, sequence = 5)
+                val attributes = readReply(socket.getInputStream())
+                assertEquals(6, u16le(attributes, 2))
+                assertEquals(X11Ids.RootVisual, u32le(attributes, 8))
+                assertEquals(XWindowClass.InputOnly, u16le(attributes, 12))
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(7, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `InputOnly windows reject graphics requests but still answer GetGeometry`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val inputOnly = WindowId
+                val inputOutput = WindowId + 1
+                val rectangle = XRectangleCommand(0, 0, 2, 2)
+                val arc = XArcCommand(0, 0, 4, 4, 0, 90 * 64)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(inputOnly, x = 3, y = 4, width = 10, height = 9, depth = 0, windowClass = XWindowClass.InputOnly))
+                out.write(createWindowRequest(inputOutput))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = inputOutput))
+                out.write(clearAreaRequest(inputOnly, 0, 0, 1, 1))
+                out.write(copyAreaRequest(inputOnly, inputOutput, GcId, 0, 0, 0, 0, 1, 1))
+                out.write(copyAreaRequest(inputOutput, inputOnly, GcId, 0, 0, 0, 0, 1, 1))
+                out.write(copyPlaneRequest(inputOnly, inputOutput, GcId, 0, 0, 0, 0, 1, 1, 1))
+                out.write(polyPointRequest(inputOnly, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(polyLineRequest(inputOnly, GcId, points = listOf(0 to 0, 1 to 1)))
+                out.write(polySegmentRequest(inputOnly, GcId, segments = listOf((0 to 0) to (1 to 1))))
+                out.write(polyRectangleRequest(inputOnly, GcId, rectangles = listOf(rectangle)))
+                out.write(polyFillRectangleRequest(inputOnly, GcId, rectangles = listOf(rectangle)))
+                out.write(polyArcRequest(inputOnly, GcId, filled = false, arcs = listOf(arc)))
+                out.write(polyArcRequest(inputOnly, GcId, filled = true, arcs = listOf(arc)))
+                out.write(getImageRequest(inputOnly, x = 0, y = 0, width = 1, height = 1))
+                out.write(getGeometryRequest(inputOnly))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 61, badValue = inputOnly, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 62, badValue = inputOnly, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 62, badValue = inputOnly, sequence = 6)
+                assertError(socket.getInputStream(), error = 8, opcode = 63, badValue = inputOnly, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = 64, badValue = inputOnly, sequence = 8)
+                assertError(socket.getInputStream(), error = 8, opcode = 65, badValue = inputOnly, sequence = 9)
+                assertError(socket.getInputStream(), error = 8, opcode = 66, badValue = inputOnly, sequence = 10)
+                assertError(socket.getInputStream(), error = 8, opcode = 67, badValue = inputOnly, sequence = 11)
+                assertError(socket.getInputStream(), error = 8, opcode = 70, badValue = inputOnly, sequence = 12)
+                assertError(socket.getInputStream(), error = 8, opcode = 68, badValue = inputOnly, sequence = 13)
+                assertError(socket.getInputStream(), error = 8, opcode = 71, badValue = inputOnly, sequence = 14)
+                assertError(socket.getInputStream(), error = 8, opcode = 73, badValue = inputOnly, sequence = 15)
+                val geometry = readReply(socket.getInputStream())
+                assertEquals(16, u16le(geometry, 2))
+                assertEquals(0, geometry[1].toInt() and 0xff)
+                assertEquals(3, u16le(geometry, 12))
+                assertEquals(4, u16le(geometry, 14))
+                assertEquals(10, u16le(geometry, 16))
+                assertEquals(9, u16le(geometry, 18))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow validates request length and window id without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9537,6 +9690,10 @@ class XCoreDrawingProtocolTest {
         width: Int = 40,
         height: Int = 30,
         parent: Int = X11Ids.RootWindow,
+        depth: Int = 24,
+        windowClass: Int = XWindowClass.InputOutput,
+        visual: Int = X11Ids.RootVisual,
+        borderWidth: Int = 0,
         eventMask: Int? = null,
         doNotPropagateMask: Int? = null,
     ): ByteArray {
@@ -9548,8 +9705,9 @@ class XCoreDrawingProtocolTest {
         put16le(body, 10, y)
         put16le(body, 12, width)
         put16le(body, 14, height)
-        put16le(body, 18, 1)
-        put32le(body, 20, X11Ids.RootVisual)
+        put16le(body, 16, borderWidth)
+        put16le(body, 18, windowClass)
+        put32le(body, 20, visual)
         var valueMask = 0
         var offset = 28
         if (eventMask != null) {
@@ -9562,7 +9720,7 @@ class XCoreDrawingProtocolTest {
             put32le(body, offset, doNotPropagateMask)
         }
         put32le(body, 24, valueMask)
-        return request(1, 24, body)
+        return request(1, depth, body)
     }
 
     private fun createWindowRawRequest(
@@ -9572,6 +9730,10 @@ class XCoreDrawingProtocolTest {
         width: Int = 40,
         height: Int = 30,
         parent: Int = X11Ids.RootWindow,
+        depth: Int = 24,
+        windowClass: Int = XWindowClass.InputOutput,
+        visual: Int = X11Ids.RootVisual,
+        borderWidth: Int = 0,
         valueMask: Int = 0,
         values: List<Int> = emptyList(),
     ): ByteArray {
@@ -9582,13 +9744,14 @@ class XCoreDrawingProtocolTest {
         put16le(body, 10, y)
         put16le(body, 12, width)
         put16le(body, 14, height)
-        put16le(body, 18, 1)
-        put32le(body, 20, X11Ids.RootVisual)
+        put16le(body, 16, borderWidth)
+        put16le(body, 18, windowClass)
+        put32le(body, 20, visual)
         put32le(body, 24, valueMask)
         values.forEachIndexed { index, value ->
             put32le(body, 28 + index * 4, value)
         }
-        return request(1, 24, body)
+        return request(1, depth, body)
     }
 
     private fun destroyWindowRequest(id: Int): ByteArray {

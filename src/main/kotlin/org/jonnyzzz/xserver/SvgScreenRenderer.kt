@@ -80,7 +80,7 @@ internal object SvgScreenRenderer {
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped}""")
+                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped},"class":"${window.className}","depth":${window.depth},"visual":"${window.visualHex}"""")
                 append('}')
             }
             append("""],"pixmaps":[""")
@@ -303,7 +303,11 @@ internal object SvgScreenRenderer {
 
     private fun renderSvgContent(builder: XmlDom, snapshot: XScreenSnapshot) {
         val visibleWindows = snapshot.windows.filter {
-            it.mapped && it.id != X11Ids.RootWindow && it.visibleWidth > 0 && it.visibleHeight > 0
+            it.windowClass == XWindowClass.InputOutput &&
+                it.mapped &&
+                it.id != X11Ids.RootWindow &&
+                it.visibleWidth > 0 &&
+                it.visibleHeight > 0
         }
         with(builder) {
             comment(RenderCredit.Text)
@@ -383,6 +387,7 @@ internal object SvgScreenRenderer {
         val topWindows = snapshot.windows
             .filter {
                 it.mapped &&
+                    it.windowClass == XWindowClass.InputOutput &&
                     it.parentId == X11Ids.RootWindow &&
                     it.id != X11Ids.RootWindow &&
                     it.width >= 64 &&
@@ -511,7 +516,7 @@ internal object SvgScreenRenderer {
 
     private fun renderWindowSvg(builder: XmlDom, snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot) {
         val subtree = subtreeWindows(snapshot, rootWindow)
-            .filter { it.mapped && it.width > 0 && it.height > 0 }
+            .filter { it.windowClass == XWindowClass.InputOutput && it.mapped && it.width > 0 && it.height > 0 }
         val clipPrefix = "preview-${rootWindow.idHex.drop(2)}"
         builder.svgElement(
             "svg",
@@ -631,6 +636,7 @@ internal object SvgScreenRenderer {
                     text(window.label)
                     text(" ")
                     text("${window.width}x${window.height}")
+                    text(" ${window.className}")
                     if (window.visibleWidth != window.width || window.visibleHeight != window.height) {
                         text(" visible ${window.visibleWidth}x${window.visibleHeight}")
                     }
@@ -652,6 +658,7 @@ internal object SvgScreenRenderer {
         for (drawing in snapshot.drawings) {
             if (drawableIds != null && drawing.drawableId !in drawableIds) continue
             val window = windows[drawing.drawableId] ?: continue
+            if (window.windowClass != XWindowClass.InputOutput) continue
             if (!window.mapped || window.visibleWidth <= 0 || window.visibleHeight <= 0) continue
             if (drawing.framebufferBacked) continue
             builder.svgElement(
@@ -693,6 +700,7 @@ internal object SvgScreenRenderer {
         clipPrefix: String,
     ) {
         for (window in windows) {
+            if (window.windowClass != XWindowClass.InputOutput) continue
             val href = window.framebufferDataUri ?: continue
             builder.svgElement(
                 "g",

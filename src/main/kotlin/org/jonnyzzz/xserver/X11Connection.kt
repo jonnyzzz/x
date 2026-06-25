@@ -113,7 +113,7 @@ internal class X11Connection(
             }
         }
         when (opcode) {
-            1 -> createWindow(body)
+            1 -> createWindow(minorOpcode, body)
             2 -> changeWindowAttributes(body)
             3 -> getWindowAttributes(body)
             4 -> destroyWindow(body)
@@ -1930,12 +1930,15 @@ internal class X11Connection(
         }
     }
 
-    private fun createWindow(body: ByteArray) {
+    private fun createWindow(requestedDepth: Int, body: ByteArray) {
         if (body.size < 28) return writeError(16, 1, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val parent = byteOrder.u32(body, 4)
         val width = byteOrder.u16(body, 12)
         val height = byteOrder.u16(body, 14)
+        val borderWidth = byteOrder.u16(body, 16)
+        val requestedClass = byteOrder.u16(body, 18)
+        val requestedVisual = byteOrder.u32(body, 20)
         val mask = byteOrder.u32(body, 24)
         val expectedSize = 28 + mask.countOneBits() * 4
         if (body.size != expectedSize) return writeError(error = 16, opcode = 1, badValue = 0)
@@ -1943,18 +1946,43 @@ internal class X11Connection(
             return writeError(error = 2, opcode = 1, badValue = mask)
         }
         if (state.hasResource(id)) return writeError(error = 14, opcode = 1, badValue = id)
-        state.window(parent) ?: return writeError(error = 3, opcode = 1, badValue = parent)
+        val parentWindow = state.window(parent) ?: return writeError(error = 3, opcode = 1, badValue = parent)
         if (width == 0) return writeError(error = 2, opcode = 1, badValue = width)
         if (height == 0) return writeError(error = 2, opcode = 1, badValue = height)
+        val windowClass = when (requestedClass) {
+            XWindowClass.CopyFromParent -> parentWindow.windowClass
+            XWindowClass.InputOutput, XWindowClass.InputOnly -> requestedClass
+            else -> return writeError(error = 2, opcode = 1, badValue = requestedClass)
+        }
+        val depth = if (requestedDepth == 0 && windowClass != XWindowClass.InputOnly) parentWindow.depth else requestedDepth
+        val visual = if (requestedVisual == XWindowClass.CopyFromParent) parentWindow.visual else requestedVisual
+        when (windowClass) {
+            XWindowClass.InputOutput -> {
+                if (parentWindow.windowClass == XWindowClass.InputOnly) return writeError(error = 8, opcode = 1, badValue = parent)
+                if (depth != X11Ids.RootDepth) return writeError(error = 8, opcode = 1, badValue = requestedDepth)
+                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 1, badValue = requestedVisual)
+            }
+            XWindowClass.InputOnly -> {
+                if (requestedDepth != 0) return writeError(error = 8, opcode = 1, badValue = requestedDepth)
+                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 1, badValue = requestedVisual)
+                if (borderWidth != 0) return writeError(error = 8, opcode = 1, badValue = borderWidth)
+                if ((mask and InputOnlyWindowAttributeValueMask.inv()) != 0) {
+                    return writeError(error = 8, opcode = 1, badValue = mask)
+                }
+            }
+        }
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
         val window = XWindow(
             id = id,
             parentId = parent,
+            windowClass = windowClass,
+            depth = depth,
+            visual = visual,
             x = byteOrder.i16(body, 8),
             y = byteOrder.i16(body, 10),
             width = width,
             height = height,
-            borderWidth = byteOrder.u16(body, 16),
+            borderWidth = borderWidth,
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
@@ -1976,7 +2004,10 @@ internal class X11Connection(
         if ((mask and WindowAttributeValueMask.inv()) != 0) {
             return writeError(error = 2, opcode = 2, badValue = mask)
         }
-        state.window(windowId) ?: return writeError(error = 3, opcode = 2, badValue = windowId)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 2, badValue = windowId)
+        if (window.windowClass == XWindowClass.InputOnly && (mask and InputOnlyWindowAttributeValueMask.inv()) != 0) {
+            return writeError(error = 8, opcode = 2, badValue = mask)
+        }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
@@ -2022,8 +2053,11 @@ internal class X11Connection(
         if (body.size != 12) return writeError(error = 16, opcode = 7, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         val parentId = byteOrder.u32(body, 4)
-        state.window(windowId) ?: return writeError(error = 3, opcode = 7, badValue = windowId)
-        state.window(parentId) ?: return writeError(error = 3, opcode = 7, badValue = parentId)
+        val window = state.window(windowId) ?: return writeError(error = 3, opcode = 7, badValue = windowId)
+        val parent = state.window(parentId) ?: return writeError(error = 3, opcode = 7, badValue = parentId)
+        if (window.windowClass == XWindowClass.InputOutput && parent.windowClass == XWindowClass.InputOnly) {
+            return writeError(error = 8, opcode = 7, badValue = parentId)
+        }
         if (!state.canReparentWindow(windowId, parentId)) {
             return writeError(error = 8, opcode = 7, badValue = 0)
         }
@@ -2039,9 +2073,13 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 8, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         val window = state.mapWindow(windowId) ?: return writeError(error = 3, opcode = 8, badValue = windowId)
-        state.paintWindowBackground(window.id)
+        if (window.windowClass == XWindowClass.InputOutput) {
+            state.paintWindowBackground(window.id)
+        }
         sendMapNotify(window)
-        sendExpose(window)
+        if (window.windowClass == XWindowClass.InputOutput) {
+            sendExpose(window)
+        }
     }
 
     private fun unmapWindow(body: ByteArray) {
@@ -2058,7 +2096,9 @@ internal class X11Connection(
         for (child in state.childrenOf(windowId)) {
             state.mapWindow(child.id)
             sendMapNotify(child)
-            sendExpose(child)
+            if (child.windowClass == XWindowClass.InputOutput) {
+                sendExpose(child)
+            }
         }
     }
 
@@ -2094,10 +2134,13 @@ internal class X11Connection(
         val borderWidth = if ((mask and 0x0010) != 0) next() else null
         if ((mask and 0x0020) != 0) next()
         if ((mask and 0x0040) != 0) next()
+        if (window.windowClass == XWindowClass.InputOnly && borderWidth != null && borderWidth != 0) {
+            return writeError(error = 8, opcode = 12, badValue = borderWidth)
+        }
         val configured = state.configureWindow(window.id, x = x, y = y, width = width, height = height, borderWidth = borderWidth) ?: return
         if (configured.mapped) {
             sendConfigureNotify(configured)
-            if (width != null || height != null) sendExpose(configured)
+            if (configured.windowClass == XWindowClass.InputOutput && (width != null || height != null)) sendExpose(configured)
         }
     }
 
@@ -2117,8 +2160,8 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 3, badValue = windowId)
         val reply = reply(extra = 0, payloadUnits = 3)
-        byteOrder.put32(reply, 8, X11Ids.RootVisual)
-        byteOrder.put16(reply, 12, 1)
+        byteOrder.put32(reply, 8, window.visual)
+        byteOrder.put16(reply, 12, window.windowClass)
         reply[14] = 1
         reply[15] = 1
         byteOrder.put32(reply, 16, -1)
@@ -2137,7 +2180,7 @@ internal class X11Connection(
     private fun getGeometry(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 14, badValue = 0)
         val drawableId = byteOrder.u32(body, 0)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 14, badValue = drawableId)
+        val drawable = state.drawableGeometry(drawableId) ?: return writeError(error = 9, opcode = 14, badValue = drawableId)
         val reply = reply(extra = drawable.depth, payloadUnits = 0)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
         byteOrder.put16(reply, 12, drawable.x)
@@ -2146,6 +2189,18 @@ internal class X11Connection(
         byteOrder.put16(reply, 18, drawable.height)
         byteOrder.put16(reply, 20, drawable.borderWidth)
         write(reply)
+    }
+
+    private fun coreDrawable(opcode: Int, drawableId: Int): XDrawable? {
+        val window = state.window(drawableId)
+        if (window?.windowClass == XWindowClass.InputOnly) {
+            writeError(error = 8, opcode = opcode, badValue = drawableId)
+            return null
+        }
+        return state.drawable(drawableId) ?: run {
+            writeError(error = 9, opcode = opcode, badValue = drawableId)
+            null
+        }
     }
 
     private fun queryTree(body: ByteArray) {
@@ -2816,7 +2871,7 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 53, badValue = id)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 53, badValue = drawableId)
+        val drawable = coreDrawable(opcode = 53, drawableId = drawableId) ?: return
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
         if (width == 0) return writeError(error = 2, opcode = 53, badValue = width)
@@ -2839,7 +2894,7 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
         if (state.hasResource(id)) return writeError(error = 14, opcode = 55, badValue = id)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 55, badValue = drawableId)
+        val drawable = coreDrawable(opcode = 55, drawableId = drawableId) ?: return
         val mask = byteOrder.u32(body, 8)
         if (!validateGcValueLength(mask, body, 12, opcode = 55)) return
         if (!validateGcValues(mask, body, 12, opcode = 55)) return
@@ -2900,6 +2955,7 @@ internal class X11Connection(
         if (body.size != 12) return writeError(error = 16, opcode = 61, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return
+        if (window.windowClass == XWindowClass.InputOnly) return writeError(error = 8, opcode = 61, badValue = windowId)
         val x = byteOrder.i16(body, 4)
         val y = byteOrder.i16(body, 6)
         val rectangle = XRectangleCommand(
@@ -2931,6 +2987,8 @@ internal class X11Connection(
         val destinationY = byteOrder.i16(body, 18)
         val width = byteOrder.u16(body, 20)
         val height = byteOrder.u16(body, 22)
+        coreDrawable(opcode = 62, drawableId = sourceDrawable) ?: return
+        coreDrawable(opcode = 62, drawableId = destinationDrawable) ?: return
         System.err.println(
             "core seq=$sequence CopyArea src=${sourceDrawable.toHex()} dst=${destinationDrawable.toHex()}" +
                 " srcXY=$sourceX,$sourceY dstXY=$destinationX,$destinationY ${width}x$height",
@@ -2981,6 +3039,8 @@ internal class X11Connection(
         val width = byteOrder.u16(body, 20)
         val height = byteOrder.u16(body, 22)
         val bitPlane = byteOrder.u32(body, 24)
+        coreDrawable(opcode = 63, drawableId = sourceDrawable) ?: return
+        coreDrawable(opcode = 63, drawableId = destinationDrawable) ?: return
         if (bitPlane == 0 || bitPlane.countOneBits() != 1) {
             return writeError(error = 2, opcode = 63, badValue = bitPlane)
         }
@@ -3028,6 +3088,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 64, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        coreDrawable(opcode = 64, drawableId = drawableId) ?: return
         val points = points(body, 8, coordMode)
         state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
         state.draw(
@@ -3048,6 +3109,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 65, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        coreDrawable(opcode = 65, drawableId = drawableId) ?: return
         val points = points(body, 8, coordMode)
         state.drawPolyline(
             drawableId,
@@ -3084,6 +3146,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 66, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        coreDrawable(opcode = 66, drawableId = drawableId) ?: return
         val points = mutableListOf<XPoint>()
         var offset = 8
         while (offset + 8 <= body.size) {
@@ -3127,6 +3190,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         val rectangles = rectangles(body, 8)
         when (kind) {
             XDrawingKind.FillRectangle -> state.fillRectangles(
@@ -3165,6 +3229,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
+        coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         val arcs = arcs(body, 8)
         if (filled) {
             state.fillArcs(
@@ -3207,7 +3272,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 69, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 69, badValue = drawableId)
+        coreDrawable(opcode = 69, drawableId = drawableId) ?: return
         val points = points(body, 12, coordMode)
         state.fillPolygon(
             drawableId = drawableId,
@@ -3243,7 +3308,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 72, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 72, badValue = drawableId)
+        val drawable = coreDrawable(opcode = 72, drawableId = drawableId) ?: return
         if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
             return writeError(error = 8, opcode = 72, badValue = drawableId)
         }
@@ -3296,7 +3361,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = opcode, badValue = drawableId)
+        val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
             return writeError(error = 8, opcode = opcode, badValue = drawableId)
         }
@@ -3339,7 +3404,7 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = opcode, badValue = drawableId)
+        val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
         if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
             return writeError(error = 8, opcode = opcode, badValue = drawableId)
         }
@@ -3375,7 +3440,7 @@ internal class X11Connection(
         if (body.size != 16) return writeError(error = 16, opcode = 73, badValue = 0)
         if (format !in 1..2) return writeError(error = 2, opcode = 73, badValue = format)
         val drawableId = byteOrder.u32(body, 0)
-        val drawable = state.drawable(drawableId) ?: return writeError(error = 9, opcode = 73, badValue = drawableId)
+        val drawable = coreDrawable(opcode = 73, drawableId = drawableId) ?: return
         val x = byteOrder.i16(body, 4)
         val y = byteOrder.i16(body, 6)
         val width = byteOrder.u16(body, 8)
@@ -3832,7 +3897,7 @@ internal class X11Connection(
             return writeError(error = 2, opcode = 97, badValue = sizeClass)
         }
         val drawableId = byteOrder.u32(body, 0)
-        state.drawable(drawableId) ?: return writeError(error = 9, opcode = 97, badValue = drawableId)
+        coreDrawable(opcode = 97, drawableId = drawableId) ?: return
         val requestedWidth = byteOrder.u16(body, 4)
         val requestedHeight = byteOrder.u16(body, 6)
         val reply = reply(extra = 0, payloadUnits = 0)
@@ -5371,6 +5436,7 @@ internal class X11Connection(
         const val KeyModifierMask = 0x00ff
         const val GcValueMask = 0x007f_ffff
         const val WindowAttributeValueMask = 0x0000_7fff
+        const val InputOnlyWindowAttributeValueMask = (1 shl 5) or (1 shl 9) or (1 shl 11) or (1 shl 12) or (1 shl 14)
         const val ConfigureWindowValueMask = 0x007f
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1

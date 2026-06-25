@@ -108,6 +108,9 @@ internal class X11State(
             XWindow(
                 id = X11Ids.RootWindow,
                 parentId = 0,
+                windowClass = XWindowClass.InputOutput,
+                depth = X11Ids.RootDepth,
+                visual = X11Ids.RootVisual,
                 x = 0,
                 y = 0,
                 width = width,
@@ -290,7 +293,9 @@ internal class X11State(
     @Synchronized
     fun canReparentWindow(id: Int, parentId: Int): Boolean {
         if (id == X11Ids.RootWindow) return false
-        if (!windows.containsKey(id) || !windows.containsKey(parentId)) return false
+        val window = windows[id] ?: return false
+        val parent = windows[parentId] ?: return false
+        if (window.windowClass == XWindowClass.InputOutput && parent.windowClass == XWindowClass.InputOnly) return false
         return !windowIsAncestorOrSelf(id, parentId)
     }
 
@@ -1345,6 +1350,9 @@ internal class X11State(
                 visibleHeight = visible?.height ?: 0,
                 backgroundPixel = window.backgroundPixel,
                 framebufferDataUri = window.framebuffer.toDataUri(),
+                windowClass = window.windowClass,
+                depth = window.depth,
+                visual = window.visual,
             )
         }
         val pixmapSnapshots = pixmaps.values.map { pixmap ->
@@ -1417,7 +1425,7 @@ internal class X11State(
                     eventMask = pbuffer.eventMask,
                 )
             },
-            overlaps = overlaps(windowSnapshots),
+            overlaps = overlaps(windowSnapshots.filter { it.windowClass == XWindowClass.InputOutput }),
             drawings = drawings.toList(),
             inputOperations = inputOperations.toList(),
             inputControlOperations = inputControlOperations.toList(),
@@ -1725,7 +1733,13 @@ internal class X11State(
 
     @Synchronized
     fun drawable(id: Int): XDrawable? =
-        windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, 24) }
+        windows[id]?.takeIf { it.windowClass == XWindowClass.InputOutput }
+            ?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, it.depth) }
+            ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.rootId, it.depth) }
+
+    @Synchronized
+    fun drawableGeometry(id: Int): XDrawable? =
+        windows[id]?.let { XDrawable(it.x, it.y, it.width, it.height, it.borderWidth, X11Ids.RootWindow, it.depth) }
             ?: pixmaps[id]?.let { XDrawable(0, 0, it.width, it.height, 0, it.rootId, it.depth) }
 
     @Synchronized
@@ -3630,6 +3644,9 @@ internal data class XCirculateResult(
 internal data class XWindow(
     val id: Int,
     var parentId: Int,
+    val windowClass: Int = XWindowClass.InputOutput,
+    val depth: Int = X11Ids.RootDepth,
+    val visual: Int = X11Ids.RootVisual,
     var x: Int,
     var y: Int,
     var width: Int,
@@ -4398,9 +4415,18 @@ internal data class XWindowSnapshot(
     val visibleHeight: Int,
     val backgroundPixel: Int,
     val framebufferDataUri: String?,
+    val windowClass: Int,
+    val depth: Int,
+    val visual: Int,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
+    val className: String get() = when (windowClass) {
+        XWindowClass.InputOutput -> "InputOutput"
+        XWindowClass.InputOnly -> "InputOnly"
+        else -> "Class$windowClass"
+    }
+    val visualHex: String get() = "0x${visual.toUInt().toString(16)}"
 }
 
 internal data class XWindowOverlap(

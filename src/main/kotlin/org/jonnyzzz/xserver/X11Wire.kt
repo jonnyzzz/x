@@ -186,4 +186,11 @@ internal object X11Ids {
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0028
+    const val RootDepth = 24
+}
+
+internal object XWindowClass {
+    const val CopyFromParent = 0
+    const val InputOutput = 1
+    const val InputOnly = 2
 }
