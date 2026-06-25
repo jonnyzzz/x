@@ -5373,6 +5373,90 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow delivers StructureNotify and parent SubstructureNotify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val child = WindowId + 404
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child, eventMask = XEventMasks.StructureNotify))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(destroyWindowRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertDestroyNotify(
+                        ownerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = child,
+                        window = child,
+                    )
+                    assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertDestroyNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        eventWindow = X11Ids.RootWindow,
+                        window = child,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroyWindow delivers inferiors before destroyed window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 405
+                val nested = WindowId + 406
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(nested, parent = parent))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.StructureNotify or XEventMasks.SubstructureNotify))
+                out.write(destroyWindowRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertDestroyNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    eventWindow = parent,
+                    window = nested,
+                )
+                assertDestroyNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    eventWindow = parent,
+                    window = parent,
+                )
+                assertEquals(5, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UnmapWindow clears active pointer grab for grab or confine window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5558,6 +5642,46 @@ class XCoreDrawingProtocolTest {
                 assertFalse(json.contains(windowJsonId(first)))
                 assertFalse(json.contains(windowJsonId(nested)))
                 assertFalse(json.contains(windowJsonId(second)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroySubwindows delivers SubstructureNotify for direct children in order`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 407
+                val first = WindowId + 408
+                val nested = WindowId + 409
+                val second = WindowId + 410
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(first, parent = parent))
+                out.write(createWindowRequest(nested, parent = first))
+                out.write(createWindowRequest(second, parent = parent))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.SubstructureNotify))
+                out.write(destroySubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertDestroyNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 6,
+                    eventWindow = parent,
+                    window = first,
+                )
+                assertDestroyNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 6,
+                    eventWindow = parent,
+                    window = second,
+                )
+                assertEquals(7, u16le(readReply(socket.getInputStream()), 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -12392,6 +12516,20 @@ class XCoreDrawingProtocolTest {
         assertEquals(borderWidth, u16le(event, 20))
         assertEquals(if (overrideRedirect) 1 else 0, event[22].toInt() and 0xff)
         assertZeroBytes(event, 23, 32)
+    }
+
+    private fun assertDestroyNotify(
+        event: ByteArray,
+        sequence: Int,
+        eventWindow: Int,
+        window: Int,
+    ) {
+        assertEquals(17, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(eventWindow, u32le(event, 4))
+        assertEquals(window, u32le(event, 8))
+        assertZeroBytes(event, 12, 32)
     }
 
     private fun assertExpose(expose: ByteArray, windowId: Int) {

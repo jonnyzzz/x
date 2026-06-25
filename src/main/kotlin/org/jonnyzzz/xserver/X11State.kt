@@ -8,6 +8,11 @@ import kotlin.math.atan2
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
+internal data class XWindowRemoval(
+    val removedResources: Set<Int>,
+    val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -143,11 +148,23 @@ internal class X11State(
     }
 
     @Synchronized
-    fun removeWindow(id: Int): Set<Int> {
+    fun removeWindow(id: Int): Set<Int> =
+        removeWindow(id, sendDestroyNotify = false).removedResources
+
+    @Synchronized
+    fun removeWindowWithDestroyNotify(id: Int): XWindowRemoval =
+        removeWindow(id, sendDestroyNotify = true)
+
+    private fun removeWindow(id: Int, sendDestroyNotify: Boolean): XWindowRemoval {
         val initialRemoved = windowSubtreeIds(id)
         processRetainedSaveSetsForWindowSubtree(initialRemoved)
         val removed = windowSubtreeIds(id)
-        if (removed.isEmpty()) return emptySet()
+        if (removed.isEmpty()) return XWindowRemoval(removedResources = emptySet(), destroyNotifyDispatches = emptyList())
+        val destroyNotifyDispatches = if (sendDestroyNotify) {
+            destroyNotifySinksInDestroyOrder(id)
+        } else {
+            emptyList()
+        }
         for (windowId in removed) {
             windows.remove(windowId)
             windowOwners.remove(windowId)
@@ -169,7 +186,10 @@ internal class X11State(
         if (focusWindowId in removed) focusWindowId = X11Ids.RootWindow
         val removedResources = removed + removedGlxWindows
         discardRetainedResourceIds(removedResources)
-        return removedResources
+        return XWindowRemoval(
+            removedResources = removedResources,
+            destroyNotifyDispatches = destroyNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -437,6 +457,26 @@ internal class X11State(
                     height = window.height,
                     borderWidth = window.borderWidth,
                     overrideRedirect = window.overrideRedirect,
+                ),
+            )
+        }
+
+    @Synchronized
+    fun destroyNotifySinks(window: XWindow): List<XDestroyNotifyDispatch> =
+        eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
+            XDestroyNotifyDispatch(
+                sink = sink,
+                event = XDestroyNotifyEvent(
+                    eventWindowId = window.id,
+                    windowId = window.id,
+                ),
+            )
+        } + eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XDestroyNotifyDispatch(
+                sink = sink,
+                event = XDestroyNotifyEvent(
+                    eventWindowId = window.parentId,
+                    windowId = window.id,
                 ),
             )
         }
@@ -3487,6 +3527,14 @@ internal class X11State(
             val selectedMask = selections[windowId] ?: return@mapNotNull null
             sink.takeIf { (selectedMask and eventMask) != 0 }
         }
+
+    private fun destroyNotifySinksInDestroyOrder(rootId: Int): List<XDestroyNotifyDispatch> =
+        windowsInDestroyNotifyOrder(rootId).flatMap { destroyNotifySinks(it) }
+
+    private fun windowsInDestroyNotifyOrder(rootId: Int): List<XWindow> {
+        val window = windows[rootId] ?: return emptyList()
+        return childrenOf(rootId).flatMap { windowsInDestroyNotifyOrder(it.id) } + window
+    }
 
     private fun windowIsAncestorOrSelf(ancestorId: Int, windowId: Int): Boolean {
         var current = windows[windowId] ?: return false

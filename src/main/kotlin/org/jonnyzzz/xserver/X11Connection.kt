@@ -2018,7 +2018,9 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 4, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
-        ownedResources.removeAll(state.removeWindow(windowId))
+        val removal = state.removeWindowWithDestroyNotify(windowId)
+        ownedResources.removeAll(removal.removedResources)
+        sendDestroyNotify(removal.destroyNotifyDispatches)
     }
 
     private fun destroySubwindows(body: ByteArray) {
@@ -2026,7 +2028,9 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 5, badValue = windowId)
         for (child in state.childrenOf(windowId)) {
-            ownedResources.removeAll(state.removeWindow(child.id))
+            val removal = state.removeWindowWithDestroyNotify(child.id)
+            ownedResources.removeAll(removal.removedResources)
+            sendDestroyNotify(removal.destroyNotifyDispatches)
         }
     }
 
@@ -4532,6 +4536,15 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendDestroyNotifyEvent(event: XDestroyNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 17
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        write(bytes)
+    }
+
     override fun sendUnmapNotifyEvent(event: XUnmapNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 18
@@ -5453,6 +5466,12 @@ internal class X11Connection(
     private fun sendCreateNotify(notifications: List<XCreateNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendCreateNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendDestroyNotify(notifications: List<XDestroyNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendDestroyNotifyEvent(notification.event) }
         }
     }
 
