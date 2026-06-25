@@ -5435,18 +5435,19 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, readReply(socket.getInputStream())[1].toInt() and 0xff)
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
+                out.write(changeWindowEventMaskRequest(confine, XEventMasks.StructureNotify))
                 out.write(configureWindowRequest(confine, 0x0003, 200, 200))
                 out.write(queryPointerRequest())
                 out.flush()
 
                 val configure = socket.getInputStream().readExactly(32)
                 assertEquals(22, configure[0].toInt() and 0xff)
-                assertEquals(4, u16le(configure, 2))
+                assertEquals(5, u16le(configure, 2))
                 assertEquals(confine, u32le(configure, 4))
 
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
-                assertEquals(5, u16le(pointer, 2))
+                assertEquals(6, u16le(pointer, 2))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
@@ -5477,13 +5478,14 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0, grab[1].toInt() and 0xff)
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
 
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.StructureNotify))
                 out.write(configureWindowRequest(parent, 0x0004, 11))
                 out.write(queryPointerRequest())
                 out.flush()
 
                 val configure = socket.getInputStream().readExactly(32)
                 assertEquals(22, configure[0].toInt() and 0xff)
-                assertEquals(6, u16le(configure, 2))
+                assertEquals(7, u16le(configure, 2))
                 assertEquals(parent, u32le(configure, 4))
                 val expose = socket.getInputStream().readExactly(32)
                 assertEquals(12, expose[0].toInt() and 0xff)
@@ -5491,7 +5493,7 @@ class XCoreDrawingProtocolTest {
 
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
-                assertEquals(7, u16le(pointer, 2))
+                assertEquals(8, u16le(pointer, 2))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
             }
             server.close()
@@ -6501,6 +6503,8 @@ class XCoreDrawingProtocolTest {
                 out.write(mapWindowRequest(second))
                 out.write(mapWindowRequest(third))
                 out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.StructureNotify))
+                out.write(changeWindowEventMaskRequest(third, XEventMasks.StructureNotify))
                 out.write(configureWindowRequest(first, 0x0040, 0))
                 out.write(queryTreeRequest(X11Ids.RootWindow))
                 out.write(configureWindowRequest(first, 0x0060, second, 1))
@@ -6518,18 +6522,18 @@ class XCoreDrawingProtocolTest {
                 assertMapAndExpose(input, second)
                 assertMapAndExpose(input, third)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
-                assertConfigureNotify(input.readExactly(32), sequence = 9, window = first, aboveSibling = third)
+                assertConfigureNotify(input.readExactly(32), sequence = 11, window = first, aboveSibling = third)
                 assertEquals(listOf(second, third, first), treeChildren(readReply(input)))
-                assertConfigureNotify(input.readExactly(32), sequence = 11, window = first, aboveSibling = 0)
+                assertConfigureNotify(input.readExactly(32), sequence = 13, window = first, aboveSibling = 0)
                 assertEquals(listOf(first, second, third), treeChildren(readReply(input)))
-                assertConfigureNotify(input.readExactly(32), sequence = 13, window = third, aboveSibling = first)
+                assertConfigureNotify(input.readExactly(32), sequence = 15, window = third, aboveSibling = first)
                 assertEquals(listOf(first, third, second), treeChildren(readReply(input)))
-                assertConfigureNotify(input.readExactly(32), sequence = 15, window = first, aboveSibling = second)
+                assertConfigureNotify(input.readExactly(32), sequence = 17, window = first, aboveSibling = second)
                 assertEquals(listOf(third, second, first), treeChildren(readReply(input)))
-                assertConfigureNotify(input.readExactly(32), sequence = 17, window = first, aboveSibling = 0)
+                assertConfigureNotify(input.readExactly(32), sequence = 19, window = first, aboveSibling = 0)
                 assertEquals(listOf(first, third, second), treeChildren(readReply(input)))
                 val geometry = readReply(input)
-                assertEquals(19, u16le(geometry, 2))
+                assertEquals(21, u16le(geometry, 2))
                 assertEquals(50, u16le(geometry, 12))
                 assertEquals(50, u16le(geometry, 14))
 
@@ -6544,6 +6548,147 @@ class XCoreDrawingProtocolTest {
                     json.indexOf(windowJsonId(nested)) < json.indexOf(windowJsonId(third)),
                     "ConfigureWindow Above should place the moving window after the sibling's whole subtree in snapshot/render order",
                 )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow delivers selected structure notifications without requester local event`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val first = WindowId + 430
+                    val second = WindowId + 431
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(first, x = 0, y = 0, width = 40, height = 30, overrideRedirect = true))
+                    ownerOut.write(createWindowRequest(second, x = 50, y = 0, width = 20, height = 20))
+                    ownerOut.write(mapWindowRequest(first))
+                    ownerOut.write(mapWindowRequest(second))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerSocket.getInputStream(), first)
+                    assertMapAndExpose(ownerSocket.getInputStream(), second)
+                    assertEquals(5, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(first, XEventMasks.StructureNotify))
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(configureWindowRequest(first, 0x0003, 11, 12))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertEquals(7, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertConfigureNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = first,
+                        window = first,
+                        aboveSibling = 0,
+                        x = 11,
+                        y = 12,
+                        width = 40,
+                        height = 30,
+                        borderWidth = 0,
+                        overrideRedirect = true,
+                    )
+                    assertConfigureNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = X11Ids.RootWindow,
+                        window = first,
+                        aboveSibling = 0,
+                        x = 11,
+                        y = 12,
+                        width = 40,
+                        height = 30,
+                        borderWidth = 0,
+                        overrideRedirect = true,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ConfigureWindow delivers selected notifications for unmapped windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val window = WindowId + 432
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(window, x = 0, y = 0, width = 40, height = 30, overrideRedirect = true))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(window, XEventMasks.StructureNotify))
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.SubstructureNotify))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
+
+                    ownerOut.write(configureWindowRequest(window, 0x0003, 7, 8))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertEquals(4, u16le(readReply(ownerSocket.getInputStream()), 2))
+                    assertConfigureNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = window,
+                        window = window,
+                        aboveSibling = 0,
+                        x = 7,
+                        y = 8,
+                        width = 40,
+                        height = 30,
+                        borderWidth = 0,
+                        overrideRedirect = true,
+                    )
+                    assertConfigureNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 3,
+                        eventWindow = X11Ids.RootWindow,
+                        window = window,
+                        aboveSibling = 0,
+                        x = 7,
+                        y = 8,
+                        width = 40,
+                        height = 30,
+                        borderWidth = 0,
+                        overrideRedirect = true,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(4, u16le(readReply(observerSocket.getInputStream()), 2))
+                }
             }
             server.close()
             serverThread.join(1_000)
@@ -10192,10 +10337,15 @@ class XCoreDrawingProtocolTest {
         windowClass: Int = XWindowClass.InputOutput,
         visual: Int = X11Ids.RootVisual,
         borderWidth: Int = 0,
+        overrideRedirect: Boolean? = null,
         eventMask: Int? = null,
         doNotPropagateMask: Int? = null,
     ): ByteArray {
-        val extraValues = listOfNotNull(eventMask, doNotPropagateMask)
+        val extraValues = listOfNotNull(
+            overrideRedirect?.let { (1 shl 9) to if (it) 1 else 0 },
+            eventMask?.let { (1 shl 11) to it },
+            doNotPropagateMask?.let { (1 shl 12) to it },
+        )
         val body = ByteArray(28 + extraValues.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, parent)
@@ -10208,14 +10358,10 @@ class XCoreDrawingProtocolTest {
         put32le(body, 20, visual)
         var valueMask = 0
         var offset = 28
-        if (eventMask != null) {
-            valueMask = valueMask or (1 shl 11)
-            put32le(body, offset, eventMask)
+        for ((mask, value) in extraValues) {
+            valueMask = valueMask or mask
+            put32le(body, offset, value)
             offset += 4
-        }
-        if (doNotPropagateMask != null) {
-            valueMask = valueMask or (1 shl 12)
-            put32le(body, offset, doNotPropagateMask)
         }
         put32le(body, 24, valueMask)
         return request(1, depth, body)
@@ -12445,13 +12591,32 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(event, 7, 32)
     }
 
-    private fun assertConfigureNotify(event: ByteArray, sequence: Int, window: Int, aboveSibling: Int) {
+    private fun assertConfigureNotify(
+        event: ByteArray,
+        sequence: Int,
+        window: Int,
+        aboveSibling: Int,
+        eventWindow: Int = window,
+        x: Int? = null,
+        y: Int? = null,
+        width: Int? = null,
+        height: Int? = null,
+        borderWidth: Int? = null,
+        overrideRedirect: Boolean = false,
+    ) {
         assertEquals(22, event[0].toInt() and 0xff)
         assertEquals(0, event[1].toInt() and 0xff)
         assertEquals(sequence, u16le(event, 2))
-        assertEquals(window, u32le(event, 4))
+        assertEquals(eventWindow, u32le(event, 4))
         assertEquals(window, u32le(event, 8))
         assertEquals(aboveSibling, u32le(event, 12))
+        if (x != null) assertEquals(x, u16le(event, 16))
+        if (y != null) assertEquals(y, u16le(event, 18))
+        if (width != null) assertEquals(width, u16le(event, 20))
+        if (height != null) assertEquals(height, u16le(event, 22))
+        if (borderWidth != null) assertEquals(borderWidth, u16le(event, 24))
+        assertEquals(if (overrideRedirect) 1 else 0, event[26].toInt() and 0xff)
+        assertZeroBytes(event, 27, 32)
     }
 
     private fun assertCirculateNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int, place: Int) {

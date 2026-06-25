@@ -1983,6 +1983,7 @@ internal class X11Connection(
             borderWidth = borderWidth,
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
             backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
+            overrideRedirect = attributes.overrideRedirect ?: false,
             doNotPropagateMask = attributes.doNotPropagateMask ?: 0,
         )
         state.putWindow(window, this)
@@ -2007,6 +2008,7 @@ internal class X11Connection(
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
         }
+        attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }
@@ -2167,9 +2169,9 @@ internal class X11Connection(
             siblingId = siblingId,
             stackMode = stackMode,
         ) ?: return
-        if (configured.window.mapped && configured.changed) {
-            sendConfigureNotify(configured.window, configured.aboveSiblingId)
-            if (configured.window.windowClass == XWindowClass.InputOutput && configured.sizeChanged) sendExpose(configured.window)
+        if (configured.changed) {
+            sendConfigureNotify(state.configureNotifySinks(configured))
+            if (configured.window.mapped && configured.window.windowClass == XWindowClass.InputOutput && configured.sizeChanged) sendExpose(configured.window)
         }
     }
 
@@ -2198,7 +2200,7 @@ internal class X11Connection(
         reply[24] = 0
         reply[25] = 1
         reply[26] = if (window.mapped) 2 else 0
-        reply[27] = 0
+        reply[27] = if (window.overrideRedirect) 1 else 0
         byteOrder.put32(reply, 28, X11Ids.DefaultColormap)
         byteOrder.put32(reply, 32, 0)
         byteOrder.put32(reply, 36, 0)
@@ -4453,21 +4455,6 @@ internal class X11Connection(
         write(event)
     }
 
-    private fun sendConfigureNotify(window: XWindow, aboveSiblingId: Int = 0) {
-        val event = ByteArray(32)
-        event[0] = 22
-        byteOrder.put16(event, 2, sequence)
-        byteOrder.put32(event, 4, window.id)
-        byteOrder.put32(event, 8, window.id)
-        byteOrder.put32(event, 12, aboveSiblingId)
-        byteOrder.put16(event, 16, window.x)
-        byteOrder.put16(event, 18, window.y)
-        byteOrder.put16(event, 20, window.width)
-        byteOrder.put16(event, 22, window.height)
-        byteOrder.put16(event, 24, window.borderWidth)
-        write(event)
-    }
-
     private fun sendSelectionNotify(requestor: Int, selection: Int, target: Int, property: Int, time: Int) {
         val event = ByteArray(32)
         event[0] = 31
@@ -4546,6 +4533,22 @@ internal class X11Connection(
         byteOrder.put32(bytes, 4, event.eventWindowId)
         byteOrder.put32(bytes, 8, event.windowId)
         bytes[16] = event.place.toByte()
+        write(bytes)
+    }
+
+    override fun sendConfigureNotifyEvent(event: XConfigureNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 22
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.eventWindowId)
+        byteOrder.put32(bytes, 8, event.windowId)
+        byteOrder.put32(bytes, 12, event.aboveSiblingId)
+        byteOrder.put16(bytes, 16, event.x)
+        byteOrder.put16(bytes, 18, event.y)
+        byteOrder.put16(bytes, 20, event.width)
+        byteOrder.put16(bytes, 22, event.height)
+        byteOrder.put16(bytes, 24, event.borderWidth)
+        bytes[26] = if (event.overrideRedirect) 1 else 0
         write(bytes)
     }
 
@@ -4765,6 +4768,7 @@ internal class X11Connection(
         var offset = valuesOffset
         var backgroundPixmapId: Int? = null
         var backgroundPixel: Int? = null
+        var overrideRedirect: Boolean? = null
         var eventMask: Int? = null
         var doNotPropagateMask: Int? = null
         for (bit in 0..14) {
@@ -4774,12 +4778,13 @@ internal class X11Connection(
             when (bit) {
                 0 -> backgroundPixmapId = value
                 1 -> backgroundPixel = value
+                9 -> overrideRedirect = value != 0
                 11 -> eventMask = value
                 12 -> doNotPropagateMask = value
             }
             offset += 4
         }
-        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, eventMask, doNotPropagateMask)
+        return WindowAttributeValues(backgroundPixmapId, backgroundPixel, overrideRedirect, eventMask, doNotPropagateMask)
     }
 
     private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
@@ -5438,6 +5443,12 @@ internal class X11Connection(
     private fun sendCirculateNotify(notifications: List<XCirculateNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendCirculateNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendConfigureNotify(notifications: List<XConfigureNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendConfigureNotifyEvent(notification.event) }
         }
     }
 
@@ -6191,6 +6202,7 @@ internal class X11Connection(
 private data class WindowAttributeValues(
     val backgroundPixmapId: Int? = null,
     val backgroundPixel: Int? = null,
+    val overrideRedirect: Boolean? = null,
     val eventMask: Int? = null,
     val doNotPropagateMask: Int? = null,
 )

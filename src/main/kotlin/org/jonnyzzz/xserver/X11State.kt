@@ -414,12 +414,12 @@ internal class X11State(
         eventSelectionsForWindow(window.id, XEventMasks.StructureNotify).map { sink ->
             XMapNotifyDispatch(
                 sink = sink,
-                event = XMapNotifyEvent(eventWindowId = window.id, windowId = window.id),
+                event = XMapNotifyEvent(eventWindowId = window.id, windowId = window.id, overrideRedirect = window.overrideRedirect),
             )
         } + eventSelectionsForWindow(window.parentId, XEventMasks.SubstructureNotify).map { sink ->
             XMapNotifyDispatch(
                 sink = sink,
-                event = XMapNotifyEvent(eventWindowId = window.parentId, windowId = window.id),
+                event = XMapNotifyEvent(eventWindowId = window.parentId, windowId = window.id, overrideRedirect = window.overrideRedirect),
             )
         }
 
@@ -448,6 +448,20 @@ internal class X11State(
             XCirculateNotifyDispatch(
                 sink = sink,
                 event = XCirculateNotifyEvent(eventWindowId = result.parentId, windowId = result.window.id, place = result.place),
+            )
+        }
+
+    @Synchronized
+    fun configureNotifySinks(result: XConfigureWindowResult): List<XConfigureNotifyDispatch> =
+        eventSelectionsForWindow(result.window.id, XEventMasks.StructureNotify).map { sink ->
+            XConfigureNotifyDispatch(
+                sink = sink,
+                event = result.configureNotifyEvent(eventWindowId = result.window.id),
+            )
+        } + eventSelectionsForWindow(result.window.parentId, XEventMasks.SubstructureNotify).map { sink ->
+            XConfigureNotifyDispatch(
+                sink = sink,
+                event = result.configureNotifyEvent(eventWindowId = result.window.parentId),
             )
         }
 
@@ -1355,6 +1369,7 @@ internal class X11State(
         id: Int,
         backgroundPixel: Int? = null,
         backgroundPixmapId: Int? = null,
+        overrideRedirect: Boolean? = null,
         doNotPropagateMask: Int? = null,
     ): XWindow? {
         val window = windows[id] ?: return null
@@ -1364,6 +1379,9 @@ internal class X11State(
         }
         if (backgroundPixmapId != null) {
             window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
+        }
+        overrideRedirect?.let {
+            window.overrideRedirect = it
         }
         doNotPropagateMask?.let {
             window.doNotPropagateMask = it
@@ -1416,6 +1434,7 @@ internal class X11State(
                 windowClass = window.windowClass,
                 depth = window.depth,
                 visual = window.visual,
+                overrideRedirect = window.overrideRedirect,
             )
         }
         val pixmapSnapshots = pixmaps.values.map { pixmap ->
@@ -3801,7 +3820,20 @@ internal data class XConfigureWindowResult(
     val changed: Boolean,
     val sizeChanged: Boolean,
     val aboveSiblingId: Int,
-)
+) {
+    fun configureNotifyEvent(eventWindowId: Int): XConfigureNotifyEvent =
+        XConfigureNotifyEvent(
+            eventWindowId = eventWindowId,
+            windowId = window.id,
+            aboveSiblingId = aboveSiblingId,
+            x = window.x,
+            y = window.y,
+            width = window.width,
+            height = window.height,
+            borderWidth = window.borderWidth,
+            overrideRedirect = window.overrideRedirect,
+        )
+}
 
 internal object XStackMode {
     const val Above = 0
@@ -3825,6 +3857,7 @@ internal data class XWindow(
     var mapped: Boolean = false,
     var backgroundPixel: Int = 0x00ff_ffff,
     var backgroundPixmapId: Int? = null,
+    var overrideRedirect: Boolean = false,
     var doNotPropagateMask: Int = 0,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
@@ -4588,6 +4621,7 @@ internal data class XWindowSnapshot(
     val windowClass: Int,
     val depth: Int,
     val visual: Int,
+    val overrideRedirect: Boolean,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
