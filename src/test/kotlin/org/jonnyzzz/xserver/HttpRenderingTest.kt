@@ -82,6 +82,64 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `svg does not invent fill for ParentRelative child of root background None`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                setup(out, socket.getInputStream())
+                out.write(changeWindowBackgroundPixmapRequest(X11Ids.RootWindow, XWindowBackground.None))
+                out.write(
+                    createWindowRequest(
+                        id = 0x0020_0001,
+                        x = 10,
+                        y = 10,
+                        width = 70,
+                        height = 65,
+                        backgroundPixmap = XWindowBackground.ParentRelative,
+                    ),
+                )
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val json = httpGet(server.localPort, "/state.json")
+                val rootJson = Regex("""\{"id":"0x${X11Ids.RootWindow.toUInt().toString(16)}".*?\}""").find(json.body)?.value.orEmpty()
+                val childJson = Regex("""\{"id":"0x200001".*?\}""").find(json.body)?.value.orEmpty()
+                assertContains(rootJson, """"backgroundPixmap":"0x0"""")
+                assertContains(childJson, """"backgroundPixmap":"0x1"""")
+                assertContains(childJson, """"parent":"0x${X11Ids.RootWindow.toUInt().toString(16)}"""")
+
+                val svg = httpGet(server.localPort, "/screen.svg")
+                val childRect = Regex("""<rect\b(?=[^>]*\bdata-window-id="0x200001")[^>]*/>""").find(svg.body)?.value.orEmpty()
+                assertContains(childRect, """fill="none"""")
+                assertFalse(svg.body.contains("""fill="#20242c""""), "Standalone screen SVG must not paint viewer chrome behind root None")
+
+                val html = httpGet(server.localPort, "/")
+                assertContains(html.body, """class="window-preview-svg"""")
+                assertContains(html.body, """data-origin-x="10"""")
+                val syntheticPreviewBackground = Regex("""<rect\b(?=[^>]*\bclass="window-background")(?=[^>]*\bwidth="70")(?=[^>]*\bheight="65")(?=[^>]*\bfill="#ffffff")[^>]*/>""")
+                assertFalse(
+                    syntheticPreviewBackground.containsMatchIn(html.body),
+                    "ParentRelative child of root None must not get a synthetic white preview background",
+                )
+                assertFalse(
+                    Regex("""\.window-map svg \{[^}]*background:""").containsMatchIn(html.body),
+                    "Screen-map SVG CSS must not paint viewer chrome behind root None",
+                )
+                assertFalse(
+                    Regex("""\.preview svg \{[^}]*background:""").containsMatchIn(html.body),
+                    "Window preview SVG CSS must not paint viewer chrome behind root None",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `copy area from pixmap renders stored pixmap image into window preview`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -351,11 +409,12 @@ class HttpRenderingTest {
         width: Int,
         height: Int,
         parent: Int = X11Ids.RootWindow,
+        backgroundPixmap: Int? = null,
     ): ByteArray {
-        val bytes = ByteArray(32)
+        val bytes = ByteArray(32 + if (backgroundPixmap == null) 0 else 4)
         bytes[0] = 1
         bytes[1] = 24
-        put16le(bytes, 2, 8)
+        put16le(bytes, 2, bytes.size / 4)
         put32le(bytes, 4, id)
         put32le(bytes, 8, parent)
         put16le(bytes, 12, x)
@@ -365,7 +424,20 @@ class HttpRenderingTest {
         put16le(bytes, 20, 1)
         put16le(bytes, 22, 1)
         put32le(bytes, 24, X11Ids.RootVisual)
-        put32le(bytes, 28, 0)
+        if (backgroundPixmap != null) {
+            put32le(bytes, 28, 1)
+            put32le(bytes, 32, backgroundPixmap)
+        }
+        return bytes
+    }
+
+    private fun changeWindowBackgroundPixmapRequest(id: Int, pixmap: Int): ByteArray {
+        val bytes = ByteArray(16)
+        bytes[0] = 2
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, id)
+        put32le(bytes, 8, 1)
+        put32le(bytes, 12, pixmap)
         return bytes
     }
 

@@ -1567,7 +1567,7 @@ internal class X11State(
             window.backgroundPixmapId = null
         }
         if (backgroundPixmapId != null) {
-            window.backgroundPixmapId = backgroundPixmapId.takeIf { it != 0 }
+            window.backgroundPixmapId = backgroundPixmapId
         }
         borderPixel?.let {
             window.borderPixel = it
@@ -1613,6 +1613,8 @@ internal class X11State(
         val window = windows[windowId] ?: return false
         val target = rectangle ?: XRectangleCommand(0, 0, window.width, window.height)
         return when (val background = resolveWindowBackground(window)) {
+            XResolvedWindowBackground.None -> false
+
             is XResolvedWindowBackground.Pixmap -> window.framebuffer.fillPattern(
                 x = target.x,
                 y = target.y,
@@ -1630,9 +1632,12 @@ internal class X11State(
 
     private fun resolveWindowBackground(window: XWindow): XResolvedWindowBackground {
         val backgroundPixmapId = window.backgroundPixmapId
+        if (backgroundPixmapId == XWindowBackground.None) return XResolvedWindowBackground.None
         if (backgroundPixmapId == XWindowBackground.ParentRelative) {
             val parent = windows[window.parentId] ?: return XResolvedWindowBackground.Pixel(window.backgroundPixel)
             return when (val parentBackground = resolveWindowBackground(parent)) {
+                XResolvedWindowBackground.None -> XResolvedWindowBackground.None
+
                 is XResolvedWindowBackground.Pixmap -> parentBackground.copy(
                     xOrigin = parentBackground.xOrigin - window.x,
                     yOrigin = parentBackground.yOrigin - window.y,
@@ -4149,6 +4154,7 @@ internal data class XPixmap(
 )
 
 private sealed interface XResolvedWindowBackground {
+    data object None : XResolvedWindowBackground
     data class Pixel(val pixel: Int) : XResolvedWindowBackground
     data class Pixmap(val pixmap: XPixmap, val xOrigin: Int, val yOrigin: Int) : XResolvedWindowBackground
 }

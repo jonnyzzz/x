@@ -2011,7 +2011,7 @@ internal class X11Connection(
             height = height,
             borderWidth = borderWidth,
             backgroundPixel = attributes.backgroundPixel ?: 0x00ff_ffff,
-            backgroundPixmapId = attributes.backgroundPixmapId?.takeIf { it != 0 },
+            backgroundPixmapId = attributes.backgroundPixmapId,
             borderPixel = borderPixel,
             borderPixmapId = borderPixmapId,
             bitGravity = attributes.bitGravity ?: XWindowGravity.Forget,

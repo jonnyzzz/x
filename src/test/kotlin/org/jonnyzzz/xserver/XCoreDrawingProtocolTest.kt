@@ -2213,6 +2213,46 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ClearArea with background None leaves framebuffer contents unchanged`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, width = 3, height = 2, backgroundPixmap = XWindowBackground.None))
+                out.write(createWindowRequest(child, parent = parent, width = 3, height = 2, backgroundPixmap = XWindowBackground.ParentRelative))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = parent))
+                out.write(createGcRequest(GcId + 1, foreground = Red, drawable = child))
+                out.write(putImage24Request(parent, width = 3, height = 2, pixel = 0x0012_3456))
+                out.write(putImage24Request(child, width = 3, height = 2, pixel = 0x0006_0708, gc = GcId + 1))
+                out.write(clearAreaRequest(parent, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(parent, x = 0, y = 0, width = 3, height = 2))
+                out.write(clearAreaRequest(child, x = 0, y = 0, width = 0, height = 0))
+                out.write(getImageRequest(child, x = 0, y = 0, width = 3, height = 2))
+                out.flush()
+
+                val parentImage = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(parentImage, 3, 0, 0))
+                assertEquals(0xff12_3456.toInt(), pixelAt(parentImage, 3, 2, 1))
+                val childImage = readReply(socket.getInputStream())
+                assertEquals(0xff06_0708.toInt(), pixelAt(childImage, 3, 0, 0))
+                assertEquals(0xff06_0708.toInt(), pixelAt(childImage, 3, 2, 1))
+
+                val json = httpGet(server.localPort, "/state.json")
+                val parentJson = Regex("""\{"id":"0x${parent.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                val childJson = Regex("""\{"id":"0x${child.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                assertContains(parentJson, """"backgroundPixmap":"0x0"""")
+                assertContains(childJson, """"backgroundPixmap":"0x1"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyLine PolySegment and PolyRectangle paint framebuffer pixels`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -13223,11 +13263,11 @@ class XCoreDrawingProtocolTest {
         return request(63, 0, body)
     }
 
-    private fun putImage24Request(drawable: Int, width: Int, height: Int, pixel: Int): ByteArray {
-        return putImage24PixelsRequest(drawable, width, height, List(width * height) { pixel })
+    private fun putImage24Request(drawable: Int, width: Int, height: Int, pixel: Int, gc: Int = GcId): ByteArray {
+        return putImage24PixelsRequest(drawable, width, height, List(width * height) { pixel }, gc)
     }
 
-    private fun putImage24PixelsRequest(drawable: Int, width: Int, height: Int, pixels: List<Int>): ByteArray {
+    private fun putImage24PixelsRequest(drawable: Int, width: Int, height: Int, pixels: List<Int>, gc: Int = GcId): ByteArray {
         require(pixels.size == width * height)
         val data = ByteArray(width * height * 4)
         for ((index, pixel) in pixels.withIndex()) {
@@ -13235,7 +13275,7 @@ class XCoreDrawingProtocolTest {
         }
         val body = ByteArray(20 + data.size)
         put32le(body, 0, drawable)
-        put32le(body, 4, GcId)
+        put32le(body, 4, gc)
         put16le(body, 8, width)
         put16le(body, 10, height)
         body[17] = 24

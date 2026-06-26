@@ -238,7 +238,7 @@ internal object SvgScreenRenderer {
         html, body { margin: 0; min-height: 100%; background: #15171c; color: #e7e9ee; font-family: system-ui, sans-serif; }
         main { display: grid; grid-template-columns: minmax(180px, 21vw) minmax(640px, 1fr); align-items: start; min-height: 100vh; }
         .window-map { padding: 18px; position: sticky; top: 0; }
-        .window-map svg { width: 100%; height: auto; background: #20242c; box-shadow: 0 0 0 1px #3b4252; cursor: crosshair; }
+        .window-map svg { width: 100%; height: auto; box-shadow: 0 0 0 1px #3b4252; cursor: crosshair; }
         .window-contents { border-left: 1px solid #303642; padding: 18px; background: #15171c; }
         .state { grid-column: 1 / -1; border-top: 1px solid #303642; padding: 18px; background: #111318; }
         .state-columns { display: grid; grid-template-columns: minmax(260px, 360px) minmax(0, 1fr); gap: 20px; }
@@ -251,7 +251,7 @@ internal object SvgScreenRenderer {
         .preview-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
         .preview { border: 1px solid #303642; background: #111318; padding: 10px; }
         .preview header { color: #c8d0df; font: 13px/1.35 monospace; margin-bottom: 8px; overflow-wrap: anywhere; }
-        .preview svg { width: min(100%, 1100px); height: auto; background: #f8fafc; shape-rendering: crispEdges; cursor: crosshair; }
+        .preview svg { width: min(100%, 1100px); height: auto; shape-rendering: crispEdges; cursor: crosshair; }
         .preview image { image-rendering: auto; }
         .primary-surface { margin-bottom: 10px; }
         .primary-surface > header { color: #e7e9ee; }
@@ -318,7 +318,6 @@ internal object SvgScreenRenderer {
         }
         with(builder) {
             comment(RenderCredit.Text)
-            svgElement("rect", "x" to 0, "y" to 0, "width" to snapshot.width, "height" to snapshot.height, "fill" to "#20242c")
             svgElement("defs") {
                 for (window in visibleWindows) {
                     svgElement("clipPath", "id" to clipId("screen", window), "clipPathUnits" to "userSpaceOnUse") {
@@ -337,7 +336,7 @@ internal object SvgScreenRenderer {
                         "y" to window.visibleY,
                         "width" to window.visibleWidth,
                         "height" to window.visibleHeight,
-                        "fill" to pixelColor(window.backgroundPixel),
+                        "fill" to (windowBackgroundFill(window, snapshot.windows) ?: "none"),
                         "stroke" to color,
                         "stroke-width" to strokeWidth,
                     )
@@ -549,17 +548,21 @@ internal object SvgScreenRenderer {
                     }
                 }
             }
-            svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.width, "height" to rootWindow.height, "fill" to pixelColor(rootWindow.backgroundPixel))
+            windowBackgroundFill(rootWindow, snapshot.windows)?.let { fill ->
+                svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.width, "height" to rootWindow.height, "fill" to fill)
+            }
             subtree.forEach { window ->
-                svgElement(
-                    "rect",
-                    "class" to "window-background",
-                    "x" to window.x - rootWindow.x,
-                    "y" to window.y - rootWindow.y,
-                    "width" to window.width,
-                    "height" to window.height,
-                    "fill" to pixelColor(window.backgroundPixel),
-                )
+                windowBackgroundFill(window, snapshot.windows)?.let { fill ->
+                    svgElement(
+                        "rect",
+                        "class" to "window-background",
+                        "x" to window.x - rootWindow.x,
+                        "y" to window.y - rootWindow.y,
+                        "width" to window.width,
+                        "height" to window.height,
+                        "fill" to fill,
+                    )
+                }
             }
             renderFramebuffers(this, subtree, originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
             renderDrawings(
@@ -876,6 +879,18 @@ internal object SvgScreenRenderer {
 
     private fun pixelColor(pixel: Int): String =
         "#${(pixel and 0x00ff_ffff).toString(16).padStart(6, '0')}"
+
+    private fun windowBackgroundFill(window: XWindowSnapshot, windows: List<XWindowSnapshot>): String? =
+        windowBackgroundFill(window, windows.associateBy { it.id }, visited = mutableSetOf())
+
+    private fun windowBackgroundFill(window: XWindowSnapshot, windows: Map<Int, XWindowSnapshot>, visited: MutableSet<Int>): String? {
+        if (!visited.add(window.id)) return pixelColor(window.backgroundPixel)
+        return when (window.backgroundPixmapId) {
+            XWindowBackground.None -> null
+            XWindowBackground.ParentRelative -> windows[window.parentId]?.let { windowBackgroundFill(it, windows, visited) }
+            else -> pixelColor(window.backgroundPixel)
+        }
+    }
 
     private fun clipId(prefix: String, window: XWindowSnapshot): String =
         "clip-$prefix-${window.idHex.drop(2)}"
