@@ -314,7 +314,7 @@ internal class X11Connection(
             0 -> renderQueryVersion(body)
             1 -> renderQueryPictFormats(body)
             2 -> renderQueryPictIndexValues(body)
-            3 -> renderBadImplementation(minorOpcode)
+            3 -> renderQueryDithers(body)
             4 -> renderCreatePicture(body)
             5 -> renderChangePicture(body)
             6 -> renderSetPictureClipRectangles(body)
@@ -933,6 +933,15 @@ internal class X11Connection(
         if (format in XRender.DirectFormats) {
             return writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = format)
         }
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, 0)
+        write(reply)
+    }
+
+    private fun renderQueryDithers(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 3, badValue = 0)
+        val drawable = byteOrder.u32(body, 0)
+        state.drawable(drawable) ?: return writeError(error = 9, opcode = XRender.MajorOpcode, minorOpcode = 3, badValue = drawable)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, 0)
         write(reply)
@@ -2418,6 +2427,7 @@ internal class X11Connection(
         return when (minorOpcode) {
             0 -> "client=${u32(0)}.${u32(4)}"
             2 -> "format=${hex(0)}"
+            3 -> "drawable=${hex(0)}"
             4 -> "picture=${hex(0)} drawable=${hex(4)} format=${hex(8)} mask=${hex(12)}"
             5 -> "picture=${hex(0)} mask=${hex(4)}"
             6 -> "picture=${hex(0)} origin=${i16(4)},${i16(6)} rects=${(body.size - 8).coerceAtLeast(0) / 8}"

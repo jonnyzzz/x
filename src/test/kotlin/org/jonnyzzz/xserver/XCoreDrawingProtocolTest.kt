@@ -921,6 +921,9 @@ class XCoreDrawingProtocolTest {
                 out.write(renderQueryPictIndexValuesRequest(0x7fff_0001))
                 out.write(renderRequest(2, ByteArray(8).also { put32le(it, 0, 0x7fff_0002) }))
                 out.write(renderQueryPictIndexValuesRequest(XRender.Argb32Format))
+                out.write(renderRequest(3, ByteArray(0)))
+                out.write(renderQueryDithersRequest(WindowId + 0x44))
+                out.write(renderQueryDithersRequest(X11Ids.RootWindow))
                 out.write(queryPointerRequest())
                 out.flush()
 
@@ -941,9 +944,16 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0x7fff_0001, sequence = 6)
                 assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = 0, sequence = 7)
                 assertError(socket.getInputStream(), error = 8, opcode = XRender.MajorOpcode, minorOpcode = 2, badValue = XRender.Argb32Format, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = XRender.MajorOpcode, minorOpcode = 3, badValue = 0, sequence = 9)
+                assertError(socket.getInputStream(), error = 9, opcode = XRender.MajorOpcode, minorOpcode = 3, badValue = WindowId + 0x44, sequence = 10)
+                val dithers = readReply(socket.getInputStream())
+                assertEquals(1, dithers[0].toInt())
+                assertEquals(11, u16le(dithers, 2))
+                assertEquals(0, u32le(dithers, 4))
+                assertEquals(0, u32le(dithers, 8))
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(1, pointer[0].toInt())
-                assertEquals(9, u16le(pointer, 2))
+                assertEquals(12, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -14956,6 +14966,12 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, format)
         return renderRequest(2, body)
+    }
+
+    private fun renderQueryDithersRequest(drawable: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, drawable)
+        return renderRequest(3, body)
     }
 
     private fun renderCreatePictureRequest(

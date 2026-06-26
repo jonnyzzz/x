@@ -2596,7 +2596,7 @@ class XRenderProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                val minorOpcodes = listOf(3, 9, 14, 15, 16)
+                val minorOpcodes = listOf(9, 14, 15, 16)
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
