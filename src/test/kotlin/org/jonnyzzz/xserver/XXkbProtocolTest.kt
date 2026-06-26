@@ -735,6 +735,48 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetNames accepts full names payload without changing empty names`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setNamesRequest(includeAllDetails = true))
+            out.write(getNamesRequest(which = -1))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+            assertEquals(0, reply[14].toInt() and 0xff)
+            assertEquals(0, reply[15].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNames validates variable payload length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetNames, ByteArray(20)))
+            out.write(setNamesRequest(includeAllDetails = true, bodySize = setNamesBodySize(includeAllDetails = true) - 4))
+            out.write(setNamesRequest(includeAllDetails = true, bodySize = setNamesBodySize(includeAllDetails = true) + 4))
+            out.write(setNamesRequest(includeAllDetails = false))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetNames)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetNames)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetNames)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(5, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -989,16 +1031,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 18, ByteArray(24)))
+            out.write(request(XXkb.MajorOpcode, 25, ByteArray(8)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 18)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 25)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetNames:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.SetDeviceInfo:")
         }
     }
 
@@ -1319,6 +1361,69 @@ class XXkbProtocolTest {
         put32le(body, 4, which)
         return request(XXkb.MajorOpcode, XXkb.GetNames, body)
     }
+
+    private fun setNamesRequest(includeAllDetails: Boolean, bodySize: Int = setNamesBodySize(includeAllDetails)): ByteArray {
+        val body = ByteArray(bodySize)
+        val which = if (includeAllDetails) {
+            XXkb.NameDetailKeycodes or
+                XXkb.NameDetailGeometry or
+                XXkb.NameDetailSymbols or
+                XXkb.NameDetailPhysSymbols or
+                XXkb.NameDetailTypes or
+                XXkb.NameDetailCompat or
+                XXkb.NameDetailKeyTypeNames or
+                XXkb.NameDetailKtLevelNames or
+                XXkb.NameDetailIndicatorNames or
+                XXkb.NameDetailKeyNames or
+                XXkb.NameDetailKeyAliases or
+                XXkb.NameDetailVirtualModNames or
+                XXkb.NameDetailGroupNames or
+                XXkb.NameDetailRgNames
+        } else {
+            0
+        }
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, if (includeAllDetails) 0x0003 else 0)
+        put32le(body, 4, which)
+        if (includeAllDetails) {
+            body[8] = 0
+            body[9] = 2
+            body[10] = 0
+            body[11] = 3
+            put32le(body, 12, 0x0000_0003)
+            body[16] = 0x3
+            body[17] = 2
+            body[18] = XKeyboard.MinKeycode.toByte()
+            body[19] = 2
+            body[20] = 1
+            put16le(body, 22, 4)
+        }
+
+        var offset = 24
+        fun write(size: Int) {
+            offset += size
+        }
+        fun align4() {
+            offset = (offset + 3) and -4
+        }
+        if (includeAllDetails) {
+            write(24)
+            write(8)
+            write(3)
+            align4()
+            write(16)
+            write(8)
+            write(8)
+            write(8)
+            write(8)
+            write(8)
+            write(8)
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetNames, body)
+    }
+
+    private fun setNamesBodySize(includeAllDetails: Boolean): Int =
+        if (includeAllDetails) 124 else 24
 
     private fun perClientFlagsRequest(change: Int, value: Int, ctrlsToChange: Int, autoCtrls: Int, autoCtrlsValues: Int): ByteArray {
         val body = ByteArray(24)

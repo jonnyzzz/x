@@ -24,6 +24,7 @@ internal object XXkb {
     const val GetNamedIndicator = 15
     const val SetNamedIndicator = 16
     const val GetNames = 17
+    const val SetNames = 18
     const val PerClientFlags = 21
     const val ListComponents = 22
     const val GetKbdByName = 23
@@ -39,6 +40,20 @@ internal object XXkb {
     const val MapPartKeyBehaviors = 1 shl 5
     const val MapPartVirtualMods = 1 shl 6
     const val MapPartVirtualModMap = 1 shl 7
+    const val NameDetailKeycodes = 1 shl 0
+    const val NameDetailGeometry = 1 shl 1
+    const val NameDetailSymbols = 1 shl 2
+    const val NameDetailPhysSymbols = 1 shl 3
+    const val NameDetailTypes = 1 shl 4
+    const val NameDetailCompat = 1 shl 5
+    const val NameDetailKeyTypeNames = 1 shl 6
+    const val NameDetailKtLevelNames = 1 shl 7
+    const val NameDetailIndicatorNames = 1 shl 8
+    const val NameDetailKeyNames = 1 shl 9
+    const val NameDetailKeyAliases = 1 shl 10
+    const val NameDetailVirtualModNames = 1 shl 11
+    const val NameDetailGroupNames = 1 shl 12
+    const val NameDetailRgNames = 1 shl 13
     const val XiFeatureButtonActions = 1 shl 1
     const val XiFeatureIndicatorNames = 1 shl 2
     const val XiFeatureIndicatorMaps = 1 shl 3
@@ -67,7 +82,7 @@ internal object XXkb {
             GetNamedIndicator -> "GetNamedIndicator"
             SetNamedIndicator -> "SetNamedIndicator"
             GetNames -> "GetNames"
-            18 -> "SetNames"
+            SetNames -> "SetNames"
             PerClientFlags -> "PerClientFlags"
             ListComponents -> "ListComponents"
             GetKbdByName -> "GetKbdByName"

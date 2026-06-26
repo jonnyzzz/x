@@ -392,6 +392,7 @@ internal class X11Connection(
             XXkb.GetNamedIndicator -> xkbGetNamedIndicator(body, majorOpcode)
             XXkb.SetNamedIndicator -> xkbSetNamedIndicator(body, majorOpcode)
             XXkb.GetNames -> xkbGetNames(body, majorOpcode)
+            XXkb.SetNames -> xkbSetNames(body, majorOpcode)
             XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
             XXkb.ListComponents -> xkbListComponents(body, majorOpcode)
             XXkb.GetKbdByName -> xkbGetKbdByName(body, majorOpcode)
@@ -593,6 +594,56 @@ internal class X11Connection(
         reply[12] = XKeyboard.MinKeycode.toByte()
         reply[13] = XKeyboard.MaxKeycode.toByte()
         write(reply)
+    }
+
+    private fun xkbSetNames(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
+        val expectedSize = xkbSetNamesPayloadSize(body)
+        if (expectedSize == null || body.size != expectedSize) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetNames, badValue = 0)
+        }
+    }
+
+    private fun xkbSetNamesPayloadSize(body: ByteArray): Int? {
+        val virtualMods = byteOrder.u16(body, 2)
+        val which = byteOrder.u32(body, 4)
+        val nTypes = body[9].toInt() and 0xff
+        val nKtLevels = body[11].toInt() and 0xff
+        val indicators = byteOrder.u32(body, 12)
+        val groupNames = body[16].toInt() and 0xff
+        val nRadioGroups = body[17].toInt() and 0xff
+        val nKeys = body[19].toInt() and 0xff
+        val nKeyAliases = body[20].toInt() and 0xff
+        val totalKtLevelNames = byteOrder.u16(body, 22)
+
+        var offset = 24
+        fun require(bytes: Int): Boolean {
+            val next = offset + bytes
+            if (next < offset || next > body.size) return false
+            offset = next
+            return true
+        }
+
+        if ((which and XXkb.NameDetailKeycodes) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailGeometry) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailSymbols) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailPhysSymbols) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailTypes) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailCompat) != 0 && !require(4)) return null
+        if ((which and XXkb.NameDetailKeyTypeNames) != 0 && !require(nTypes * 4)) return null
+        if ((which and XXkb.NameDetailKtLevelNames) != 0) {
+            if (!require(nKtLevels)) return null
+            offset = paddedLength(offset)
+            if (offset > body.size) return null
+            if (!require(totalKtLevelNames * 4)) return null
+        }
+        if ((which and XXkb.NameDetailIndicatorNames) != 0 && !require(Integer.bitCount(indicators) * 4)) return null
+        if ((which and XXkb.NameDetailVirtualModNames) != 0 && !require(Integer.bitCount(virtualMods) * 4)) return null
+        if ((which and XXkb.NameDetailGroupNames) != 0 && !require(Integer.bitCount(groupNames) * 4)) return null
+        if ((which and XXkb.NameDetailKeyNames) != 0 && !require(nKeys * 4)) return null
+        if ((which and XXkb.NameDetailKeyAliases) != 0 && !require(nKeyAliases * 8)) return null
+        if ((which and XXkb.NameDetailRgNames) != 0 && !require(nRadioGroups * 4)) return null
+        return offset
     }
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
