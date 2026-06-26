@@ -19,6 +19,7 @@ internal object XXkb {
     const val GetNames = 17
     const val PerClientFlags = 21
     const val GetDeviceInfo = 24
+    const val SetDebuggingFlags = 101
 
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val XiFeatureButtonActions = 1 shl 1
@@ -55,7 +56,7 @@ internal object XXkb {
             23 -> "GetKbdByName"
             GetDeviceInfo -> "GetDeviceInfo"
             25 -> "SetDeviceInfo"
-            101 -> "SetDebuggingFlags"
+            SetDebuggingFlags -> "SetDebuggingFlags"
             else -> "Unknown"
         }
 }

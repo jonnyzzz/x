@@ -513,6 +513,46 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetDebuggingFlags reports no supported debugging flags`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, u32le(reply, 12))
+            assertEquals(0, u32le(reply, 16))
+            assertEquals(0, u32le(reply, 20))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetDebuggingFlags validates padded message length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            val malformed = ByteArray(24)
+            put16le(malformed, 0, 5)
+            out.write(request(XXkb.MajorOpcode, XXkb.SetDebuggingFlags, malformed))
+            out.write(setDebuggingFlagsRequest(message = "", affectFlags = 1, flags = 1, affectCtrls = 1, ctrls = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetDebuggingFlags)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, u32le(reply, 12))
+            assertEquals(0, u32le(reply, 16))
+            assertEquals(0, u32le(reply, 20))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -680,6 +720,18 @@ class XXkbProtocolTest {
         put16le(body, 8, ledClass)
         put16le(body, 10, ledId)
         return request(XXkb.MajorOpcode, XXkb.GetDeviceInfo, body)
+    }
+
+    private fun setDebuggingFlagsRequest(message: String, affectFlags: Int, flags: Int, affectCtrls: Int, ctrls: Int): ByteArray {
+        val messageBytes = message.encodeToByteArray()
+        val body = ByteArray(20 + ((messageBytes.size + 3) and -4))
+        put16le(body, 0, messageBytes.size)
+        put32le(body, 4, affectFlags)
+        put32le(body, 8, flags)
+        put32le(body, 12, affectCtrls)
+        put32le(body, 16, ctrls)
+        messageBytes.copyInto(body, 20)
+        return request(XXkb.MajorOpcode, XXkb.SetDebuggingFlags, body)
     }
 
     private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {
