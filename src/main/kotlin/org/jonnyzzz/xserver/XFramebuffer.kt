@@ -12,6 +12,15 @@ import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+internal data class XCopyResult(
+    val image: XImagePixels,
+    val destinationX: Int,
+    val destinationY: Int,
+) {
+    val width: Int get() = image.width
+    val height: Int get() = image.height
+}
+
 internal class XFramebuffer(
     width: Int,
     height: Int,
@@ -490,7 +499,10 @@ internal class XFramebuffer(
         ) ?: return null
 
         val copied = IntArray(bounds.width * bounds.height)
-        var painted = false
+        var minPaintedX = Int.MAX_VALUE
+        var minPaintedY = Int.MAX_VALUE
+        var maxPaintedX = Int.MIN_VALUE
+        var maxPaintedY = Int.MIN_VALUE
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val sx = bounds.sourceX + column
@@ -567,7 +579,10 @@ internal class XFramebuffer(
             height = image.height,
         ) ?: return false
 
-        var painted = false
+        var minPaintedX = Int.MAX_VALUE
+        var minPaintedY = Int.MAX_VALUE
+        var maxPaintedX = Int.MIN_VALUE
+        var maxPaintedY = Int.MIN_VALUE
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val dx = bounds.destinationX + column
@@ -598,7 +613,7 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
-    ): XImagePixels? {
+    ): XCopyResult? {
         val bounds = destination.clippedCopyBounds(
             sourceWidth = this.width,
             sourceHeight = this.height,
@@ -619,7 +634,10 @@ internal class XFramebuffer(
                 endIndex = (bounds.sourceY + row) * this.width + bounds.sourceX + bounds.width,
             )
         }
-        var painted = false
+        var minPaintedX = Int.MAX_VALUE
+        var minPaintedY = Int.MAX_VALUE
+        var maxPaintedX = Int.MIN_VALUE
+        var maxPaintedY = Int.MIN_VALUE
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val dx = bounds.destinationX + column
@@ -632,11 +650,15 @@ internal class XFramebuffer(
                 } else {
                     sourcePixel
                 }
-                painted = true
+                minPaintedX = minOf(minPaintedX, dx)
+                minPaintedY = minOf(minPaintedY, dy)
+                maxPaintedX = maxOf(maxPaintedX, dx)
+                maxPaintedY = maxOf(maxPaintedY, dy)
             }
         }
-        if (painted) destination.markPainted()
-        return XImagePixels(bounds.width, bounds.height, copied)
+        if (minPaintedX == Int.MAX_VALUE) return null
+        destination.markPainted()
+        return copiedResult(copied, bounds, minPaintedX, minPaintedY, maxPaintedX, maxPaintedY)
     }
 
     fun copyPlaneTo(
@@ -653,7 +675,7 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
-    ): XImagePixels? {
+    ): XCopyResult? {
         if (bitPlane == 0 || bitPlane.countOneBits() != 1) return null
         val bounds = destination.clippedCopyBounds(
             sourceWidth = this.width,
@@ -677,7 +699,10 @@ internal class XFramebuffer(
             }
         }
 
-        var painted = false
+        var minPaintedX = Int.MAX_VALUE
+        var minPaintedY = Int.MAX_VALUE
+        var maxPaintedX = Int.MIN_VALUE
+        var maxPaintedY = Int.MIN_VALUE
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val targetPixel = copied[row * bounds.width + column]
@@ -690,11 +715,43 @@ internal class XFramebuffer(
                 } else {
                     targetPixel
                 }
-                painted = true
+                minPaintedX = minOf(minPaintedX, dx)
+                minPaintedY = minOf(minPaintedY, dy)
+                maxPaintedX = maxOf(maxPaintedX, dx)
+                maxPaintedY = maxOf(maxPaintedY, dy)
             }
         }
-        if (painted) destination.markPainted()
-        return XImagePixels(bounds.width, bounds.height, copied)
+        if (minPaintedX == Int.MAX_VALUE) return null
+        destination.markPainted()
+        return copiedResult(copied, bounds, minPaintedX, minPaintedY, maxPaintedX, maxPaintedY)
+    }
+
+    private fun copiedResult(
+        copied: IntArray,
+        bounds: CopyBounds,
+        minPaintedX: Int,
+        minPaintedY: Int,
+        maxPaintedX: Int,
+        maxPaintedY: Int,
+    ): XCopyResult {
+        val resultWidth = maxPaintedX - minPaintedX + 1
+        val resultHeight = maxPaintedY - minPaintedY + 1
+        val resultPixels = IntArray(resultWidth * resultHeight)
+        val sourceX = minPaintedX - bounds.destinationX
+        val sourceY = minPaintedY - bounds.destinationY
+        for (row in 0 until resultHeight) {
+            copied.copyInto(
+                destination = resultPixels,
+                destinationOffset = row * resultWidth,
+                startIndex = (sourceY + row) * bounds.width + sourceX,
+                endIndex = (sourceY + row) * bounds.width + sourceX + resultWidth,
+            )
+        }
+        return XCopyResult(
+            image = XImagePixels(resultWidth, resultHeight, resultPixels),
+            destinationX = minPaintedX,
+            destinationY = minPaintedY,
+        )
     }
 
     fun compositeTrapezoids(

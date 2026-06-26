@@ -2134,7 +2134,7 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
-    ): XImagePixels? {
+    ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         return source.copyAreaTo(
@@ -2167,7 +2167,7 @@ internal class X11State(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
-    ): XImagePixels? {
+    ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         return source.copyPlaneTo(
@@ -3152,6 +3152,7 @@ internal class X11State(
                 12 -> destination.tileStippleXOrigin = source.tileStippleXOrigin
                 13 -> destination.tileStippleYOrigin = source.tileStippleYOrigin
                 14 -> destination.fontId = source.fontId
+                16 -> destination.graphicsExposures = source.graphicsExposures
                 17 -> destination.clipXOrigin = source.clipXOrigin
                 18 -> destination.clipYOrigin = source.clipYOrigin
                 19 -> destination.clipRectangles = source.clipRectangles?.toList()
@@ -3200,6 +3201,7 @@ internal class X11State(
         dashOffset: Int? = null,
         dashes: List<Int>? = null,
         arcMode: Int? = null,
+        graphicsExposures: Boolean? = null,
     ) {
         val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
         foreground?.let { gc.foreground = it }
@@ -3226,6 +3228,7 @@ internal class X11State(
         dashOffset?.let { gc.dashOffset = it }
         dashes?.let { gc.dashes = it }
         arcMode?.let { gc.arcMode = it }
+        graphicsExposures?.let { gc.graphicsExposures = it }
     }
 
     @Synchronized
@@ -4234,6 +4237,7 @@ internal data class XGraphicsContext(
     var dashOffset: Int = 0
     var dashes: List<Int> = listOf(4)
     var arcMode: Int = ArcPieSlice
+    var graphicsExposures: Boolean = true
 
     fun effectiveClipRectangles(): List<XRectangleCommand>? =
         clipRectangles?.map { rectangle ->

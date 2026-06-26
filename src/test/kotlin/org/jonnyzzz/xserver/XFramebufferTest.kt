@@ -64,6 +64,24 @@ class XFramebufferTest {
     }
 
     @Test
+    fun `fully clipped fill returns false after previous painting`() {
+        val framebuffer = XFramebuffer(1, 1)
+        assertEquals(true, framebuffer.fill(0, 0, 1, 1, 0x0000_ff00))
+
+        val painted = framebuffer.fill(
+            0,
+            0,
+            1,
+            1,
+            0x00ff_0000,
+            clipRectangles = emptyList(),
+        )
+
+        assertEquals(false, painted)
+        assertEquals(XFramebuffer.opaque(0x0000_ff00), framebuffer.pixelAt(0, 0))
+    }
+
+    @Test
     fun `copy area clips source and destination while preserving pixel contents`() {
         val source = XFramebuffer(4, 3)
         val destination = XFramebuffer(3, 3)

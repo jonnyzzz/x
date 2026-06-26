@@ -294,6 +294,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
                 out.flush()
 
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 8, drawable = WindowId, majorOpcode = 62)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff12_3b56.toInt(), pixelAt(image, 2, 0, 0))
                 assertEquals(0xff12_3b56.toInt(), pixelAt(image, 2, 1, 0))
@@ -2111,6 +2112,56 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateGC and ChangeGC reject invalid graphics exposures bool values`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRawRequest(GcId, mask = 0x0001_0000, values = listOf(2)))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(changeGcRawRequest(GcId, mask = 0x0001_0000, values = listOf(2)))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 55, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 56, badValue = 2, sequence = 4)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CreateGC graphics exposures bool ignores value list padding bytes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1))
+                out.write(createGcRawRequest(GcId, mask = 0x0001_0004, values = listOf(Red, 0xffff_ff00.toInt())))
+                out.write(putImage24PixelsRequest(PixmapId, width = 1, height = 1, pixels = listOf(Green)))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateGC and ChangeGC reject undefined value mask bits`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3133,6 +3184,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 3))
                 out.flush()
 
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 7, drawable = WindowId, majorOpcode = 62)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 0))
@@ -3174,6 +3226,7 @@ class XCoreDrawingProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 2))
                 out.flush()
 
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 6, drawable = WindowId, majorOpcode = 63)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 0))
@@ -3181,6 +3234,226 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 4, 1, 1))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 2, 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea and CopyPlane suppress NoExposure when graphics exposures are false`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRawRequest(GcId, mask = 0x0001_000c, values = listOf(Red, Blue, 0)))
+                out.write(createGcRequest(GcId + 1, foreground = Red))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0001_0000))
+                out.write(putImage24PixelsRequest(PixmapId, width = 2, height = 1, pixels = listOf(1, 0)))
+                out.write(copyPlaneRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1, bitPlane = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId + 1, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val planeImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(planeImage, 2, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(planeImage, 2, 1, 0))
+
+                val areaImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_0001.toInt(), pixelAt(areaImage, 2, 0, 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(areaImage, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea and CopyPlane emit GraphicsExposure for out of bounds source regions`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, backgroundPixel = Blue))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red, background = Blue))
+                out.write(putImage24PixelsRequest(PixmapId, width = 2, height = 1, pixels = listOf(Green, Blue)))
+                out.write(putImage24PixelsRequest(WindowId, width = 2, height = 2, pixels = listOf(Red, Red, Red, Red)))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = -1, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 3, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.write(copyPlaneRequest(PixmapId, WindowId, GcId, sourceX = -1, sourceY = 0, destinationX = 0, destinationY = 1, width = 2, height = 1, bitPlane = 0x0000_0100))
+                out.write(getImageRequest(WindowId, x = 0, y = 1, width = 2, height = 1))
+                out.flush()
+
+                assertGraphicsExposure(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 6,
+                    drawable = WindowId,
+                    rectangle = XRectangleCommand(0, 0, 1, 1),
+                    majorOpcode = 62,
+                    count = 0,
+                )
+                val partialAreaImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(partialAreaImage, 2, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(partialAreaImage, 2, 1, 0))
+
+                assertGraphicsExposure(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 8,
+                    drawable = WindowId,
+                    rectangle = XRectangleCommand(0, 0, 2, 1),
+                    majorOpcode = 62,
+                    count = 0,
+                )
+                val fullAreaImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(fullAreaImage, 2, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(fullAreaImage, 2, 1, 0))
+
+                assertGraphicsExposure(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 10,
+                    drawable = WindowId,
+                    rectangle = XRectangleCommand(0, 1, 1, 1),
+                    majorOpcode = 63,
+                    count = 0,
+                )
+                val planeImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(planeImage, 2, 0, 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(planeImage, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea exposure regions honor GC clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, backgroundPixel = Blue))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24PixelsRequest(PixmapId, width = 2, height = 1, pixels = listOf(Green, Red)))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = -1, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 6, drawable = WindowId, majorOpcode = 62)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea exposure regions treat overlapping GC clip rectangles as a union`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, backgroundPixel = Blue))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(putImage24PixelsRequest(PixmapId, width = 2, height = 1, pixels = listOf(Green, Red)))
+                out.write(
+                    setClipRectanglesRequest(
+                        GcId,
+                        clipXOrigin = 0,
+                        clipYOrigin = 0,
+                        rectangles = listOf(
+                            XRectangleCommand(0, 0, 2, 1),
+                            XRectangleCommand(0, 0, 1, 1),
+                        ),
+                    ),
+                )
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = -1, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                assertGraphicsExposure(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 6,
+                    drawable = WindowId,
+                    rectangle = XRectangleCommand(0, 0, 1, 1),
+                    majorOpcode = 62,
+                    count = 0,
+                )
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea background repaint from source exposure is retained in semantic drawing stream`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, backgroundPixel = Blue))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 3, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                assertGraphicsExposure(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    drawable = WindowId,
+                    rectangle = XRectangleCommand(0, 0, 2, 1),
+                    majorOpcode = 62,
+                    count = 0,
+                )
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 2, 1, 0))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":1""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea with empty GC clip does not add semantic copy drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(setClipRectanglesRequest(GcId, clipXOrigin = 0, clipYOrigin = 0, rectangles = emptyList()))
+                out.write(copyAreaRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertNoExposure(socket.getInputStream().readExactly(32), sequence = 5, drawable = WindowId, majorOpcode = 62)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 1, 0, 0))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":0""")
             }
             server.close()
             serverThread.join(1_000)
@@ -3211,6 +3484,59 @@ class XCoreDrawingProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 0, 0))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 1, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyPlane rejects bit plane outside source depth`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 1))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(copyPlaneRequest(PixmapId, WindowId, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 2, height = 1, bitPlane = 2))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 63, badValue = 2, sequence = 4)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(5, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyArea and CopyPlane reject drawable and GC mismatches before copying`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val destination = WindowId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createWindowRequest(destination))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 1))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = PixmapId))
+                out.write(copyAreaRequest(WindowId, destination, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(createGcRequest(GcId + 1, foreground = Red))
+                out.write(copyAreaRequest(PixmapId, destination, GcId + 1, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1))
+                out.write(copyPlaneRequest(WindowId, destination, GcId, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 1, height = 1, bitPlane = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 62, badValue = GcId, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 62, badValue = destination, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = 63, badValue = GcId, sequence = 8)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(9, u16le(pointer, 2))
             }
             server.close()
             serverThread.join(1_000)
@@ -11860,6 +12186,7 @@ class XCoreDrawingProtocolTest {
         visual: Int = X11Ids.RootVisual,
         borderWidth: Int = 0,
         backgroundPixmap: Int? = null,
+        backgroundPixel: Int? = null,
         borderPixmap: Int? = null,
         borderPixel: Int? = null,
         bitGravity: Int? = null,
@@ -11878,6 +12205,7 @@ class XCoreDrawingProtocolTest {
     ): ByteArray {
         val extraValues = listOfNotNull(
             backgroundPixmap?.let { (1 shl 0) to it },
+            backgroundPixel?.let { (1 shl 1) to it },
             borderPixmap?.let { (1 shl 2) to it },
             borderPixel?.let { (1 shl 3) to it },
             bitGravity?.let { (1 shl 4) to it },
@@ -13931,6 +14259,39 @@ class XCoreDrawingProtocolTest {
     private fun assertExpose(expose: ByteArray, windowId: Int) {
         assertEquals(12, expose[0].toInt() and 0xff)
         assertEquals(windowId, u32le(expose, 4))
+    }
+
+    private fun assertNoExposure(event: ByteArray, sequence: Int, drawable: Int, majorOpcode: Int, minorOpcode: Int = 0) {
+        assertEquals(14, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(drawable, u32le(event, 4))
+        assertEquals(minorOpcode, u16le(event, 8))
+        assertEquals(majorOpcode, event[10].toInt() and 0xff)
+        assertZeroBytes(event, 11, 32)
+    }
+
+    private fun assertGraphicsExposure(
+        event: ByteArray,
+        sequence: Int,
+        drawable: Int,
+        rectangle: XRectangleCommand,
+        majorOpcode: Int,
+        count: Int,
+        minorOpcode: Int = 0,
+    ) {
+        assertEquals(13, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(drawable, u32le(event, 4))
+        assertEquals(rectangle.x, u16le(event, 8))
+        assertEquals(rectangle.y, u16le(event, 10))
+        assertEquals(rectangle.width, u16le(event, 12))
+        assertEquals(rectangle.height, u16le(event, 14))
+        assertEquals(minorOpcode, u16le(event, 16))
+        assertEquals(count, u16le(event, 18))
+        assertEquals(majorOpcode, event[20].toInt() and 0xff)
+        assertZeroBytes(event, 21, 32)
     }
 
     private fun assertUnmapNotify(event: ByteArray, sequence: Int, eventWindow: Int, window: Int) {
