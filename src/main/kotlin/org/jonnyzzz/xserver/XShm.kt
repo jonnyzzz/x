@@ -9,12 +9,15 @@ internal object XShm {
     const val ZPixmap = 2
 
     const val QueryVersion = 0
+    const val Attach = 1
+    const val Detach = 2
+    const val BadSeg = FirstError
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
             QueryVersion -> "QueryVersion"
-            1 -> "Attach"
-            2 -> "Detach"
+            Attach -> "Attach"
+            Detach -> "Detach"
             3 -> "PutImage"
             4 -> "GetImage"
             5 -> "CreatePixmap"

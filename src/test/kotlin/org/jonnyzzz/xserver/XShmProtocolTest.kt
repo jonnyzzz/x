@@ -6,6 +6,7 @@ import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 class XShmProtocolTest {
     @Test
@@ -51,23 +52,69 @@ class XShmProtocolTest {
     }
 
     @Test
-    fun `MIT-SHM unimplemented requests return BadImplementation and recover stream`() {
+    fun `MIT-SHM Attach validates framing and reports unavailable backing without recording unsupported request`() {
         withServer { socket, port ->
-            val attachBody = ByteArray(12)
-            put32le(attachBody, 0, 0x0020_0400)
-            put32le(attachBody, 4, 1)
-            attachBody[8] = 1
+            val invalidBool = shmAttachBody(0x0020_0400, shmid = 1, readOnly = 2)
+            val attachBody = shmAttachBody(0x0020_0401, shmid = 2, readOnly = 1)
+            val oversizedAttach = shmAttachBody(0x0020_0402, shmid = 3, readOnly = 0) + u32(0)
             val out = socket.getOutputStream()
-            out.write(request(XShm.MajorOpcode, 1, attachBody))
+            out.write(request(XShm.MajorOpcode, XShm.Attach, ByteArray(8)))
+            out.write(request(XShm.MajorOpcode, XShm.Attach, oversizedAttach))
+            out.write(request(XShm.MajorOpcode, XShm.Attach, shmAttachBody(X11Ids.RootWindow, shmid = 1, readOnly = 0)))
+            out.write(request(XShm.MajorOpcode, XShm.Attach, invalidBool))
+            out.write(request(XShm.MajorOpcode, XShm.Attach, attachBody))
             out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 1)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XShm.Attach)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XShm.Attach)
+            assertError(socket.getInputStream(), error = 14, opcode = XShm.MajorOpcode, badValue = X11Ids.RootWindow, sequence = 3, minorOpcode = XShm.Attach)
+            assertError(socket.getInputStream(), error = 2, opcode = XShm.MajorOpcode, badValue = 2, sequence = 4, minorOpcode = XShm.Attach)
+            assertError(socket.getInputStream(), error = 10, opcode = XShm.MajorOpcode, badValue = 2, sequence = 5, minorOpcode = XShm.Attach)
             val version = readReply(socket.getInputStream())
-            assertEquals(2, u16le(version, 2))
+            assertEquals(6, u16le(version, 2))
             assertEquals(XShm.MajorVersion, u16le(version, 8))
+            val unsupportedSection = httpGet(port, "/text.txt").substringAfter("Unsupported requests:")
+            assertContains(unsupportedSection, "- None.")
+            assertFalse(unsupportedSection.contains("MIT-SHM.Attach:"))
+        }
+    }
 
-            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.Attach:")
+    @Test
+    fun `MIT-SHM Detach validates framing and reports unknown segment as BadSeg`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XShm.MajorOpcode, XShm.Detach, ByteArray(0)))
+            out.write(request(XShm.MajorOpcode, XShm.Detach, u32(0x0020_0400) + u32(0)))
+            out.write(request(XShm.MajorOpcode, XShm.Detach, u32(0x0020_0401)))
+            out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XShm.Detach)
+            assertError(socket.getInputStream(), error = 16, opcode = XShm.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XShm.Detach)
+            assertError(socket.getInputStream(), error = XShm.BadSeg, opcode = XShm.MajorOpcode, badValue = 0x0020_0401, sequence = 3, minorOpcode = XShm.Detach)
+            val version = readReply(socket.getInputStream())
+            assertEquals(4, u16le(version, 2))
+            assertEquals(XShm.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
+    fun `MIT-SHM shared memory image requests remain BadImplementation and recover stream`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(request(XShm.MajorOpcode, 3, ByteArray(40)))
+            out.write(request(XShm.MajorOpcode, 4, ByteArray(24)))
+            out.write(request(XShm.MajorOpcode, XShm.QueryVersion, ByteArray(0)))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 3)
+            assertError(socket.getInputStream(), error = 17, opcode = XShm.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = 4)
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(XShm.MajorVersion, u16le(version, 8))
+            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.PutImage:")
+            assertContains(httpGet(port, "/text.txt"), "MIT-SHM.GetImage:")
         }
     }
 
@@ -110,6 +157,13 @@ class XShmProtocolTest {
         body.copyInto(bytes, 4)
         return bytes
     }
+
+    private fun shmAttachBody(shmseg: Int, shmid: Int, readOnly: Int): ByteArray =
+        ByteArray(12).also {
+            put32le(it, 0, shmseg)
+            put32le(it, 4, shmid)
+            it[8] = readOnly.toByte()
+        }
 
     private fun assertError(input: InputStream, error: Int, opcode: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
         val reply = input.readExactly(32)

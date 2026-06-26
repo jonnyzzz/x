@@ -353,6 +353,8 @@ internal class X11Connection(
     private fun shm(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
         when (minorOpcode) {
             XShm.QueryVersion -> shmQueryVersion(body)
+            XShm.Attach -> shmAttach(body, majorOpcode)
+            XShm.Detach -> shmDetach(body, majorOpcode)
             else -> shmBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -366,6 +368,20 @@ internal class X11Connection(
         byteOrder.put16(reply, 14, 0)
         reply[16] = XShm.ZPixmap.toByte()
         write(reply)
+    }
+
+    private fun shmAttach(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = 0)
+        val shmseg = byteOrder.u32(body, 0)
+        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = shmseg)
+        val readOnly = body[8].toInt() and 0xff
+        if (readOnly !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = readOnly)
+        writeError(error = 10, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = byteOrder.u32(body, 4))
+    }
+
+    private fun shmDetach(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.Detach, badValue = 0)
+        writeError(error = XShm.BadSeg, opcode = majorOpcode, minorOpcode = XShm.Detach, badValue = byteOrder.u32(body, 0))
     }
 
     private fun shmBadImplementation(majorOpcode: Int, minorOpcode: Int) {
