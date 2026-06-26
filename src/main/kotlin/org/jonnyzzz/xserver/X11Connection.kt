@@ -394,6 +394,7 @@ internal class X11Connection(
             XXkb.GetNames -> xkbGetNames(body, majorOpcode)
             XXkb.SetNames -> xkbSetNames(body, majorOpcode)
             XXkb.GetGeometry -> xkbGetGeometry(body, majorOpcode)
+            XXkb.SetGeometry -> xkbSetGeometry(body, majorOpcode)
             XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
             XXkb.ListComponents -> xkbListComponents(body, majorOpcode)
             XXkb.GetKbdByName -> xkbGetKbdByName(body, majorOpcode)
@@ -654,6 +655,113 @@ internal class X11Connection(
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, name)
         write(reply)
+    }
+
+    private fun xkbSetGeometry(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetGeometry, badValue = 0)
+        val expectedSize = xkbSetGeometryPayloadSize(body)
+        if (expectedSize == null || body.size != expectedSize) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetGeometry, badValue = 0)
+        }
+    }
+
+    private fun xkbSetGeometryPayloadSize(body: ByteArray): Int? {
+        val nShapes = body[2].toInt() and 0xff
+        val nSections = body[3].toInt() and 0xff
+        val nProperties = byteOrder.u16(body, 12)
+        val nColors = byteOrder.u16(body, 14)
+        val nDoodads = byteOrder.u16(body, 16)
+        val nKeyAliases = byteOrder.u16(body, 18)
+        var offset = 24
+
+        fun require(bytes: Int): Boolean {
+            val next = offset + bytes
+            if (next < offset || next > body.size) return false
+            offset = next
+            return true
+        }
+
+        fun countedString(): Boolean {
+            if (offset > body.size - 2) return false
+            val length = byteOrder.u16(body, offset)
+            val next = offset.toLong() + paddedLength(2L + length.toLong())
+            if (next > body.size) return false
+            offset = next.toInt()
+            return true
+        }
+
+        fun doodad(): Boolean {
+            if (offset > body.size - 20) return false
+            val type = body[offset + 4].toInt() and 0xff
+            offset += 20
+            return when (type) {
+                1, 2, 4 -> true
+                3 -> countedString() && countedString()
+                5 -> countedString()
+                else -> false
+            }
+        }
+
+        fun shape(): Boolean {
+            if (offset > body.size - 8) return false
+            val nOutlines = body[offset + 4].toInt() and 0xff
+            offset += 8
+            repeat(nOutlines) {
+                if (offset > body.size - 4) return false
+                val nPoints = body[offset].toInt() and 0xff
+                offset += 4
+                if (!require(nPoints * 4)) return false
+            }
+            return true
+        }
+
+        fun section(): Boolean {
+            if (offset > body.size - 20) return false
+            val nRows = body[offset + 15].toInt() and 0xff
+            val sectionDoodads = body[offset + 16].toInt() and 0xff
+            val nOverlays = body[offset + 17].toInt() and 0xff
+            offset += 20
+            repeat(nRows) {
+                if (offset > body.size - 8) return false
+                val nKeys = body[offset + 4].toInt() and 0xff
+                offset += 8
+                if (!require(nKeys * 8)) return false
+            }
+            repeat(sectionDoodads) {
+                if (!doodad()) return false
+            }
+            repeat(nOverlays) {
+                if (offset > body.size - 8) return false
+                val nRowsInOverlay = body[offset + 4].toInt() and 0xff
+                offset += 8
+                repeat(nRowsInOverlay) {
+                    if (offset > body.size - 4) return false
+                    val nKeys = body[offset + 1].toInt() and 0xff
+                    offset += 4
+                    if (!require(nKeys * 8)) return false
+                }
+            }
+            return true
+        }
+
+        if (!countedString()) return null
+        repeat(nProperties) {
+            if (!countedString() || !countedString()) return null
+        }
+        repeat(nColors) {
+            if (!countedString()) return null
+        }
+        repeat(nShapes) {
+            if (!shape()) return null
+        }
+        repeat(nSections) {
+            if (!section()) return null
+        }
+        repeat(nDoodads) {
+            if (!doodad()) return null
+        }
+        if (!require(nKeyAliases * 8)) return null
+        return offset
     }
 
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {

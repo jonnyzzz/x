@@ -823,6 +823,46 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetGeometry accepts full geometry payload without changing empty geometry`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setGeometryRequest())
+            out.write(getGeometryRequest(name = 0x0102_0304))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0x0102_0304, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetGeometry validates variable payload length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetGeometry, ByteArray(20)))
+            out.write(setGeometryRequest(bodySize = setGeometryBodySize() - 4))
+            out.write(setGeometryRequest(bodySize = setGeometryBodySize() + 4))
+            out.write(setGeometryRequest())
+            out.write(getGeometryRequest(name = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetGeometry)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetGeometry)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(5, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1522,6 +1562,79 @@ class XXkbProtocolTest {
         put32le(body, 4, name)
         return request(XXkb.MajorOpcode, XXkb.GetGeometry, body)
     }
+
+    private fun setGeometryRequest(bodySize: Int = setGeometryBodySize()): ByteArray {
+        val full = ByteArray(setGeometryBodySize())
+        put16le(full, 0, 0x0100)
+        full[2] = 1
+        full[3] = 0
+        put32le(full, 4, 0x0102_0304)
+        put16le(full, 8, 320)
+        put16le(full, 10, 240)
+        put16le(full, 12, 1)
+        put16le(full, 14, 2)
+        put16le(full, 16, 1)
+        put16le(full, 18, 1)
+        full[20] = 0
+        full[21] = 1
+
+        var offset = 24
+        fun writeCounted(value: String) {
+            val bytes = value.encodeToByteArray()
+            put16le(full, offset, bytes.size)
+            bytes.copyInto(full, offset + 2)
+            offset += countedGeometryStringSize(value)
+        }
+
+        writeCounted("label")
+        writeCounted("prop")
+        writeCounted("value")
+        writeCounted("black")
+        writeCounted("white")
+
+        put32le(full, offset, 0x0203_0405)
+        full[offset + 4] = 1
+        full[offset + 5] = 0
+        full[offset + 6] = 0
+        offset += 8
+        full[offset] = 2
+        offset += 4
+        put16le(full, offset, 0)
+        put16le(full, offset + 2, 0)
+        put16le(full, offset + 4, 10)
+        put16le(full, offset + 6, 10)
+        offset += 8
+
+        put32le(full, offset, 0x0304_0506)
+        full[offset + 4] = 3
+        full[offset + 16] = 0
+        offset += 20
+        writeCounted("text")
+        writeCounted("font")
+
+        "REALALIS".encodeToByteArray().copyInto(full, offset)
+        offset += 8
+        assertEquals(full.size, offset)
+
+        val body = if (bodySize == full.size) full else ByteArray(bodySize).also {
+            full.copyInto(it, endIndex = minOf(full.size, bodySize))
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetGeometry, body)
+    }
+
+    private fun setGeometryBodySize(): Int =
+        24 +
+            countedGeometryStringSize("label") +
+            countedGeometryStringSize("prop") +
+            countedGeometryStringSize("value") +
+            countedGeometryStringSize("black") +
+            countedGeometryStringSize("white") +
+            8 + 4 + 8 +
+            20 + countedGeometryStringSize("text") + countedGeometryStringSize("font") +
+            8
+
+    private fun countedGeometryStringSize(value: String): Int =
+        (2 + value.encodeToByteArray().size + 3) and -4
 
     private fun perClientFlagsRequest(change: Int, value: Int, ctrlsToChange: Int, autoCtrls: Int, autoCtrlsValues: Int): ByteArray {
         val body = ByteArray(24)
