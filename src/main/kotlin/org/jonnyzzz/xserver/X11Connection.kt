@@ -384,6 +384,7 @@ internal class X11Connection(
             XXkb.SetControls -> xkbSetControls(body, majorOpcode)
             XXkb.GetMap -> xkbGetMap(body, majorOpcode)
             XXkb.GetCompatMap -> xkbGetCompatMap(body, majorOpcode)
+            XXkb.SetCompatMap -> xkbSetCompatMap(body, majorOpcode)
             XXkb.GetIndicatorState -> xkbGetIndicatorState(body, majorOpcode)
             XXkb.GetIndicatorMap -> xkbGetIndicatorMap(body, majorOpcode)
             XXkb.SetIndicatorMap -> xkbSetIndicatorMap(body, majorOpcode)
@@ -470,6 +471,14 @@ internal class X11Connection(
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetCompatMap, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
+    }
+
+    private fun xkbSetCompatMap(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
+        val groups = body[5].toInt() and 0xff
+        val nSI = byteOrder.u16(body, 8)
+        val expectedSize = 12 + nSI * 16 + Integer.bitCount(groups) * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetCompatMap, badValue = 0)
     }
 
     private fun xkbGetIndicatorState(body: ByteArray, majorOpcode: Int) {

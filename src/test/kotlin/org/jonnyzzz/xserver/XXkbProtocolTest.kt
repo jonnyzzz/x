@@ -409,6 +409,45 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetCompatMap accepts compat payload without changing empty map`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(setCompatMapRequest(groups = 0x5, nSI = 2))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(2, u16le(compatMap, 2))
+            assertEquals(0, compatMap[1].toInt() and 0xff)
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetCompatMap validates variable payload length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetCompatMap, ByteArray(8)))
+            out.write(setCompatMapRequest(groups = 0x3, nSI = 1, bodySize = 28))
+            out.write(setCompatMapRequest(groups = 0x3, nSI = 1, bodySize = 40))
+            out.write(setCompatMapRequest(groups = 0, nSI = 0))
+            out.write(getCompatMapRequest(groups = 0, getAllSI = false, firstSI = 0, nSI = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetCompatMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetCompatMap)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetCompatMap)
+            val compatMap = readReply(socket.getInputStream())
+            assertEquals(5, u16le(compatMap, 2))
+            assertEquals(0, u16le(compatMap, 10))
+            assertEquals(0, u16le(compatMap, 12))
+            assertEquals(0, u16le(compatMap, 14))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD indicator queries return empty state and map`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -1041,6 +1080,32 @@ class XXkbProtocolTest {
         put16le(body, 4, firstSI)
         put16le(body, 6, nSI)
         return request(XXkb.MajorOpcode, XXkb.GetCompatMap, body)
+    }
+
+    private fun setCompatMapRequest(groups: Int, nSI: Int, bodySize: Int = 12 + nSI * 16 + Integer.bitCount(groups) * 4): ByteArray {
+        val body = ByteArray(bodySize)
+        put16le(body, 0, 0x0100)
+        if (body.size > 3) body[3] = 1
+        if (body.size > 4) body[4] = 1
+        if (body.size > 5) body[5] = groups.toByte()
+        if (body.size >= 10) put16le(body, 8, nSI)
+        for (index in 0 until nSI) {
+            val offset = 12 + index * 16
+            if (offset + 16 > body.size) break
+            put32le(body, offset, 0)
+            body[offset + 4] = 1
+            body[offset + 5] = 1
+            body[offset + 7] = 1
+        }
+        var offset = 12 + nSI * 16
+        repeat(Integer.bitCount(groups)) {
+            if (offset + 4 > body.size) return@repeat
+            body[offset] = 1
+            body[offset + 1] = 1
+            put16le(body, offset + 2, 1)
+            offset += 4
+        }
+        return request(XXkb.MajorOpcode, XXkb.SetCompatMap, body)
     }
 
     private fun getIndicatorStateRequest(): ByteArray {
