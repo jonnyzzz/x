@@ -281,6 +281,42 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(perClientFlagsRequest(change = -1, value = -1, ctrlsToChange = -1, autoCtrls = -1, autoCtrlsValues = -1))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, u32le(reply, 12))
+            assertEquals(0, u32le(reply, 16))
+            assertEquals(0, u32le(reply, 20))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD PerClientFlags validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.PerClientFlags, ByteArray(20)))
+            out.write(perClientFlagsRequest(change = 1, value = 1, ctrlsToChange = XXkb.BoolCtrlRepeatKeys, autoCtrls = 0, autoCtrlsValues = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.PerClientFlags)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(0, u32le(reply, 12))
+            assertEquals(0, u32le(reply, 16))
+            assertEquals(0, u32le(reply, 20))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -378,6 +414,17 @@ class XXkbProtocolTest {
         put16le(body, 4, 0)
         put32le(body, 8, indicator)
         return request(XXkb.MajorOpcode, XXkb.GetNamedIndicator, body)
+    }
+
+    private fun perClientFlagsRequest(change: Int, value: Int, ctrlsToChange: Int, autoCtrls: Int, autoCtrlsValues: Int): ByteArray {
+        val body = ByteArray(24)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, change)
+        put32le(body, 8, value)
+        put32le(body, 12, ctrlsToChange)
+        put32le(body, 16, autoCtrls)
+        put32le(body, 20, autoCtrlsValues)
+        return request(XXkb.MajorOpcode, XXkb.PerClientFlags, body)
     }
 
     private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {

@@ -382,6 +382,7 @@ internal class X11Connection(
             XXkb.GetIndicatorState -> xkbGetIndicatorState(body, majorOpcode)
             XXkb.GetIndicatorMap -> xkbGetIndicatorMap(body, majorOpcode)
             XXkb.GetNamedIndicator -> xkbGetNamedIndicator(body, majorOpcode)
+            XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -435,6 +436,12 @@ internal class X11Connection(
         val indicator = byteOrder.u32(body, 8)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, indicator)
+        write(reply)
+    }
+
+    private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
     }
 
