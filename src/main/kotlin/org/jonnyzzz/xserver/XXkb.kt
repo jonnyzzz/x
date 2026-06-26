@@ -15,6 +15,7 @@ internal object XXkb {
     const val GetIndicatorState = 12
     const val GetIndicatorMap = 13
     const val GetNamedIndicator = 15
+    const val GetNames = 17
     const val PerClientFlags = 21
 
     const val BoolCtrlRepeatKeys = 1 shl 0
@@ -41,7 +42,7 @@ internal object XXkb {
             14 -> "SetIndicatorMap"
             GetNamedIndicator -> "GetNamedIndicator"
             16 -> "SetNamedIndicator"
-            17 -> "GetNames"
+            GetNames -> "GetNames"
             18 -> "SetNames"
             PerClientFlags -> "PerClientFlags"
             22 -> "ListComponents"

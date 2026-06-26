@@ -319,6 +319,51 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetNames reports key range with no named atoms`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getNamesRequest(which = -1))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+            assertEquals(0, reply[14].toInt() and 0xff)
+            assertEquals(0, reply[15].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 16))
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(0, u32le(reply, 20))
+            assertEquals(0, reply[24].toInt() and 0xff)
+            assertEquals(0, reply[25].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 26))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetNames validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetNames, ByteArray(4)))
+            out.write(getNamesRequest(which = 0))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetNames)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(0, u32le(reply, 8))
+            assertEquals(XKeyboard.MinKeycode, reply[12].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[13].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD PerClientFlags reports no supported per-client flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -462,6 +507,13 @@ class XXkbProtocolTest {
         put16le(body, 4, 0)
         put32le(body, 8, indicator)
         return request(XXkb.MajorOpcode, XXkb.GetNamedIndicator, body)
+    }
+
+    private fun getNamesRequest(which: Int): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, which)
+        return request(XXkb.MajorOpcode, XXkb.GetNames, body)
     }
 
     private fun perClientFlagsRequest(change: Int, value: Int, ctrlsToChange: Int, autoCtrls: Int, autoCtrlsValues: Int): ByteArray {
