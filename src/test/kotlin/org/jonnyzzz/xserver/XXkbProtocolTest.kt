@@ -140,6 +140,53 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetControls returns core keyboard controls`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getControlsRequest())
+            out.flush()
+
+            val controls = readReply(socket.getInputStream())
+            assertGetControls(controls, sequence = 1, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertEquals(0xff, controls[60 + 5].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetControls reflects core auto repeat changes`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(changeKeyboardControlRequest(0x40 to 40, 0x80 to 0))
+            out.write(getControlsRequest())
+            out.write(changeKeyboardControlRequest(0x80 to 0))
+            out.write(getControlsRequest())
+            out.flush()
+
+            val perKeyControls = readReply(socket.getInputStream())
+            assertGetControls(perKeyControls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+            assertEquals(0xfe, perKeyControls[60 + 5].toInt() and 0xff)
+
+            val globalControls = readReply(socket.getInputStream())
+            assertGetControls(globalControls, sequence = 4, enabledControls = 0)
+            assertEquals(0xfe, globalControls[60 + 5].toInt() and 0xff)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetControls validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetControls, ByteArray(0)))
+            out.write(getControlsRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetControls)
+            val controls = readReply(socket.getInputStream())
+            assertGetControls(controls, sequence = 2, enabledControls = XXkb.BoolCtrlRepeatKeys)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -211,6 +258,22 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetState, body)
     }
 
+    private fun getControlsRequest(): ByteArray {
+        val body = ByteArray(4)
+        put16le(body, 0, 0x0100)
+        return request(XXkb.MajorOpcode, XXkb.GetControls, body)
+    }
+
+    private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {
+        val mask = values.fold(0) { acc, (bit, _) -> acc or bit }
+        val body = ByteArray(4 + values.size * 4)
+        put32le(body, 0, mask)
+        values.forEachIndexed { index, (_, value) ->
+            put32le(body, 4 + index * 4, value)
+        }
+        return request(102, 0, body)
+    }
+
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
         val bytes = ByteArray(4 + body.size)
         bytes[0] = opcode.toByte()
@@ -228,6 +291,41 @@ class XXkbProtocolTest {
         assertEquals(badValue, u32le(reply, 4))
         assertEquals(minorOpcode, u16le(reply, 8))
         assertEquals(opcode, reply[10].toInt() and 0xff)
+    }
+
+    private fun assertGetControls(reply: ByteArray, sequence: Int, enabledControls: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(15, u32le(reply, 4))
+        assertEquals(XXkb.DefaultMouseKeysButton, reply[8].toInt() and 0xff)
+        assertEquals(XXkb.DefaultGroupCount, reply[9].toInt() and 0xff)
+        assertEquals(0, reply[10].toInt() and 0xff)
+        assertEquals(0, reply[11].toInt() and 0xff)
+        assertEquals(0, reply[12].toInt() and 0xff)
+        assertEquals(0, reply[13].toInt() and 0xff)
+        assertEquals(0, reply[14].toInt() and 0xff)
+        assertEquals(0, reply[15].toInt() and 0xff)
+        assertEquals(0, u16le(reply, 16))
+        assertEquals(0, u16le(reply, 18))
+        assertEquals(XXkb.DefaultRepeatDelay, u16le(reply, 20))
+        assertEquals(XXkb.DefaultRepeatInterval, u16le(reply, 22))
+        assertEquals(0, u16le(reply, 24))
+        assertEquals(0, u16le(reply, 26))
+        assertEquals(0, u16le(reply, 28))
+        assertEquals(0, u16le(reply, 30))
+        assertEquals(0, u16le(reply, 32))
+        assertEquals(0, u16le(reply, 34))
+        assertEquals(0, u16le(reply, 36))
+        assertEquals(0, u16le(reply, 38))
+        assertEquals(0, u16le(reply, 40))
+        assertEquals(0, u16le(reply, 42))
+        assertEquals(0, u16le(reply, 44))
+        assertEquals(0, u16le(reply, 46))
+        assertEquals(0, u32le(reply, 48))
+        assertEquals(0, u32le(reply, 52))
+        assertEquals(enabledControls, u32le(reply, 56))
+        assertEquals(92, reply.size)
     }
 
     private fun readReply(input: InputStream): ByteArray {
@@ -257,6 +355,13 @@ class XXkbProtocolTest {
     private fun put16le(bytes: ByteArray, offset: Int, value: Int) {
         bytes[offset] = value.toByte()
         bytes[offset + 1] = (value ushr 8).toByte()
+    }
+
+    private fun put32le(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+        bytes[offset + 2] = (value ushr 16).toByte()
+        bytes[offset + 3] = (value ushr 24).toByte()
     }
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =

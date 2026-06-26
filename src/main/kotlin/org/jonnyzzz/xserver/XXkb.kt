@@ -10,6 +10,13 @@ internal object XXkb {
     const val UseExtension = 0
     const val SelectEvents = 1
     const val GetState = 4
+    const val GetControls = 6
+
+    const val BoolCtrlRepeatKeys = 1 shl 0
+    const val DefaultMouseKeysButton = 1
+    const val DefaultGroupCount = 1
+    const val DefaultRepeatDelay = 660
+    const val DefaultRepeatInterval = 40
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
@@ -18,7 +25,7 @@ internal object XXkb {
             3 -> "Bell"
             GetState -> "GetState"
             5 -> "LatchLockState"
-            6 -> "GetControls"
+            GetControls -> "GetControls"
             7 -> "SetControls"
             8 -> "GetMap"
             9 -> "SetMap"

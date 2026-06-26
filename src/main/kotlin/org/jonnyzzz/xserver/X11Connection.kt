@@ -378,6 +378,7 @@ internal class X11Connection(
             XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
             XXkb.GetState -> xkbGetState(body, majorOpcode)
+            XXkb.GetControls -> xkbGetControls(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -398,6 +399,19 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetState, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put16(reply, 24, state.pointerMask())
+        write(reply)
+    }
+
+    private fun xkbGetControls(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetControls, badValue = 0)
+        val keyboardControl = state.keyboardControl()
+        val reply = reply(extra = 0, payloadUnits = 15)
+        reply[8] = XXkb.DefaultMouseKeysButton.toByte()
+        reply[9] = XXkb.DefaultGroupCount.toByte()
+        byteOrder.put16(reply, 20, XXkb.DefaultRepeatDelay)
+        byteOrder.put16(reply, 22, XXkb.DefaultRepeatInterval)
+        byteOrder.put32(reply, 56, if (keyboardControl.globalAutoRepeat) XXkb.BoolCtrlRepeatKeys else 0)
+        keyboardControl.autoRepeats.copyInto(reply, 60)
         write(reply)
     }
 
