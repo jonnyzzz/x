@@ -1042,6 +1042,24 @@ internal class X11State(
     private fun buttonGrabCombinationReleased(grab: XPassiveButtonGrab, button: Int, modifiers: Int): Boolean =
         buttonGrabCombinationReleased(grab.releasedCombinations, button, modifiers)
 
+    private fun matchingPassiveButtonGrab(path: List<XWindow>, button: Int, modifiers: Int): XPassiveButtonGrab? {
+        for (window in path.asReversed()) {
+            passiveButtonGrabs.firstOrNull { grab ->
+                grab.windowId == window.id &&
+                    buttonPatternCovers(grab.button, button) &&
+                    modifierPatternCovers(grab.modifiers, modifiers) &&
+                    !buttonGrabCombinationReleased(grab, button, modifiers)
+            }?.let { grab ->
+                return if (grab.confineTo?.let { windowIsViewable(it) && windowIntersectsRootBounds(it) } != false) {
+                    grab
+                } else {
+                    null
+                }
+            }
+        }
+        return null
+    }
+
     private fun buttonGrabCombinationReleased(
         releasedCombinations: Set<XPassiveButtonGrabCombination>,
         button: Int,
@@ -1326,24 +1344,69 @@ internal class X11State(
                 recordMotionHistory(time, pointerX, pointerY)
             }
 
+            if (pressed && logicalButton != 0 && activePointerGrab == null && pressedLogicalButtons.isEmpty()) {
+                matchingPassiveButtonGrab(path, logicalButton, previousState and KeyModifierMask)?.let { grab ->
+                    activePointerGrab = XInputGrab(
+                        owner = grab.owner,
+                        kind = "pointer",
+                        windowId = grab.windowId,
+                        ownerEvents = grab.ownerEvents,
+                        eventMask = grab.eventMask,
+                        pointerMode = grab.pointerMode,
+                        keyboardMode = grab.keyboardMode,
+                        confineTo = grab.confineTo,
+                        cursor = grab.cursor,
+                        time = time,
+                        activatedByPassiveGrab = true,
+                    )
+                    lastPointerGrabTime = time
+                }
+            }
+
             if (logicalButton != 0) {
-                for ((sink, selections) in eventSinks) {
-                    for (window in path) {
-                        val selectedMask = selections[window.id] ?: continue
-                        if ((selectedMask and mask) == 0) continue
-                        val absolute = absoluteById.getValue(window.id)
-                        deliveries += sink to XPointerEvent(
+                val grab = activePointerGrab
+                if (grab != null) {
+                    val ownerSelections = eventSinks[grab.owner]
+                    val ownerEventWindow = if (grab.ownerEvents) {
+                        path.firstOrNull { window -> ((ownerSelections?.get(window.id) ?: 0) and mask) != 0 }
+                    } else {
+                        null
+                    }
+                    if (ownerEventWindow != null || (grab.eventMask and mask) != 0) {
+                        val eventWindowId = ownerEventWindow?.id ?: grab.windowId
+                        val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
+                        deliveries += grab.owner to XPointerEvent(
                             type = type,
                             button = logicalButton,
                             rootX = pointerX,
                             rootY = pointerY,
-                            eventWindowId = window.id,
-                            childWindowId = childByAncestor[window.id] ?: 0,
+                            eventWindowId = eventWindowId,
+                            childWindowId = childByAncestor[eventWindowId] ?: 0,
                             eventX = pointerX - absolute.first,
                             eventY = pointerY - absolute.second,
                             state = previousState,
                             time = time,
                         )
+                    }
+                } else {
+                    for ((sink, selections) in eventSinks) {
+                        for (window in path) {
+                            val selectedMask = selections[window.id] ?: continue
+                            if ((selectedMask and mask) == 0) continue
+                            val absolute = absoluteById.getValue(window.id)
+                            deliveries += sink to XPointerEvent(
+                                type = type,
+                                button = logicalButton,
+                                rootX = pointerX,
+                                rootY = pointerY,
+                                eventWindowId = window.id,
+                                childWindowId = childByAncestor[window.id] ?: 0,
+                                eventX = pointerX - absolute.first,
+                                eventY = pointerY - absolute.second,
+                                state = previousState,
+                                time = time,
+                            )
+                        }
                     }
                 }
             }
@@ -1357,6 +1420,9 @@ internal class X11State(
                     pressedLogicalButtons -= logicalButton
                     pointerState and buttonMask.inv()
                 }
+            }
+            if (!pressed && activePointerGrab?.activatedByPassiveGrab == true && pressedLogicalButtons.isEmpty()) {
+                activePointerGrab = null
             }
             if (targetId != null) focusWindowId = targetId
         }
@@ -1409,23 +1475,49 @@ internal class X11State(
             val time = inputTime++
             recordMotionHistory(time, pointerX, pointerY)
 
-            for ((sink, selections) in eventSinks) {
-                for (window in path) {
-                    val selectedMask = selections[window.id] ?: continue
-                    if ((selectedMask and XEventMasks.PointerMotion) == 0) continue
-                    val absolute = absoluteById.getValue(window.id)
-                    deliveries += sink to XPointerEvent(
+            val grab = activePointerGrab
+            if (grab != null) {
+                val ownerSelections = eventSinks[grab.owner]
+                val ownerEventWindow = if (grab.ownerEvents) {
+                    path.firstOrNull { window -> ((ownerSelections?.get(window.id) ?: 0) and XEventMasks.PointerMotion) != 0 }
+                } else {
+                    null
+                }
+                if (ownerEventWindow != null || (grab.eventMask and XEventMasks.PointerMotion) != 0) {
+                    val eventWindowId = ownerEventWindow?.id ?: grab.windowId
+                    val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
+                    deliveries += grab.owner to XPointerEvent(
                         type = XPointerEventType.MotionNotify,
                         button = 0,
                         rootX = pointerX,
                         rootY = pointerY,
-                        eventWindowId = window.id,
-                        childWindowId = childByAncestor[window.id] ?: 0,
+                        eventWindowId = eventWindowId,
+                        childWindowId = childByAncestor[eventWindowId] ?: 0,
                         eventX = pointerX - absolute.first,
                         eventY = pointerY - absolute.second,
                         state = pointerState,
                         time = time,
                     )
+                }
+            } else {
+                for ((sink, selections) in eventSinks) {
+                    for (window in path) {
+                        val selectedMask = selections[window.id] ?: continue
+                        if ((selectedMask and XEventMasks.PointerMotion) == 0) continue
+                        val absolute = absoluteById.getValue(window.id)
+                        deliveries += sink to XPointerEvent(
+                            type = XPointerEventType.MotionNotify,
+                            button = 0,
+                            rootX = pointerX,
+                            rootY = pointerY,
+                            eventWindowId = window.id,
+                            childWindowId = childByAncestor[window.id] ?: 0,
+                            eventX = pointerX - absolute.first,
+                            eventY = pointerY - absolute.second,
+                            state = pointerState,
+                            time = time,
+                        )
+                    }
                 }
             }
         }
@@ -4666,6 +4758,7 @@ internal data class XInputGrab(
     val confineTo: Int?,
     val cursor: Int?,
     val time: Int,
+    val activatedByPassiveGrab: Boolean = false,
 ) {
     fun snapshot(): XInputGrabSnapshot =
         XInputGrabSnapshot(

@@ -5229,6 +5229,289 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `passive GrabButton activates pointer grab and routes button events to grab owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(grabButtonRequest(WindowId, eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+
+                val down = server.input.pointerDown(10, 10, button = 1)
+                assertEquals(1, down.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc"""")
+
+                val up = server.input.pointerUp(10, 10, button = 1)
+                assertEquals(1, up.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton does not activate while another logical button is down`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 250
+                    observer.soTimeout = 2_000
+                    setup(owner)
+                    setup(observer)
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(grabButtonRequest(WindowId, button = 2))
+                    ownerOut.write(mapWindowRequest(WindowId))
+                    ownerOut.flush()
+                    assertMapAndExpose(owner.getInputStream(), WindowId)
+
+                    val observerInput = observer.getInputStream()
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(WindowId, XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observerInput)[0].toInt())
+
+                    assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                    assertButtonEvent(observerInput.readExactly(32), type = 4, detail = 1)
+                    assertEquals(1, server.input.pointerDown(10, 10, button = 2).deliveredEvents)
+                    assertButtonEvent(observerInput.readExactly(32), type = 4, detail = 2)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                    assertFailsWith<SocketTimeoutException> {
+                        owner.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.pointerUp(10, 10, button = 2).deliveredEvents)
+                    assertButtonEvent(observerInput.readExactly(32), type = 5, detail = 2)
+                    assertEquals(1, server.input.pointerUp(10, 10, button = 1).deliveredEvents)
+                    assertButtonEvent(observerInput.readExactly(32), type = 5, detail = 1)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton matching prefers ancestor grabs over descendant grabs`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ancestorOwner ->
+                Socket("127.0.0.1", server.localPort).use { descendantOwner ->
+                    ancestorOwner.soTimeout = 2_000
+                    descendantOwner.soTimeout = 250
+                    setup(ancestorOwner)
+                    setup(descendantOwner)
+
+                    val descendantOut = descendantOwner.getOutputStream()
+                    descendantOut.write(createWindowRequest(WindowId))
+                    descendantOut.write(grabButtonRequest(WindowId))
+                    descendantOut.write(mapWindowRequest(WindowId))
+                    descendantOut.flush()
+                    assertMapAndExpose(descendantOwner.getInputStream(), WindowId)
+
+                    val ancestorInput = ancestorOwner.getInputStream()
+                    val ancestorOut = ancestorOwner.getOutputStream()
+                    ancestorOut.write(grabButtonRequest(X11Ids.RootWindow))
+                    ancestorOut.write(queryPointerRequest())
+                    ancestorOut.flush()
+                    assertEquals(1, readReply(ancestorInput)[0].toInt())
+
+                    assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                    assertButtonEvent(ancestorInput.readExactly(32), type = 4, detail = 1)
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer","window":"0x${X11Ids.RootWindow.toString(16)}"""")
+                    assertFailsWith<SocketTimeoutException> {
+                        descendantOwner.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.pointerUp(10, 10, button = 1).deliveredEvents)
+                    assertButtonEvent(ancestorInput.readExactly(32), type = 5, detail = 1)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton owner events use normal owner selection before grab window fallback`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                out.write(grabButtonRequest(WindowId, ownerEvents = 1, eventMask = 0))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+                assertEquals(1, server.input.pointerUp(10, 10, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton active grab routes pointer motion to grab owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { observer ->
+                    owner.soTimeout = 2_000
+                    observer.soTimeout = 250
+                    setup(owner)
+                    setup(observer)
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(
+                        grabButtonRequest(
+                            WindowId,
+                            eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease or XEventMasks.PointerMotion,
+                        ),
+                    )
+                    ownerOut.write(mapWindowRequest(WindowId))
+                    ownerOut.flush()
+                    assertMapAndExpose(ownerInput, WindowId)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(changeWindowEventMaskRequest(WindowId, XEventMasks.PointerMotion))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observer.getInputStream())[0].toInt())
+
+                    assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                    assertButtonEvent(ownerInput.readExactly(32), type = 4, detail = 1)
+
+                    ownerOut.write(warpPointerRequest(destinationX = 1, destinationY = 1))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    val motion = ownerInput.readExactly(32)
+                    assertEquals(6, motion[0].toInt() and 0xff)
+                    assertEquals(WindowId, u32le(motion, 12))
+                    assertEquals(11, u16le(motion, 20))
+                    assertEquals(11, u16le(motion, 22))
+                    assertEquals(11, u16le(motion, 24))
+                    assertEquals(11, u16le(motion, 26))
+                    assertEquals(1 shl 8, u16le(motion, 28))
+                    assertEquals(1, readReply(ownerInput)[0].toInt())
+                    assertFailsWith<SocketTimeoutException> {
+                        observer.getInputStream().readExactly(32)
+                    }
+
+                    assertEquals(1, server.input.pointerUp(11, 11, button = 1).deliveredEvents)
+                    assertButtonEvent(ownerInput.readExactly(32), type = 5, detail = 1)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton does not activate with nonviewable confine window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val confine = WindowId + 1
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                out.write(createWindowRequest(confine))
+                out.write(grabButtonRequest(WindowId, confineTo = confine))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                assertEquals(1, server.input.pointerUp(10, 10, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton invalid ancestor grab blocks descendant activation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ancestorOwner ->
+                Socket("127.0.0.1", server.localPort).use { descendantOwner ->
+                    Socket("127.0.0.1", server.localPort).use { observer ->
+                        ancestorOwner.soTimeout = 250
+                        descendantOwner.soTimeout = 250
+                        observer.soTimeout = 2_000
+                        setup(ancestorOwner)
+                        setup(descendantOwner)
+                        setup(observer)
+
+                        val confine = WindowId + 1
+                        val ancestorOut = ancestorOwner.getOutputStream()
+                        ancestorOut.write(createWindowRequest(confine))
+                        ancestorOut.write(grabButtonRequest(X11Ids.RootWindow, confineTo = confine))
+                        ancestorOut.write(queryPointerRequest())
+                        ancestorOut.flush()
+                        assertEquals(1, readReply(ancestorOwner.getInputStream())[0].toInt())
+
+                        val descendantOut = descendantOwner.getOutputStream()
+                        descendantOut.write(createWindowRequest(WindowId))
+                        descendantOut.write(grabButtonRequest(WindowId))
+                        descendantOut.write(mapWindowRequest(WindowId))
+                        descendantOut.flush()
+                        assertMapAndExpose(descendantOwner.getInputStream(), WindowId)
+
+                        val observerInput = observer.getInputStream()
+                        val observerOut = observer.getOutputStream()
+                        observerOut.write(changeWindowEventMaskRequest(WindowId, XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                        observerOut.write(queryPointerRequest())
+                        observerOut.flush()
+                        assertEquals(1, readReply(observerInput)[0].toInt())
+
+                        assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                        assertButtonEvent(observerInput.readExactly(32), type = 4, detail = 1)
+                        assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                        assertFailsWith<SocketTimeoutException> {
+                            ancestorOwner.getInputStream().readExactly(32)
+                        }
+                        assertFailsWith<SocketTimeoutException> {
+                            descendantOwner.getInputStream().readExactly(32)
+                        }
+
+                        assertEquals(1, server.input.pointerUp(10, 10, button = 1).deliveredEvents)
+                        assertButtonEvent(observerInput.readExactly(32), type = 5, detail = 1)
+                    }
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UngrabButton releases matching passive grabs and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
