@@ -11,6 +11,8 @@ internal object XXkb {
     const val SelectEvents = 1
     const val GetState = 4
     const val GetControls = 6
+    const val GetIndicatorState = 12
+    const val GetIndicatorMap = 13
 
     const val BoolCtrlRepeatKeys = 1 shl 0
     const val DefaultMouseKeysButton = 1
@@ -31,8 +33,8 @@ internal object XXkb {
             9 -> "SetMap"
             10 -> "GetCompatMap"
             11 -> "SetCompatMap"
-            12 -> "GetIndicatorState"
-            13 -> "GetIndicatorMap"
+            GetIndicatorState -> "GetIndicatorState"
+            GetIndicatorMap -> "GetIndicatorMap"
             14 -> "SetIndicatorMap"
             15 -> "GetNamedIndicator"
             16 -> "SetNamedIndicator"

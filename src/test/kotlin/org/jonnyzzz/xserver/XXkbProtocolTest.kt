@@ -187,6 +187,54 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD indicator queries return empty state and map`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getIndicatorStateRequest())
+            out.write(getIndicatorMapRequest(which = -1))
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(0, state[1].toInt() and 0xff)
+            assertEquals(1, u16le(state, 2))
+            assertEquals(0, u32le(state, 4))
+            assertEquals(0, u32le(state, 8))
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(0, map[1].toInt() and 0xff)
+            assertEquals(2, u16le(map, 2))
+            assertEquals(0, u32le(map, 4))
+            assertEquals(0, u32le(map, 8))
+            assertEquals(0, u32le(map, 12))
+            assertEquals(0, map[16].toInt() and 0xff)
+            assertEquals(32, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD indicator queries validate request lengths and recover stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetIndicatorState, ByteArray(0)))
+            out.write(getIndicatorStateRequest())
+            out.write(request(XXkb.MajorOpcode, XXkb.GetIndicatorMap, ByteArray(4)))
+            out.write(getIndicatorMapRequest(which = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetIndicatorState)
+            val state = readReply(socket.getInputStream())
+            assertEquals(2, u16le(state, 2))
+            assertEquals(0, u32le(state, 8))
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.GetIndicatorMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(4, u16le(map, 2))
+            assertEquals(0, u32le(map, 8))
+            assertEquals(0, map[16].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -262,6 +310,19 @@ class XXkbProtocolTest {
         val body = ByteArray(4)
         put16le(body, 0, 0x0100)
         return request(XXkb.MajorOpcode, XXkb.GetControls, body)
+    }
+
+    private fun getIndicatorStateRequest(): ByteArray {
+        val body = ByteArray(4)
+        put16le(body, 0, 0x0100)
+        return request(XXkb.MajorOpcode, XXkb.GetIndicatorState, body)
+    }
+
+    private fun getIndicatorMapRequest(which: Int): ByteArray {
+        val body = ByteArray(8)
+        put16le(body, 0, 0x0100)
+        put32le(body, 4, which)
+        return request(XXkb.MajorOpcode, XXkb.GetIndicatorMap, body)
     }
 
     private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {
