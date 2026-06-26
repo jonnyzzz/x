@@ -657,6 +657,9 @@ internal class X11State(
     }
 
     @Synchronized
+    fun pointerMask(): Int = pointerState
+
+    @Synchronized
     fun keyboardMapping(firstKeycode: Int, count: Int): XKeyboardMapping {
         val rows = linkedMapOf<Int, List<Int>>()
         for (keycode in firstKeycode until firstKeycode + count) {

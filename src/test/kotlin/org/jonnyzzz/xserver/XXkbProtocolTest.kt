@@ -96,6 +96,50 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetState returns default core keyboard state`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getStateRequest())
+            out.flush()
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(0, state[1].toInt() and 0xff)
+            assertEquals(1, u16le(state, 2))
+            assertEquals(0, u32le(state, 4))
+            assertEquals(0, state[8].toInt() and 0xff)
+            assertEquals(0, state[9].toInt() and 0xff)
+            assertEquals(0, state[10].toInt() and 0xff)
+            assertEquals(0, state[11].toInt() and 0xff)
+            assertEquals(0, state[12].toInt() and 0xff)
+            assertEquals(0, state[13].toInt() and 0xff)
+            assertEquals(0, u16le(state, 14))
+            assertEquals(0, u16le(state, 16))
+            assertEquals(0, state[18].toInt() and 0xff)
+            assertEquals(0, state[19].toInt() and 0xff)
+            assertEquals(0, state[20].toInt() and 0xff)
+            assertEquals(0, state[21].toInt() and 0xff)
+            assertEquals(0, state[22].toInt() and 0xff)
+            assertEquals(0, u16le(state, 24))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetState validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetState, ByteArray(0)))
+            out.write(getStateRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetState)
+            val state = readReply(socket.getInputStream())
+            assertEquals(2, u16le(state, 2))
+            assertEquals(0, state[1].toInt() and 0xff)
+            assertEquals(0, u16le(state, 24))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -159,6 +203,12 @@ class XXkbProtocolTest {
         put16le(body, 8, 0)
         put16le(body, 10, 0)
         return request(XXkb.MajorOpcode, XXkb.SelectEvents, body)
+    }
+
+    private fun getStateRequest(): ByteArray {
+        val body = ByteArray(4)
+        put16le(body, 0, 0x0100)
+        return request(XXkb.MajorOpcode, XXkb.GetState, body)
     }
 
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {

@@ -377,6 +377,7 @@ internal class X11Connection(
         when (minorOpcode) {
             XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
+            XXkb.GetState -> xkbGetState(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -391,6 +392,13 @@ internal class X11Connection(
 
     private fun xkbSelectEvents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+    }
+
+    private fun xkbGetState(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetState, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 24, state.pointerMask())
+        write(reply)
     }
 
     private fun xkbBadImplementation(majorOpcode: Int, minorOpcode: Int) {
