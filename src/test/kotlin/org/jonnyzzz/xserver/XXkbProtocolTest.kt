@@ -516,7 +516,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD SetDebuggingFlags reports no supported debugging flags`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1))
+            out.write(setDebuggingFlagsRequest(message = "trace", affectFlags = -1, flags = -1, affectCtrls = -1, ctrls = -1, extraBytes = 4))
             out.flush()
 
             val reply = readReply(socket.getInputStream())
@@ -722,9 +722,9 @@ class XXkbProtocolTest {
         return request(XXkb.MajorOpcode, XXkb.GetDeviceInfo, body)
     }
 
-    private fun setDebuggingFlagsRequest(message: String, affectFlags: Int, flags: Int, affectCtrls: Int, ctrls: Int): ByteArray {
+    private fun setDebuggingFlagsRequest(message: String, affectFlags: Int, flags: Int, affectCtrls: Int, ctrls: Int, extraBytes: Int = 0): ByteArray {
         val messageBytes = message.encodeToByteArray()
-        val body = ByteArray(20 + ((messageBytes.size + 3) and -4))
+        val body = ByteArray(20 + ((messageBytes.size + 3) and -4) + extraBytes)
         put16le(body, 0, messageBytes.size)
         put32le(body, 4, affectFlags)
         put32le(body, 8, flags)

@@ -488,7 +488,7 @@ internal class X11Connection(
     private fun xkbSetDebuggingFlags(body: ByteArray, majorOpcode: Int) {
         if (body.size < 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDebuggingFlags, badValue = 0)
         val messageLength = byteOrder.u16(body, 0)
-        if (body.size != 20 + paddedLength(messageLength)) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDebuggingFlags, badValue = 0)
+        if (body.size < 20 + paddedLength(messageLength)) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDebuggingFlags, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
     }
