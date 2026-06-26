@@ -9680,31 +9680,35 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(getPointerMappingRequest())
-                out.write(setPointerMappingRequest(3, 2, 1))
+                val identity = pointerMapping()
+                val swapped = pointerMapping(1 to 3, 3 to 1)
+                val disabled = pointerMapping(1 to 0, 3 to 4, 4 to 3)
+                val duplicate = pointerMapping(1 to 2)
+                out.write(setPointerMappingRequest(*swapped))
                 out.write(getPointerMappingRequest())
-                out.write(setPointerMappingRequest(0, 2, 4))
+                out.write(setPointerMappingRequest(*disabled))
                 out.write(getPointerMappingRequest())
-                out.write(setPointerMappingRequest(2, 2, 0))
+                out.write(setPointerMappingRequest(*duplicate))
                 out.write(setPointerMappingRequest(1, 2))
                 out.write(request(116, 3, ByteArray(8)))
                 out.write(request(117, 0, ByteArray(4)))
                 out.write(getPointerMappingRequest())
                 out.flush()
 
-                assertPointerMapping(readReply(socket.getInputStream()), 1, 1, 2, 3)
+                assertPointerMapping(readReply(socket.getInputStream()), 1, *identity)
                 assertMappingStatus(readReply(socket.getInputStream()), sequence = 2, status = 0)
                 assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 2)
-                assertPointerMapping(readReply(socket.getInputStream()), 3, 3, 2, 1)
+                assertPointerMapping(readReply(socket.getInputStream()), 3, *swapped)
                 assertMappingStatus(readReply(socket.getInputStream()), sequence = 4, status = 0)
                 assertMappingNotify(socket.getInputStream().readExactly(32), sequence = 4)
-                assertPointerMapping(readReply(socket.getInputStream()), 5, 0, 2, 4)
+                assertPointerMapping(readReply(socket.getInputStream()), 5, *disabled)
 
                 assertError(socket.getInputStream(), error = 2, opcode = 116, badValue = 2, sequence = 6)
                 assertError(socket.getInputStream(), error = 2, opcode = 116, badValue = 2, sequence = 7)
                 assertError(socket.getInputStream(), error = 16, opcode = 116, badValue = 0, sequence = 8)
                 assertError(socket.getInputStream(), error = 16, opcode = 117, badValue = 0, sequence = 9)
 
-                assertPointerMapping(readReply(socket.getInputStream()), 10, 0, 2, 4)
+                assertPointerMapping(readReply(socket.getInputStream()), 10, *disabled)
             }
             server.close()
             serverThread.join(1_000)
@@ -9790,7 +9794,8 @@ class XCoreDrawingProtocolTest {
                 val buttonMask = (1 shl 2) or (1 shl 3)
                 out.write(createWindowRequest(WindowId, eventMask = buttonMask))
                 out.write(mapWindowRequest(WindowId))
-                out.write(setPointerMappingRequest(3, 2, 1))
+                val swapped = pointerMapping(1 to 3, 3 to 1)
+                out.write(setPointerMappingRequest(*swapped))
                 out.flush()
 
                 assertMapAndExpose(input, WindowId)
@@ -9801,17 +9806,17 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, down.deliveredEvents)
                 assertButtonEvent(input.readExactly(32), type = 4, detail = 3)
 
-                out.write(setPointerMappingRequest(1, 2, 3))
+                out.write(setPointerMappingRequest(*pointerMapping()))
                 out.write(getPointerMappingRequest())
                 out.flush()
                 assertMappingStatus(readReply(input), sequence = 4, status = 1)
-                assertPointerMapping(readReply(input), 5, 3, 2, 1)
+                assertPointerMapping(readReply(input), 5, *swapped)
 
                 val up = server.input.pointerUp(10, 10, button = 1)
                 assertEquals(1, up.deliveredEvents)
                 assertButtonEvent(input.readExactly(32), type = 5, detail = 3)
 
-                out.write(setPointerMappingRequest(0, 2, 1))
+                out.write(setPointerMappingRequest(*pointerMapping(1 to 0, 3 to 1)))
                 out.flush()
                 assertMappingStatus(readReply(input), sequence = 6, status = 0)
                 assertMappingNotify(input.readExactly(32), sequence = 6)
@@ -9840,13 +9845,48 @@ class XCoreDrawingProtocolTest {
                 val buttonMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease
                 out.write(createWindowRequest(WindowId, eventMask = buttonMask))
                 out.write(mapWindowRequest(WindowId))
+                out.write(getPointerMappingRequest())
                 out.flush()
 
                 assertMapAndExpose(input, WindowId)
+                assertPointerMapping(readReply(input), 3, *pointerMapping())
+
+                val down = server.input.pointerDown(10, 10, button = 6)
+                assertEquals(1, down.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 6)
+                assertContains(httpGet(server.localPort, "/state.json"), """"logicalButtonsDown":[6]""")
+
+                out.write(setPointerMappingRequest(*pointerMapping(6 to 7, 7 to 6)))
+                out.write(getPointerMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 4, status = 1)
+                assertPointerMapping(readReply(input), 5, *pointerMapping())
+
+                val up = server.input.pointerUp(10, 10, button = 6)
+                assertEquals(1, up.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 6)
+                assertContains(httpGet(server.localPort, "/state.json"), """"logicalButtonsDown":[]""")
+
+                out.write(setPointerMappingRequest(*pointerMapping(6 to 7, 7 to 6)))
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 6, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 6)
                 val click = server.input.click(10, 10, button = 6)
                 assertEquals(2, click.deliveredEvents)
-                assertButtonEvent(input.readExactly(32), type = 4, detail = 6)
-                assertButtonEvent(input.readExactly(32), type = 5, detail = 6)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 7)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 7)
+
+                out.write(setPointerMappingRequest(*pointerMapping(6 to 0)))
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 7, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 7)
+
+                val disabled = server.input.click(10, 10, button = 6)
+                assertEquals(0, disabled.deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
             }
             server.close()
             serverThread.join(1_000)
@@ -12972,6 +13012,14 @@ class XCoreDrawingProtocolTest {
         val body = ByteArray(paddedLength(mapping.size))
         mapping.forEachIndexed { index, value -> body[index] = value.toByte() }
         return request(116, mapping.size, body)
+    }
+
+    private fun pointerMapping(vararg overrides: Pair<Int, Int>): IntArray {
+        val mapping = IntArray(255) { index -> index + 1 }
+        overrides.forEach { (physical, logical) ->
+            mapping[physical - 1] = logical
+        }
+        return mapping
     }
 
     private fun getPointerMappingRequest(): ByteArray =

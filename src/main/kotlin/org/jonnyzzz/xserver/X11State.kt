@@ -46,6 +46,7 @@ internal class X11State(
     private var pointerX: Int = 0
     private var pointerY: Int = 0
     private var pointerState: Int = 0
+    private val pressedLogicalButtons = mutableSetOf<Int>()
     private var inputTime: Int = 1
     private val motionHistory = mutableListOf<XMotionHistoryEntry>()
     private var lastPointerGrabTime: Int = 0
@@ -444,7 +445,7 @@ internal class X11State(
     fun setPointerMappingIfIdle(mapping: List<Int>): Boolean {
         val alteredDownButton = pointerMapping
             .zip(mapping)
-            .any { (current, updated) -> current != updated && current != 0 && (pointerState and buttonMask(current)) != 0 }
+            .any { (current, updated) -> current != updated && current != 0 && current in pressedLogicalButtons }
         if (alteredDownButton) return false
         pointerMapping = mapping.toList()
         return true
@@ -1350,8 +1351,10 @@ internal class X11State(
             if (logicalButton != 0) {
                 val buttonMask = buttonMask(logicalButton)
                 pointerState = if (pressed) {
+                    pressedLogicalButtons += logicalButton
                     pointerState or buttonMask
                 } else {
+                    pressedLogicalButtons -= logicalButton
                     pointerState and buttonMask.inv()
                 }
             }
@@ -1810,6 +1813,7 @@ internal class X11State(
                 x = pointerX,
                 y = pointerY,
                 mask = pointerState,
+                logicalButtonsDown = pressedLogicalButtons.sorted(),
                 windowId = windowAt(pointerX, pointerY)?.id ?: 0,
             ),
             fontPath = fontPath.toList(),
@@ -4046,7 +4050,7 @@ internal data class XPointerControlSettings(
 }
 
 internal object XPointerMapping {
-    val Default = listOf(1, 2, 3)
+    val Default = (1..255).toList()
 }
 
 internal object XModifierMapping {
@@ -4582,6 +4586,7 @@ internal data class XPointerStateSnapshot(
     val x: Int,
     val y: Int,
     val mask: Int,
+    val logicalButtonsDown: List<Int>,
     val windowId: Int,
 ) {
     val windowIdHex: String get() = "0x${windowId.toUInt().toString(16)}"

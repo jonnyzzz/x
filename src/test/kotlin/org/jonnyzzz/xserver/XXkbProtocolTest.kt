@@ -1043,7 +1043,7 @@ class XXkbProtocolTest {
             assertEquals(3, reply[17].toInt() and 0xff)
             assertEquals(0, reply[18].toInt() and 0xff)
             assertEquals(0, reply[19].toInt() and 0xff)
-            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(255, reply[20].toInt() and 0xff)
             assertEquals(0, reply[21].toInt() and 0xff)
             assertEquals(0, u16le(reply, 22))
             assertEquals(0, u16le(reply, 24))
@@ -1068,7 +1068,7 @@ class XXkbProtocolTest {
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
-            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(255, reply[20].toInt() and 0xff)
             assertEquals(36, reply.size)
         }
     }
@@ -1088,7 +1088,7 @@ class XXkbProtocolTest {
             assertEquals(wanted, u16le(reply, 12))
             assertEquals(1, reply[16].toInt() and 0xff)
             assertEquals(2, reply[17].toInt() and 0xff)
-            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(255, reply[20].toInt() and 0xff)
             assertEquals(36, reply.size)
         }
     }
@@ -1113,7 +1113,7 @@ class XXkbProtocolTest {
             assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
-            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(255, reply[20].toInt() and 0xff)
             assertEquals(36, reply.size)
         }
     }
