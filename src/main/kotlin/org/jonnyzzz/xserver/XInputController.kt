@@ -4,21 +4,28 @@ class XInputController internal constructor(
     private val state: X11State,
 ) {
     fun click(x: Int, y: Int, button: Int = 1): XInputResult {
-        require(button in 1..5) { "X11 pointer button must be in 1..5" }
+        requireValidButton(button)
         return clickResolved(x = x, y = y, button = button, buttonName = buttonName(button))
     }
 
-    fun click(x: Int, y: Int, button: String): XInputResult =
-        clickResolved(x = x, y = y, button = buttonNumber(button), buttonName = button)
+    fun click(x: Int, y: Int, button: String): XInputResult {
+        val buttonNumber = buttonNumber(button)
+        requireValidButton(buttonNumber)
+        return clickResolved(x = x, y = y, button = buttonNumber, buttonName = button)
+    }
 
     fun pointerDown(x: Int, y: Int, button: Int = 1): XInputResult {
-        require(button in 1..5) { "X11 pointer button must be in 1..5" }
+        requireValidButton(button)
         return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = true)
     }
 
     fun pointerUp(x: Int, y: Int, button: Int = 1): XInputResult {
-        require(button in 1..5) { "X11 pointer button must be in 1..5" }
+        requireValidButton(button)
         return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = false)
+    }
+
+    private fun requireValidButton(button: Int) {
+        require(button in 1..255) { "X11 pointer button must be in 1..255" }
     }
 
     private fun clickResolved(x: Int, y: Int, button: Int, buttonName: String): XInputResult {

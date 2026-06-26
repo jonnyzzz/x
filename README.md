@@ -123,7 +123,7 @@ curl -fsS -X POST http://127.0.0.1:16000/input/click \
   --data 'x=1920&y=1080&button=left'
 ```
 
-`button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..5`.
+`button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..255`.
 
 Current IntelliJ demo limitation: the mounted project opens and the frame/window model is visible. JetBrains Runtime paints substantial UI content into XRender-backed offscreen pixmaps, and the HTML renderer now exposes those surfaces separately, but the top-level window can still appear white until the server models the final presentation/composition path into the visible window. The server also exposes a minimal GLX probe surface for discovery requests (`QueryVersion`, server strings, visual configs, FBConfigs, and context creation), and the HTTP text report logs recent GLX operations. Real GLX context rendering is not implemented yet. The HTTP state report also logs every input operation so click-through attempts can be replayed and refined.
 

@@ -9829,6 +9829,31 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Input controller delivers high numbered pointer buttons`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val buttonMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease
+                out.write(createWindowRequest(WindowId, eventMask = buttonMask))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                val click = server.input.click(10, 10, button = 6)
+                assertEquals(2, click.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 6)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 6)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetModifierMapping updates GetModifierMapping and validates failures`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
