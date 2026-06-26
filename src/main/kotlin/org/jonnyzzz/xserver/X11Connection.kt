@@ -377,6 +377,7 @@ internal class X11Connection(
         when (minorOpcode) {
             XXkb.UseExtension -> xkbUseExtension(body, majorOpcode)
             XXkb.SelectEvents -> xkbSelectEvents(body, majorOpcode)
+            XXkb.Bell -> xkbBell(body, majorOpcode)
             XXkb.GetState -> xkbGetState(body, majorOpcode)
             XXkb.GetControls -> xkbGetControls(body, majorOpcode)
             XXkb.GetMap -> xkbGetMap(body, majorOpcode)
@@ -404,6 +405,12 @@ internal class X11Connection(
 
     private fun xkbSelectEvents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SelectEvents, badValue = 0)
+    }
+
+    private fun xkbBell(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.Bell, badValue = 0)
+        val percent = body[6].toInt()
+        if (percent !in -100..100) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.Bell, badValue = percent)
     }
 
     private fun xkbGetState(body: ByteArray, majorOpcode: Int) {

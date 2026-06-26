@@ -9,6 +9,7 @@ internal object XXkb {
 
     const val UseExtension = 0
     const val SelectEvents = 1
+    const val Bell = 3
     const val GetState = 4
     const val GetControls = 6
     const val GetMap = 8
@@ -37,7 +38,7 @@ internal object XXkb {
         when (minorOpcode) {
             UseExtension -> "UseExtension"
             SelectEvents -> "SelectEvents"
-            3 -> "Bell"
+            Bell -> "Bell"
             GetState -> "GetState"
             5 -> "LatchLockState"
             GetControls -> "GetControls"

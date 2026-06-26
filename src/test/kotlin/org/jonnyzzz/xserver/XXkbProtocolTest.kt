@@ -96,6 +96,47 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD Bell accepts valid signed percent and recovers stream`() {
+        withServer { socket, port ->
+            val out = socket.getOutputStream()
+            out.write(xkbBellRequest(percent = 50))
+            out.write(xkbBellRequest(percent = -100))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            val version = readReply(socket.getInputStream())
+            assertEquals(3, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+            assertEquals(XXkb.MinorVersion, u16le(version, 10))
+
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.Bell: 2")
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD Bell validates fixed length and signed percent range`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(xkbBellRequest(percent = 101))
+            out.write(xkbBellRequest(percent = -101))
+            out.write(request(XXkb.MajorOpcode, XXkb.Bell, ByteArray(20)))
+            out.write(request(XXkb.MajorOpcode, XXkb.Bell, ByteArray(28)))
+            out.write(useExtensionRequest())
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 101, sequence = 1, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = -101, sequence = 2, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.Bell)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XXkb.Bell)
+            val version = readReply(socket.getInputStream())
+            assertEquals(5, u16le(version, 2))
+            assertEquals(1, version[1].toInt() and 0xff)
+            assertEquals(XXkb.MajorVersion, u16le(version, 8))
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetState returns default core keyboard state`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -680,16 +721,16 @@ class XXkbProtocolTest {
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
-            out.write(request(XXkb.MajorOpcode, 3, ByteArray(16)))
+            out.write(request(XXkb.MajorOpcode, 5, ByteArray(12)))
             out.write(useExtensionRequest())
             out.flush()
 
-            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 3)
+            assertError(socket.getInputStream(), error = 17, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = 5)
             val version = readReply(socket.getInputStream())
             assertEquals(1, version[1].toInt() and 0xff)
             assertEquals(XXkb.MajorVersion, u16le(version, 8))
 
-            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.Bell:")
+            assertContains(httpGet(port, "/text.txt"), "XKEYBOARD.LatchLockState:")
         }
     }
 
@@ -740,6 +781,21 @@ class XXkbProtocolTest {
         put16le(body, 8, 0)
         put16le(body, 10, 0)
         return request(XXkb.MajorOpcode, XXkb.SelectEvents, body)
+    }
+
+    private fun xkbBellRequest(percent: Int): ByteArray {
+        val body = ByteArray(24)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, 0)
+        put16le(body, 4, 0)
+        body[6] = percent.toByte()
+        body[7] = 0
+        body[8] = 0
+        put16le(body, 10, 0)
+        put16le(body, 12, 0)
+        put32le(body, 16, 0)
+        put32le(body, 20, 0)
+        return request(XXkb.MajorOpcode, XXkb.Bell, body)
     }
 
     private fun getStateRequest(): ByteArray {
