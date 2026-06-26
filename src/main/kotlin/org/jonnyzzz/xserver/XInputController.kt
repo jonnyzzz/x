@@ -345,6 +345,7 @@ internal data class XSyntheticEvent(
 
 internal object XEventMasks {
     const val ValidCoreMask = 0x01ff_ffff
+    const val ValidDeviceEventMask = 0x0000_3f4f
     const val ValidPointerEventMask = 0x0000_7ffc
     const val ButtonPress = 1 shl 2
     const val ButtonRelease = 1 shl 3

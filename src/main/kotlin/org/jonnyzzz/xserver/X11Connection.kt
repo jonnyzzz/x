@@ -1970,6 +1970,12 @@ internal class X11Connection(
             }
         }
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
+        attributes.eventMask?.let {
+            if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
+        }
+        attributes.doNotPropagateMask?.let {
+            if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
+        }
         val window = XWindow(
             id = id,
             parentId = parent,
@@ -2009,6 +2015,9 @@ internal class X11Connection(
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
             if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
+        }
+        attributes.doNotPropagateMask?.let {
+            if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
         }
         if (attributes.backgroundPixel != null || attributes.backgroundPixmapId != null) {
             state.updateWindowAttributes(windowId, backgroundPixel = attributes.backgroundPixel, backgroundPixmapId = attributes.backgroundPixmapId)
