@@ -462,6 +462,57 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetDeviceInfo reports unsupported XI features and pointer button count`() {
+        withServer { socket, _ ->
+            val wanted = XXkb.XiFeatureButtonActions or XXkb.XiFeatureIndicatorNames or XXkb.XiFeatureIndicatorMaps or XXkb.XiFeatureIndicatorState
+            val out = socket.getOutputStream()
+            out.write(getDeviceInfoRequest(wanted = wanted, allButtons = true, firstButton = 1, nButtons = 3, ledClass = 0x0300, ledId = 0x0400))
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, reply[0].toInt())
+            assertEquals(0, reply[1].toInt() and 0xff)
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 10))
+            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
+            assertEquals(1, reply[16].toInt() and 0xff)
+            assertEquals(3, reply[17].toInt() and 0xff)
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(0, reply[21].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 22))
+            assertEquals(0, u16le(reply, 24))
+            assertEquals(0, u32le(reply, 28))
+            assertEquals(0, u16le(reply, 32))
+            assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetDeviceInfo validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.GetDeviceInfo, ByteArray(8)))
+            out.write(getDeviceInfoRequest(wanted = XXkb.XiFeatureButtonActions, allButtons = false, firstButton = 2, nButtons = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(2, reply[16].toInt() and 0xff)
+            assertEquals(1, reply[17].toInt() and 0xff)
+            assertEquals(3, reply[20].toInt() and 0xff)
+            assertEquals(36, reply.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD unimplemented requests return BadImplementation and recover stream`() {
         withServer { socket, port ->
             val out = socket.getOutputStream()
@@ -610,6 +661,25 @@ class XXkbProtocolTest {
         put32le(body, 16, autoCtrls)
         put32le(body, 20, autoCtrlsValues)
         return request(XXkb.MajorOpcode, XXkb.PerClientFlags, body)
+    }
+
+    private fun getDeviceInfoRequest(
+        wanted: Int,
+        allButtons: Boolean,
+        firstButton: Int,
+        nButtons: Int,
+        ledClass: Int = 0,
+        ledId: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(12)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, wanted)
+        body[4] = if (allButtons) 1 else 0
+        body[5] = firstButton.toByte()
+        body[6] = nButtons.toByte()
+        put16le(body, 8, ledClass)
+        put16le(body, 10, ledId)
+        return request(XXkb.MajorOpcode, XXkb.GetDeviceInfo, body)
     }
 
     private fun changeKeyboardControlRequest(vararg values: Pair<Int, Int>): ByteArray {

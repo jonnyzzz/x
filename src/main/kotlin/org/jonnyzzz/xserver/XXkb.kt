@@ -18,8 +18,13 @@ internal object XXkb {
     const val GetNamedIndicator = 15
     const val GetNames = 17
     const val PerClientFlags = 21
+    const val GetDeviceInfo = 24
 
     const val BoolCtrlRepeatKeys = 1 shl 0
+    const val XiFeatureButtonActions = 1 shl 1
+    const val XiFeatureIndicatorNames = 1 shl 2
+    const val XiFeatureIndicatorMaps = 1 shl 3
+    const val XiFeatureIndicatorState = 1 shl 4
     const val DefaultMouseKeysButton = 1
     const val DefaultGroupCount = 1
     const val DefaultRepeatDelay = 660
@@ -48,7 +53,7 @@ internal object XXkb {
             PerClientFlags -> "PerClientFlags"
             22 -> "ListComponents"
             23 -> "GetKbdByName"
-            24 -> "GetDeviceInfo"
+            GetDeviceInfo -> "GetDeviceInfo"
             25 -> "SetDeviceInfo"
             101 -> "SetDebuggingFlags"
             else -> "Unknown"

@@ -386,6 +386,7 @@ internal class X11Connection(
             XXkb.GetNamedIndicator -> xkbGetNamedIndicator(body, majorOpcode)
             XXkb.GetNames -> xkbGetNames(body, majorOpcode)
             XXkb.PerClientFlags -> xkbPerClientFlags(body, majorOpcode)
+            XXkb.GetDeviceInfo -> xkbGetDeviceInfo(body, majorOpcode)
             else -> xkbBadImplementation(majorOpcode, minorOpcode)
         }
     }
@@ -467,6 +468,19 @@ internal class X11Connection(
     private fun xkbPerClientFlags(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.PerClientFlags, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
+        write(reply)
+    }
+
+    private fun xkbGetDeviceInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+        val wanted = byteOrder.u16(body, 2)
+        val firstButton = body[5].toInt() and 0xff
+        val buttonCount = body[6].toInt() and 0xff
+        val reply = reply(extra = 0, payloadUnits = 1)
+        byteOrder.put16(reply, 12, wanted)
+        reply[16] = firstButton.toByte()
+        reply[17] = buttonCount.toByte()
+        reply[20] = state.pointerMapping().size.toByte()
         write(reply)
     }
 
