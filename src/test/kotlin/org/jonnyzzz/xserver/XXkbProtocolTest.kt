@@ -503,6 +503,50 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD SetNamedIndicator accepts fixed request without creating indicators`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(setNamedIndicatorRequest(indicator, setState = true, on = true, setMap = true, createMap = true))
+            out.write(getNamedIndicatorRequest(indicator))
+            out.write(getIndicatorStateRequest())
+            out.flush()
+
+            val named = readReply(socket.getInputStream())
+            assertEquals(2, u16le(named, 2))
+            assertEquals(indicator, u32le(named, 8))
+            assertEquals(0, named[12].toInt() and 0xff)
+            assertEquals(0, named[13].toInt() and 0xff)
+            assertEquals(0, named[28].toInt() and 0xff)
+
+            val state = readReply(socket.getInputStream())
+            assertEquals(3, u16le(state, 2))
+            assertEquals(0, u32le(state, 8))
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD SetNamedIndicator validates request length and recovers stream`() {
+        withServer { socket, _ ->
+            val indicator = 0x0020_0400
+            val out = socket.getOutputStream()
+            out.write(request(XXkb.MajorOpcode, XXkb.SetNamedIndicator, ByteArray(24)))
+            out.write(request(XXkb.MajorOpcode, XXkb.SetNamedIndicator, ByteArray(32)))
+            out.write(setNamedIndicatorRequest(indicator, setState = false, on = false, setMap = false, createMap = false))
+            out.write(getNamedIndicatorRequest(indicator))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.SetNamedIndicator)
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 2, minorOpcode = XXkb.SetNamedIndicator)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(4, u16le(reply, 2))
+            assertEquals(indicator, u32le(reply, 8))
+            assertEquals(0, reply[12].toInt() and 0xff)
+            assertEquals(0, reply[28].toInt() and 0xff)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetNames reports key range with no named atoms`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -977,6 +1021,21 @@ class XXkbProtocolTest {
         put16le(body, 4, 0)
         put32le(body, 8, indicator)
         return request(XXkb.MajorOpcode, XXkb.GetNamedIndicator, body)
+    }
+
+    private fun setNamedIndicatorRequest(indicator: Int, setState: Boolean, on: Boolean, setMap: Boolean, createMap: Boolean): ByteArray {
+        val body = ByteArray(28)
+        put16le(body, 0, 0x0100)
+        put16le(body, 2, 0)
+        put16le(body, 4, 0)
+        put32le(body, 8, indicator)
+        body[12] = if (setState) 1 else 0
+        body[13] = if (on) 1 else 0
+        body[14] = if (setMap) 1 else 0
+        body[15] = if (createMap) 1 else 0
+        put16le(body, 22, 0)
+        put32le(body, 24, 0)
+        return request(XXkb.MajorOpcode, XXkb.SetNamedIndicator, body)
     }
 
     private fun getNamesRequest(which: Int): ByteArray {
