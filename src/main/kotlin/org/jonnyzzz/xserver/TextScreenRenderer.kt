@@ -51,6 +51,8 @@ internal object TextScreenRenderer {
                 append(" class=").append(window.className)
                 append(" depth=").append(window.depth)
                 append(" visual=").append(window.visualHex)
+                append(" backgroundPixel=").append(window.backgroundPixel)
+                append(" backgroundPixmap=").append(window.backgroundPixmapIdHex ?: "none")
                 append(" bitGravity=").append(window.bitGravity)
                 append(" winGravity=").append(window.winGravity)
                 append(" backingStore=").append(window.backingStore)

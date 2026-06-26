@@ -6008,6 +6008,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateWindow and ChangeWindowAttributes validate background pixmap`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingPixmap = PixmapId + 503
+                val depthMismatchWindow = WindowId + 1
+                val parentRelativeWindow = WindowId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 8, drawable = WindowId))
+                out.write(createWindowRequest(depthMismatchWindow, backgroundPixmap = missingPixmap))
+                out.write(changeWindowAttributesRawRequest(WindowId, 1, missingPixmap))
+                out.write(createWindowRequest(depthMismatchWindow, backgroundPixmap = PixmapId))
+                out.write(changeWindowAttributesRawRequest(WindowId, 1, PixmapId))
+                out.write(createWindowRequest(parentRelativeWindow, backgroundPixmap = XWindowBackground.ParentRelative))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 4, opcode = 1, badValue = missingPixmap, sequence = 3)
+                assertError(socket.getInputStream(), error = 4, opcode = 2, badValue = missingPixmap, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 1, badValue = PixmapId, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 2, badValue = PixmapId, sequence = 6)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(8, u16le(pointer, 2))
+                val json = httpGet(server.localPort, "/state.json")
+                val parentRelativeJson = Regex("""\{"id":"0x${parentRelativeWindow.toUInt().toString(16)}".*?\}""").find(json)?.value.orEmpty()
+                assertContains(parentRelativeJson, """"backgroundPixmap":"0x1"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateWindow and ChangeWindowAttributes preserve scalar window attributes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11661,6 +11697,7 @@ class XCoreDrawingProtocolTest {
         windowClass: Int = XWindowClass.InputOutput,
         visual: Int = X11Ids.RootVisual,
         borderWidth: Int = 0,
+        backgroundPixmap: Int? = null,
         bitGravity: Int? = null,
         winGravity: Int? = null,
         backingStore: Int? = null,
@@ -11676,6 +11713,7 @@ class XCoreDrawingProtocolTest {
         cursor: Int? = null,
     ): ByteArray {
         val extraValues = listOfNotNull(
+            backgroundPixmap?.let { (1 shl 0) to it },
             bitGravity?.let { (1 shl 4) to it },
             winGravity?.let { (1 shl 5) to it },
             backingStore?.let { (1 shl 6) to it },

@@ -1971,6 +1971,7 @@ internal class X11Connection(
         }
         val attributes = windowAttributeValues(body, maskOffset = 24, valuesOffset = 28)
         if (!validateScalarWindowAttributes(attributes, opcode = 1)) return
+        if (!validateBackgroundPixmap(attributes.backgroundPixmapId, depth, parentWindow.depth, opcode = 1)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 1, badValue = it)
         }
@@ -2033,6 +2034,8 @@ internal class X11Connection(
         }
         val attributes = windowAttributeValues(body, maskOffset = 4, valuesOffset = 8)
         if (!validateScalarWindowAttributes(attributes, opcode = 2)) return
+        val parentDepth = state.window(window.parentId)?.depth ?: window.depth
+        if (!validateBackgroundPixmap(attributes.backgroundPixmapId, window.depth, parentDepth, opcode = 2)) return
         attributes.eventMask?.let {
             if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 2, badValue = it)
             if (!state.canSelectEvents(this, windowId, it)) return writeError(error = 10, opcode = 2, badValue = 0)
@@ -5078,6 +5081,26 @@ internal class X11Connection(
         return true
     }
 
+    private fun validateBackgroundPixmap(backgroundPixmapId: Int?, windowDepth: Int, parentDepth: Int, opcode: Int): Boolean {
+        if (backgroundPixmapId == null || backgroundPixmapId == XWindowBackground.None) return true
+        if (backgroundPixmapId == XWindowBackground.ParentRelative) {
+            if (windowDepth != parentDepth) {
+                writeError(error = 8, opcode = opcode, badValue = backgroundPixmapId)
+                return false
+            }
+            return true
+        }
+        val pixmap = state.pixmap(backgroundPixmapId) ?: run {
+            writeError(error = 4, opcode = opcode, badValue = backgroundPixmapId)
+            return false
+        }
+        if (pixmap.rootId != X11Ids.RootWindow || pixmap.depth != windowDepth) {
+            writeError(error = 8, opcode = opcode, badValue = backgroundPixmapId)
+            return false
+        }
+        return true
+    }
+
     private fun validateGcValueLength(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
         if ((mask and GcValueMask.inv()) != 0) return true
         val valueCount = Integer.bitCount(mask)
@@ -6565,6 +6588,11 @@ internal object XWindowGravity {
 internal object XBackingStore {
     const val NotUseful = 0
     const val Always = 2
+}
+
+internal object XWindowBackground {
+    const val None = 0
+    const val ParentRelative = 1
 }
 
 internal object XCloseDownMode {

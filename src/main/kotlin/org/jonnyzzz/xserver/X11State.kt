@@ -1640,6 +1640,7 @@ internal class X11State(
                 visibleWidth = visible?.width ?: 0,
                 visibleHeight = visible?.height ?: 0,
                 backgroundPixel = window.backgroundPixel,
+                backgroundPixmapId = window.backgroundPixmapId,
                 framebufferDataUri = window.framebuffer.toDataUri(),
                 windowClass = window.windowClass,
                 depth = window.depth,
@@ -4856,6 +4857,7 @@ internal data class XWindowSnapshot(
     val visibleWidth: Int,
     val visibleHeight: Int,
     val backgroundPixel: Int,
+    val backgroundPixmapId: Int?,
     val framebufferDataUri: String?,
     val windowClass: Int,
     val depth: Int,
@@ -4872,6 +4874,7 @@ internal data class XWindowSnapshot(
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"
+    val backgroundPixmapIdHex: String? get() = backgroundPixmapId?.let { "0x${it.toUInt().toString(16)}" }
     val className: String get() = when (windowClass) {
         XWindowClass.InputOutput -> "InputOutput"
         XWindowClass.InputOnly -> "InputOnly"

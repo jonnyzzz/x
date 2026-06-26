@@ -80,7 +80,9 @@ internal object SvgScreenRenderer {
             snapshot.windows.forEachIndexed { index, window ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped},"class":"${window.className}","depth":${window.depth},"visual":"${window.visualHex}","bitGravity":${window.bitGravity},"winGravity":${window.winGravity},"backingStore":${window.backingStore},"backingPlanes":${window.backingPlanes},"backingPixel":${window.backingPixel},"saveUnder":${window.saveUnder},"overrideRedirect":${window.overrideRedirect},"colormap":""")
+                append(""""id":"${window.idHex}","parent":"${window.parentIdHex}","x":${window.x},"y":${window.y},"localX":${window.localX},"localY":${window.localY},"width":${window.width},"height":${window.height},"visibleX":${window.visibleX},"visibleY":${window.visibleY},"visibleWidth":${window.visibleWidth},"visibleHeight":${window.visibleHeight},"mapped":${window.mapped},"class":"${window.className}","depth":${window.depth},"visual":"${window.visualHex}","backgroundPixel":${window.backgroundPixel},"backgroundPixmap":""")
+                window.backgroundPixmapIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","bitGravity":${window.bitGravity},"winGravity":${window.winGravity},"backingStore":${window.backingStore},"backingPlanes":${window.backingPlanes},"backingPixel":${window.backingPixel},"saveUnder":${window.saveUnder},"overrideRedirect":${window.overrideRedirect},"colormap":""")
                 window.colormapIdHex?.let { append('"').append(it).append('"') } ?: append("null")
                 append(""","cursor":""")
                 window.cursorIdHex?.let { append('"').append(it).append('"') } ?: append("null")
