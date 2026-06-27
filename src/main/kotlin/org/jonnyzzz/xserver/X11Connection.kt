@@ -363,7 +363,7 @@ internal class X11Connection(
             18 -> renderReferenceGlyphSet(body)
             19 -> renderFreeGlyphSet(body)
             20 -> renderAddGlyphs(body)
-            21 -> renderBadImplementation(minorOpcode)
+            21 -> renderAddGlyphsFromPicture(body)
             22 -> renderFreeGlyphs(body)
             23, 24, 25 -> renderCompositeGlyphs(minorOpcode, body)
             26 -> renderFillRectangles(body)
@@ -1621,6 +1621,52 @@ internal class X11Connection(
         state.addGlyphs(glyphSet, glyphs)
     }
 
+    private fun renderAddGlyphsFromPicture(body: ByteArray) {
+        if (body.size < 12) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = 0)
+        val glyphsLength = byteOrder.u32(body, 8).toUInt().toLong()
+        val infoOffset = 12L + glyphsLength * 4L
+        val expectedSize = infoOffset + glyphsLength * 16L
+        if (expectedSize != body.size.toLong()) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = 0)
+        }
+        val glyphSet = byteOrder.u32(body, 0)
+        if (!state.hasGlyphSet(glyphSet)) {
+            return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = glyphSet)
+        }
+        val sourceId = byteOrder.u32(body, 4)
+        val source = state.picture(sourceId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = sourceId)
+        val glyphs = mutableListOf<XPictureGlyph>()
+        val idsOffset = 12
+        var glyphInfoOffset = infoOffset.toInt()
+        var totalMaskPixels = 0L
+        repeat(glyphsLength.toInt()) { index ->
+            val width = byteOrder.u16(body, glyphInfoOffset)
+            val height = byteOrder.u16(body, glyphInfoOffset + 2)
+            val maskPixels = glyphMaskPixelCount(width, height)
+            totalMaskPixels += maskPixels
+            if (maskPixels > MaxGlyphMaskPixels || totalMaskPixels > MaxGlyphMaskPixels) {
+                return writeError(error = 11, opcode = XRender.MajorOpcode, minorOpcode = 21, badValue = 0)
+            }
+            glyphs += XPictureGlyph(
+                id = byteOrder.u32(body, idsOffset + index * 4),
+                width = width,
+                height = height,
+                x = byteOrder.i16(body, glyphInfoOffset + 4),
+                y = byteOrder.i16(body, glyphInfoOffset + 6),
+                xOff = byteOrder.i16(body, glyphInfoOffset + 8),
+                yOff = byteOrder.i16(body, glyphInfoOffset + 10),
+                sourceX = byteOrder.i16(body, glyphInfoOffset + 12),
+                sourceY = byteOrder.i16(body, glyphInfoOffset + 14),
+            )
+            glyphInfoOffset += 16
+        }
+        state.addGlyphsFromPicture(glyphSet, source, glyphs)
+    }
+
+    private fun glyphMaskPixelCount(width: Int, height: Int): Long =
+        width.toLong() * height.toLong()
+
     private fun renderBadImplementation(minorOpcode: Int) {
         writeError(error = 17, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
     }
@@ -2736,6 +2782,7 @@ internal class X11Connection(
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
             19 -> "glyphSet=${hex(0)}"
             20 -> "glyphSet=${hex(0)} glyphs=${u32(4)}"
+            21 -> "glyphSet=${hex(0)} source=${hex(4)} glyphs=${u32(8)}"
             22 -> "glyphSet=${hex(0)} glyphs=${(body.size - 4).coerceAtLeast(0) / 4}"
             23, 24, 25 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} glyphSet=${hex(16)} bytes=${(body.size - 24).coerceAtLeast(0)}"
             26 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} color=${u16(8)},${u16(10)},${u16(12)},${u16(14)} rects=${(body.size - 16).coerceAtLeast(0) / 8}"
@@ -7192,6 +7239,7 @@ internal class X11Connection(
         const val QueryBestSizeCursor = 0
         const val QueryBestSizeTile = 1
         const val QueryBestSizeStipple = 2
+        const val MaxGlyphMaskPixels = 16_777_216
         const val XColorFlagMask = 0x07
         const val D65_X = 0.95047
         const val D65_Z = 1.08883

@@ -2366,6 +2366,31 @@ internal class X11State(
     }
 
     @Synchronized
+    fun addGlyphsFromPicture(glyphSetId: Int, source: XPicture, glyphs: List<XPictureGlyph>) {
+        val glyphSet = glyphSets[glyphSetId] ?: return
+        val sourcePixelAt = source.sourcePixelSampler() ?: return
+        for (glyph in glyphs) {
+            glyphSet.glyphs[glyph.id] = XGlyph(
+                id = glyph.id,
+                width = glyph.width,
+                height = glyph.height,
+                x = glyph.x,
+                y = glyph.y,
+                xOff = glyph.xOff,
+                yOff = glyph.yOff,
+                mask = glyphMaskFromPicture(
+                    format = glyphSet.format,
+                    width = glyph.width,
+                    height = glyph.height,
+                    sourceX = glyph.sourceX,
+                    sourceY = glyph.sourceY,
+                    sourcePixelAt = sourcePixelAt,
+                ),
+            )
+        }
+    }
+
+    @Synchronized
     fun removeGlyphs(glyphSetId: Int, glyphIds: List<Int>) {
         val glyphSet = glyphSets[glyphSetId] ?: return
         for (id in glyphIds) {
@@ -2897,6 +2922,31 @@ internal class X11State(
         gradientSampler()?.let { return it }
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
         return { x, y -> framebuffer.transformedPixelAt(x, y, repeat, transform, filterName) }
+    }
+
+    private fun glyphMaskFromPicture(
+        format: Int,
+        width: Int,
+        height: Int,
+        sourceX: Int,
+        sourceY: Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int,
+    ): XFramebuffer? {
+        if (width <= 0 || height <= 0) return null
+        if (width.toLong() * height.toLong() > MaxGlyphMaskPixels) return null
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val alpha = (sourcePixelAt(sourceX + x, sourceY + y) ushr 24) and 0xff
+                pixels[y * width + x] = when (format) {
+                    XRender.A1Format -> if (alpha >= 0x80) 0xff shl 24 else 0
+                    else -> alpha shl 24
+                }
+            }
+        }
+        return XFramebuffer(width, height, painted = true).also { framebuffer ->
+            framebuffer.putImage(0, 0, XImagePixels(width, height, pixels))
+        }
     }
 
     private fun XPicture.sourcePixelSamplerAt(snapshotDrawableId: Int? = null, filterNameOverride: String? = null): ((x: Double, y: Double) -> Int?)? {
@@ -3935,6 +3985,7 @@ internal class X11State(
         private const val MaxGlxOperations = 200
         private const val MaxRenderOperations = 400
         private const val MaxGetImagePixels = 16_777_216
+        private const val MaxGlyphMaskPixels = 16_777_216
         private const val MaxRequestCounts = 256
         private const val MaxExtensionQueries = 200
         private const val MaxUnsupportedRequests = 200
@@ -4878,6 +4929,18 @@ internal data class XGlyph(
     val xOff: Int,
     val yOff: Int,
     val mask: XFramebuffer? = null,
+)
+
+internal data class XPictureGlyph(
+    val id: Int,
+    val width: Int,
+    val height: Int,
+    val x: Int,
+    val y: Int,
+    val xOff: Int,
+    val yOff: Int,
+    val sourceX: Int,
+    val sourceY: Int,
 )
 
 internal data class XGlyphPlacement(

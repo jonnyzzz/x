@@ -3004,7 +3004,7 @@ class XRenderProtocolTest {
     }
 
     @Test
-    fun `RENDER AddGlyphsFromPicture returns BadImplementation and recovers stream`() {
+    fun `RENDER AddGlyphsFromPicture samples source picture into glyph mask`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -3013,14 +3013,171 @@ class XRenderProtocolTest {
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
-                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
-                out.write(renderAddGlyphsFromPictureRaw(ByteArray(0)))
-                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 4, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 2))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(
+                    putImage8Request(
+                        MaskPixmapId,
+                        width = 2,
+                        height = 2,
+                        alphas = byteArrayOf(
+                            0xff.toByte(),
+                            0x00,
+                            0x00,
+                            0xff.toByte(),
+                        ),
+                    ),
+                )
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, MaskPictureId, GlyphId, width = 2, height = 2, xOff = 2))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 1,
+                        glyphIds = listOf(GlyphId),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
                 out.flush()
 
-                assertError(socket.getInputStream(), error = 17, badValue = 0, sequence = 4, minorOpcode = 21)
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 2))
+                assertContains(httpGet(server.localPort, "/text.txt"), "AddGlyphsFromPicture")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER AddGlyphsFromPicture parses multiple glyph ids and source offsets`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val secondGlyph = GlyphId + 1
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 5, height = 3, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 2))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(
+                    putImage8Request(
+                        MaskPixmapId,
+                        width = 2,
+                        height = 2,
+                        alphas = byteArrayOf(
+                            0xff.toByte(),
+                            0x00,
+                            0x00,
+                            0xff.toByte(),
+                        ),
+                    ),
+                )
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(
+                    renderAddGlyphsFromPicture(
+                        GlyphSetId,
+                        MaskPictureId,
+                        listOf(
+                            RenderPictureGlyph(glyphId = GlyphId, width = 1, height = 1, xOff = 2),
+                            RenderPictureGlyph(glyphId = secondGlyph, width = 1, height = 1, sourceX = 1, sourceY = 1),
+                        ),
+                    ),
+                )
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 1,
+                        glyphIds = listOf(GlyphId, secondGlyph),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 3))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 5, x = 1, y = 1))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 5, x = 3, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 5, x = 2, y = 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 5, x = 1, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER AddGlyphsFromPicture validates framing resources and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingGlyphSet = GlyphSetId + 0x400
+                val missingPicture = SolidPictureId + 0x400
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddGlyphsFromPictureRaw(ByteArray(8)))
+                out.write(renderAddGlyphsFromPictureRaw(renderAddGlyphsFromPictureBody(GlyphSetId, SolidPictureId, GlyphId, width = 1, height = 1).copyOf(28)))
+                out.write(renderAddGlyphsFromPicture(missingGlyphSet, SolidPictureId, GlyphId, width = 1, height = 1))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, missingPicture, GlyphId, width = 1, height = 1))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, SolidPictureId, GlyphId, width = 0xffff, height = 0xffff))
+                out.write(
+                    renderAddGlyphsFromPicture(
+                        GlyphSetId,
+                        SolidPictureId,
+                        listOf(
+                            RenderPictureGlyph(glyphId = GlyphId, width = 4096, height = 4096),
+                            RenderPictureGlyph(glyphId = GlyphId + 1, width = 4096, height = 4096),
+                        ),
+                    ),
+                )
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, SolidPictureId, GlyphId, width = 1, height = 1))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = SolidPictureId,
+                        destination = PictureId,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 1,
+                        glyphIds = listOf(GlyphId),
+                        operation = XRender.OpSrc,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 21)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 6, minorOpcode = 21)
+                assertError(socket.getInputStream(), error = XRender.GlyphSetError, badValue = missingGlyphSet, sequence = 7, minorOpcode = 21)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingPicture, sequence = 8, minorOpcode = 21)
+                assertError(socket.getInputStream(), error = 11, badValue = 0, sequence = 9, minorOpcode = 21)
+                assertError(socket.getInputStream(), error = 11, badValue = 0, sequence = 10, minorOpcode = 21)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 1))
             }
             server.close()
             serverThread.join(1_000)
@@ -3486,6 +3643,80 @@ class XRenderProtocolTest {
 
     private fun renderAddGlyphsFromPictureRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 21, body)
+
+    private fun renderAddGlyphsFromPicture(
+        glyphSet: Int,
+        source: Int,
+        glyphId: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        xOff: Int = 0,
+        yOff: Int = 0,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray {
+        return renderAddGlyphsFromPicture(
+            glyphSet,
+            source,
+            listOf(RenderPictureGlyph(glyphId, width, height, x, y, xOff, yOff, sourceX, sourceY)),
+        )
+    }
+
+    private fun renderAddGlyphsFromPicture(
+        glyphSet: Int,
+        source: Int,
+        glyphs: List<RenderPictureGlyph>,
+    ): ByteArray {
+        return renderAddGlyphsFromPictureRaw(renderAddGlyphsFromPictureBody(glyphSet, source, glyphs))
+    }
+
+    private fun renderAddGlyphsFromPictureBody(
+        glyphSet: Int,
+        source: Int,
+        glyphId: Int,
+        width: Int,
+        height: Int,
+        x: Int = 0,
+        y: Int = 0,
+        xOff: Int = 0,
+        yOff: Int = 0,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+    ): ByteArray {
+        return renderAddGlyphsFromPictureBody(
+            glyphSet,
+            source,
+            listOf(RenderPictureGlyph(glyphId, width, height, x, y, xOff, yOff, sourceX, sourceY)),
+        )
+    }
+
+    private fun renderAddGlyphsFromPictureBody(
+        glyphSet: Int,
+        source: Int,
+        glyphs: List<RenderPictureGlyph>,
+    ): ByteArray {
+        val idsOffset = 12
+        val glyphInfoOffset = idsOffset + glyphs.size * 4
+        val body = ByteArray(glyphInfoOffset + glyphs.size * 16)
+        put32le(body, 0, glyphSet)
+        put32le(body, 4, source)
+        put32le(body, 8, glyphs.size)
+        glyphs.forEachIndexed { index, glyph ->
+            put32le(body, idsOffset + index * 4, glyph.glyphId)
+            val offset = glyphInfoOffset + index * 16
+            put16le(body, offset, glyph.width)
+            put16le(body, offset + 2, glyph.height)
+            put16le(body, offset + 4, glyph.x)
+            put16le(body, offset + 6, glyph.y)
+            put16le(body, offset + 8, glyph.xOff)
+            put16le(body, offset + 10, glyph.yOff)
+            put16le(body, offset + 12, glyph.sourceX)
+            put16le(body, offset + 14, glyph.sourceY)
+        }
+        return body
+    }
 
     private fun renderScale(
         source: Int,
@@ -4030,6 +4261,18 @@ class XRenderProtocolTest {
         const val GlyphId = 0x0000_0041
         const val PutImageGcId = 0x0020_4001
     }
+
+    private data class RenderPictureGlyph(
+        val glyphId: Int,
+        val width: Int,
+        val height: Int,
+        val x: Int = 0,
+        val y: Int = 0,
+        val xOff: Int = 0,
+        val yOff: Int = 0,
+        val sourceX: Int = 0,
+        val sourceY: Int = 0,
+    )
 
     private data class RenderColor(
         val red: Int,
