@@ -3085,6 +3085,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `core drawing primitives reject drawable and GC depth mismatches before drawing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 8, height = 8))
+                out.write(createPixmapRequest(PixmapId, width = 8, height = 8, depth = 8, drawable = WindowId))
+                out.write(createGcRequest(GcId, foreground = Red, drawable = PixmapId))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(polyLineRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0, 1 to 0)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((0 to 0) to (1 to 0))))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 2, 2))))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(XArcCommand(0, 0, 4, 4, 0, FullCircleAngle))))
+                out.write(fillPolyRequest(WindowId, GcId, shape = 2, coordMode = 0, points = listOf(0 to 0, 2 to 0, 0 to 2)))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 2, 2))))
+                out.write(polyArcRequest(WindowId, GcId, filled = true, arcs = listOf(XArcCommand(0, 0, 4, 4, 0, FullCircleAngle))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 2))
+                out.flush()
+
+                for ((index, opcode) in (64..71).withIndex()) {
+                    assertError(socket.getInputStream(), error = 8, opcode = opcode, badValue = WindowId, sequence = 4 + index)
+                }
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 0, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 1, 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 0, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 2, 1, 1))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":0""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PutImage reports request errors and recovers stream`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

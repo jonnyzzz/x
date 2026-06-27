@@ -3128,6 +3128,14 @@ internal class X11Connection(
         }
     }
 
+    private fun validateDrawableGc(opcode: Int, drawableId: Int, drawable: XDrawable, gc: XGraphicsContext): Boolean {
+        if (gc.drawableRootId != drawable.rootId || gc.drawableDepth != drawable.depth) {
+            writeError(error = 8, opcode = opcode, badValue = drawableId)
+            return false
+        }
+        return true
+    }
+
     private fun queryTree(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 15, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
@@ -4084,7 +4092,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 64, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = 64, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = 64, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = 64, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
         state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
         state.draw(
@@ -4105,7 +4114,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 65, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = 65, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = 65, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = 65, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
         state.drawPolyline(
             drawableId,
@@ -4142,7 +4152,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 66, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = 66, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = 66, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = 66, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = mutableListOf<XPoint>()
         var offset = 8
         while (offset + 8 <= body.size) {
@@ -4186,7 +4197,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = opcode, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val rectangles = rectangles(body, 8)
         when (kind) {
             XDrawingKind.FillRectangle -> state.fillRectangles(
@@ -4225,7 +4237,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = opcode, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = opcode, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = opcode, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val arcs = arcs(body, 8)
         if (filled) {
             state.fillArcs(
@@ -4268,7 +4281,8 @@ internal class X11Connection(
         if (!state.hasGc(gcId)) return writeError(error = 13, opcode = 69, badValue = gcId)
         val gc = state.gc(gcId)
         val drawableId = byteOrder.u32(body, 0)
-        coreDrawable(opcode = 69, drawableId = drawableId) ?: return
+        val drawable = coreDrawable(opcode = 69, drawableId = drawableId) ?: return
+        if (!validateDrawableGc(opcode = 69, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 12, coordMode)
         state.fillPolygon(
             drawableId = drawableId,
