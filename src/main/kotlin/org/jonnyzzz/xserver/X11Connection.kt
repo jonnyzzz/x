@@ -3735,6 +3735,11 @@ internal class X11Connection(
         val fontable = byteOrder.u32(body, 0)
         if (!state.hasFontable(fontable)) return writeError(error = 7, opcode = 47, badValue = fontable)
         val reply = reply(extra = 0, payloadUnits = 7)
+        putFontInfo(reply)
+        write(reply)
+    }
+
+    private fun putFontInfo(reply: ByteArray) {
         putCharInfo(reply, 8)
         putCharInfo(reply, 24)
         byteOrder.put16(reply, 40, 0)
@@ -3748,7 +3753,6 @@ internal class X11Connection(
         byteOrder.put16(reply, 52, XFramebuffer.TextAscent)
         byteOrder.put16(reply, 54, XFramebuffer.TextDescent)
         byteOrder.put32(reply, 56, 0)
-        write(reply)
     }
 
     private fun queryTextExtents(oddLength: Int, body: ByteArray) {
@@ -3775,18 +3779,65 @@ internal class X11Connection(
 
     private fun listFonts(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = 49, badValue = 0)
+        val maxNames = byteOrder.u16(body, 0)
         val patternLength = byteOrder.u16(body, 2)
         if (body.size != 4 + paddedLength(patternLength)) return writeError(error = 16, opcode = 49, badValue = 0)
-        val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put16(reply, 8, 0)
+        val names = matchingFontNames(pattern(body, offset = 4, length = patternLength), maxNames)
+        val payloadBytes = names.sumOf { 1 + it.size }
+        val reply = reply(extra = 0, payloadUnits = paddedLength(payloadBytes) / 4)
+        byteOrder.put16(reply, 8, names.size)
+        var offset = 32
+        for (name in names) {
+            reply[offset++] = name.size.toByte()
+            name.copyInto(reply, offset)
+            offset += name.size
+        }
         write(reply)
     }
 
     private fun listFontsWithInfo(body: ByteArray) {
         if (body.size < 4) return writeError(error = 16, opcode = 50, badValue = 0)
+        val maxNames = byteOrder.u16(body, 0)
         val patternLength = byteOrder.u16(body, 2)
         if (body.size != 4 + paddedLength(patternLength)) return writeError(error = 16, opcode = 50, badValue = 0)
+        for (name in matchingFontNames(pattern(body, offset = 4, length = patternLength), maxNames)) {
+            write(fontInfoReply(name))
+        }
         write(reply(extra = 0, payloadUnits = 7))
+    }
+
+    private fun matchingFontNames(pattern: String, maxNames: Int): List<ByteArray> =
+        SyntheticFontNames
+            .filter { fontPatternMatches(pattern, it) }
+            .take(maxNames)
+            .map { it.toByteArray(StandardCharsets.ISO_8859_1) }
+
+    private fun pattern(bytes: ByteArray, offset: Int, length: Int): String =
+        String(bytes, offset, length, StandardCharsets.ISO_8859_1)
+
+    private fun fontPatternMatches(pattern: String, name: String): Boolean {
+        val p = pattern.lowercase()
+        val n = name.lowercase()
+        val matches = Array(p.length + 1) { BooleanArray(n.length + 1) }
+        matches[0][0] = true
+        for (pi in p.indices) {
+            if (p[pi] == '*') matches[pi + 1][0] = matches[pi][0]
+            for (ni in n.indices) {
+                matches[pi + 1][ni + 1] = when (p[pi]) {
+                    '*' -> matches[pi][ni + 1] || matches[pi + 1][ni]
+                    '?' -> matches[pi][ni]
+                    else -> p[pi] == n[ni] && matches[pi][ni]
+                }
+            }
+        }
+        return matches[p.length][n.length]
+    }
+
+    private fun fontInfoReply(name: ByteArray): ByteArray {
+        val reply = reply(extra = name.size, payloadUnits = 7 + paddedLength(name.size) / 4)
+        putFontInfo(reply)
+        name.copyInto(reply, 60)
+        return reply
     }
 
     private fun getFontPath(body: ByteArray) {
@@ -7084,6 +7135,7 @@ internal class X11Connection(
         const val D65_Z = 1.08883
         const val D65_U_PRIME = 0.19783982482140777
         const val D65_V_PRIME = 0.4683363029324097
+        val SyntheticFontNames = listOf("fixed")
         val SupportedPixmapDepths = setOf(1, 4, 8, 24, 32)
         val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
         val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)

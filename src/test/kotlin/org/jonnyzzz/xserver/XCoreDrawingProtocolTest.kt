@@ -4411,8 +4411,8 @@ class XCoreDrawingProtocolTest {
                 val reply = readReply(socket.getInputStream())
                 assertEquals(1, reply[0].toInt())
                 assertEquals(11, u16le(reply, 2))
-                assertEquals(0, u32le(reply, 4))
-                assertEquals(0, u16le(reply, 8))
+                assertEquals(2, u32le(reply, 4))
+                assertEquals(listOf("fixed"), fontNames(reply))
             }
             server.close()
             serverThread.join(1_000)
@@ -4480,7 +4480,7 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
-    fun `ListFontsWithInfo returns terminal reply for empty synthetic font catalog`() {
+    fun `ListFontsWithInfo returns synthetic fixed font info and terminal reply`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
@@ -4488,24 +4488,27 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(listFontsWithInfoRequest("*", maxNames = 100))
-                out.write(listFontsWithInfoRequest("fixed", maxNames = 1))
+                out.write(listFontsWithInfoRequest("fixed", maxNames = 0))
                 out.flush()
 
-                val reply = readReply(socket.getInputStream())
-                assertEquals(60, reply.size)
-                assertEquals(1, reply[0].toInt())
-                assertEquals(0, reply[1].toInt() and 0xff)
-                assertEquals(1, u16le(reply, 2))
-                assertEquals(7, u32le(reply, 4))
-                assertZeroBytes(reply, 8, 60)
+                val info = readReply(socket.getInputStream())
+                assertEquals(68, info.size)
+                assertEquals(1, info[0].toInt())
+                assertEquals("fixed".length, info[1].toInt() and 0xff)
+                assertEquals(1, u16le(info, 2))
+                assertEquals(9, u32le(info, 4))
+                assertEquals(8, u16le(info, 10))
+                assertEquals(8, u16le(info, 26))
+                assertEquals(12, u16le(info, 52))
+                assertEquals(4, u16le(info, 54))
+                assertEquals("fixed", info.copyOfRange(60, 65).decodeToString())
+                assertZeroBytes(info, 65, 68)
 
-                val paddedPatternReply = readReply(socket.getInputStream())
-                assertEquals(60, paddedPatternReply.size)
-                assertEquals(1, paddedPatternReply[0].toInt())
-                assertEquals(0, paddedPatternReply[1].toInt() and 0xff)
-                assertEquals(2, u16le(paddedPatternReply, 2))
-                assertEquals(7, u32le(paddedPatternReply, 4))
-                assertZeroBytes(paddedPatternReply, 8, 60)
+                val terminal = readReply(socket.getInputStream())
+                assertListFontsWithInfoTerminal(terminal, sequence = 1)
+
+                val maxZeroTerminal = readReply(socket.getInputStream())
+                assertListFontsWithInfoTerminal(maxZeroTerminal, sequence = 2)
             }
             server.close()
             serverThread.join(1_000)
@@ -15332,6 +15335,18 @@ class XCoreDrawingProtocolTest {
         }
     }
 
+    private fun fontNames(reply: ByteArray): List<String> {
+        val count = u16le(reply, 8)
+        var offset = 32
+        return List(count) {
+            val length = reply[offset].toInt() and 0xff
+            offset += 1
+            val value = String(reply, offset, length, StandardCharsets.ISO_8859_1)
+            offset += length
+            value
+        }
+    }
+
     private fun getImageRequest(
         drawable: Int,
         x: Int,
@@ -16119,6 +16134,15 @@ class XCoreDrawingProtocolTest {
         assertEquals(opcode, reply[10].toInt() and 0xff)
         assertEquals(0, reply[11].toInt() and 0xff)
         assertZeroBytes(reply, 12, 32)
+    }
+
+    private fun assertListFontsWithInfoTerminal(reply: ByteArray, sequence: Int) {
+        assertEquals(60, reply.size)
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(7, u32le(reply, 4))
+        assertZeroBytes(reply, 8, 60)
     }
 
     private fun assertZeroBytes(bytes: ByteArray, from: Int, until: Int) {
