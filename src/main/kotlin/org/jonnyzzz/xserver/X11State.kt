@@ -3432,6 +3432,21 @@ internal class X11State(
     }
 
     @Synchronized
+    fun renderColorTriangles(
+        operation: Int,
+        destination: XPicture,
+        triangles: List<XColorTriangleCommand>,
+    ): Boolean {
+        val drawableId = destination.drawableId ?: return false
+        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        return framebuffer.compositeColoredTriangles(
+            operation = operation,
+            triangles = triangles,
+            clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    @Synchronized
     fun compositeGlyphs(
         operation: Int,
         source: XPicture,
@@ -4805,6 +4820,27 @@ internal data class XTriangleCommand(
     val p1: XFixedPoint,
     val p2: XFixedPoint,
     val p3: XFixedPoint,
+)
+
+internal data class XRenderColor(
+    val red: Int,
+    val green: Int,
+    val blue: Int,
+    val alpha: Int,
+) {
+    fun toPixel(): Int =
+        XRender.argb32Pixel(red = red, green = green, blue = blue, alpha = alpha)
+}
+
+internal data class XColorPoint(
+    val point: XFixedPoint,
+    val color: XRenderColor,
+)
+
+internal data class XColorTriangleCommand(
+    val p1: XColorPoint,
+    val p2: XColorPoint,
+    val p3: XColorPoint,
 )
 
 internal data class XProperty(

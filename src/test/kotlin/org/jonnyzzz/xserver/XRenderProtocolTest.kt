@@ -1897,6 +1897,80 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER ColorTriangles interpolates vertex colors into destination framebuffer`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 16, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderColorTriangles(
+                        PictureId,
+                        points = listOf(0 to 0, 12 to 0, 0 to 12),
+                        colors = listOf(
+                            RenderColor(red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff),
+                            RenderColor(red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff),
+                        ),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 16, height = 16))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffbf_2020.toInt(), pixelAt(image, imageWidth = 16, x = 1, y = 1))
+                assertEquals(0xff40_6060.toInt(), pixelAt(image, imageWidth = 16, x = 4, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 16, x = 13, y = 1))
+                assertContains(httpGet(server.localPort, "/text.txt"), "ColorTriangles")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER ColorTriangles validates request framing operator and destination picture`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDestination = PictureId + 0x200
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 12, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderColorTrianglesRaw(colorTrianglesHeader(PictureId).copyOf(4)))
+                out.write(renderColorTrianglesRaw(colorTrianglesHeader(PictureId).copyOf(16)))
+                out.write(renderColorTrianglesRaw(colorTrianglesHeader(PictureId, operation = XRender.OpBlendMaximum + 1)))
+                out.write(renderColorTrianglesRaw(colorTrianglesHeader(missingDestination)))
+                out.write(
+                    renderColorTriangles(
+                        PictureId,
+                        points = listOf(2 to 2, 8 to 2, 2 to 8),
+                        colors = List(3) { RenderColor(red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff) },
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 12, height = 10))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 4, minorOpcode = 15)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = 15)
+                assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 6, minorOpcode = 15)
+                assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 7, minorOpcode = 15)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 12, x = 3, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 12, x = 1, y = 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER triangles honor A1 mask format`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2704,7 +2778,7 @@ class XRenderProtocolTest {
                 socket.soTimeout = 2_000
                 setup(socket)
                 val out = socket.getOutputStream()
-                val minorOpcodes = listOf(14, 15, 16)
+                val minorOpcodes = listOf(14, 16)
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
@@ -3361,6 +3435,42 @@ class XRenderProtocolTest {
 
     private fun renderTrianglesRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 11, body)
+
+    private fun renderColorTriangles(
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        colors: List<RenderColor>,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
+        require(points.size == 3)
+        require(colors.size == 3)
+        val body = ByteArray(56)
+        body[0] = operation.toByte()
+        put32le(body, 4, destination)
+        var offset = 8
+        points.zip(colors).forEach { (point, color) ->
+            putFixedPoint(body, offset, point.first, point.second)
+            put16le(body, offset + 8, color.red)
+            put16le(body, offset + 10, color.green)
+            put16le(body, offset + 12, color.blue)
+            put16le(body, offset + 14, color.alpha)
+            offset += 16
+        }
+        return renderColorTrianglesRaw(body)
+    }
+
+    private fun colorTrianglesHeader(
+        destination: Int,
+        operation: Int = XRender.OpSrc,
+    ): ByteArray {
+        val body = ByteArray(8)
+        body[0] = operation.toByte()
+        put32le(body, 4, destination)
+        return body
+    }
+
+    private fun renderColorTrianglesRaw(body: ByteArray): ByteArray =
+        request(XRender.MajorOpcode, 15, body)
 
     private fun renderTriStrip(
         source: Int,

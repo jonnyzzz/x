@@ -326,7 +326,7 @@ internal class X11Connection(
             12 -> renderTriStrip(body)
             13 -> renderTriFan(body)
             14 -> renderBadImplementation(minorOpcode)
-            15 -> renderBadImplementation(minorOpcode)
+            15 -> renderColorTriangles(body)
             16 -> renderBadImplementation(minorOpcode)
             17 -> renderCreateGlyphSet(body)
             18 -> renderReferenceGlyphSet(body)
@@ -1314,6 +1314,43 @@ internal class X11Connection(
                         XPoint(triangle.p1.x.fixedToInt(), triangle.p1.y.fixedToInt()),
                         XPoint(triangle.p2.x.fixedToInt(), triangle.p2.y.fixedToInt()),
                         XPoint(triangle.p3.x.fixedToInt(), triangle.p3.y.fixedToInt()),
+                    )
+                },
+                framebufferBacked = true,
+            ),
+        )
+    }
+
+    private fun renderColorTriangles(body: ByteArray) {
+        if (body.size < 8 || (body.size - 8) % 48 != 0) {
+            return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 15, badValue = 0)
+        }
+        val operation = body[0].toInt() and 0xff
+        if (!XRender.isValidOperator(operation)) {
+            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 15, badValue = operation)
+        }
+        val destinationId = byteOrder.u32(body, 4)
+        val destination = state.picture(destinationId)
+            ?: return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 15, badValue = destinationId)
+        val destinationDrawableId = destination.drawableId ?: return
+        val triangles = colorTriangles(body, 8)
+        if (triangles.isEmpty()) return
+        val painted = state.renderColorTriangles(
+            operation = operation,
+            destination = destination,
+            triangles = triangles,
+        )
+        if (!painted) return
+        state.draw(
+            XDrawingCommand(
+                drawableId = destinationDrawableId,
+                kind = XDrawingKind.FillPoly,
+                foreground = triangles.firstOrNull()?.p1?.color?.toPixel() ?: 0,
+                points = triangles.flatMap { triangle ->
+                    listOf(
+                        XPoint(triangle.p1.point.x.fixedToInt(), triangle.p1.point.y.fixedToInt()),
+                        XPoint(triangle.p2.point.x.fixedToInt(), triangle.p2.point.y.fixedToInt()),
+                        XPoint(triangle.p3.point.x.fixedToInt(), triangle.p3.point.y.fixedToInt()),
                     )
                 },
                 framebufferBacked = true,
@@ -2480,6 +2517,7 @@ internal class X11Connection(
             10 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} traps=${(body.size - 20).coerceAtLeast(0) / 40}"
             11 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} triangles=${(body.size - 20).coerceAtLeast(0) / 24}"
             12, 13 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} src=${hex(4)} dst=${hex(8)} maskFormat=${hex(12)} srcOrigin=${i16(16)},${i16(18)} points=${(body.size - 20).coerceAtLeast(0) / 8}"
+            15 -> "op=${body.getOrNull(0)?.toInt()?.and(0xff) ?: "n/a"} dst=${hex(4)} triangles=${(body.size - 8).coerceAtLeast(0) / 48}"
             17 -> "glyphSet=${hex(0)} format=${hex(4)}"
             18 -> "glyphSet=${hex(0)} existing=${hex(4)}"
             19 -> "glyphSet=${hex(0)}"
@@ -6261,6 +6299,31 @@ internal class X11Connection(
         }
         return triangles
     }
+
+    private fun colorTriangles(body: ByteArray, startOffset: Int): List<XColorTriangleCommand> {
+        val triangles = mutableListOf<XColorTriangleCommand>()
+        var offset = startOffset
+        while (offset + 48 <= body.size) {
+            triangles += XColorTriangleCommand(
+                p1 = colorPoint(body, offset),
+                p2 = colorPoint(body, offset + 16),
+                p3 = colorPoint(body, offset + 32),
+            )
+            offset += 48
+        }
+        return triangles
+    }
+
+    private fun colorPoint(body: ByteArray, offset: Int): XColorPoint =
+        XColorPoint(
+            point = XFixedPoint(byteOrder.u32(body, offset), byteOrder.u32(body, offset + 4)),
+            color = XRenderColor(
+                red = byteOrder.u16(body, offset + 8),
+                green = byteOrder.u16(body, offset + 10),
+                blue = byteOrder.u16(body, offset + 12),
+                alpha = byteOrder.u16(body, offset + 14),
+            ),
+        )
 
     private fun fixedPoints(body: ByteArray, startOffset: Int): List<XFixedPoint> {
         val points = mutableListOf<XFixedPoint>()

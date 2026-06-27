@@ -858,6 +858,19 @@ internal class XFramebuffer(
         return painted
     }
 
+    fun compositeColoredTriangles(
+        operation: Int,
+        triangles: List<XColorTriangleCommand>,
+        clipRectangles: List<XRectangleCommand>? = null,
+    ): Boolean {
+        var painted = false
+        for (triangle in triangles) {
+            painted = compositeColoredTriangle(operation, triangle, clipRectangles) || painted
+        }
+        if (painted) markPainted()
+        return painted
+    }
+
     fun tileTo(
         destination: XFramebuffer,
         destinationX: Int,
@@ -1145,6 +1158,71 @@ internal class XFramebuffer(
             }
         }
         return painted
+    }
+
+    private fun compositeColoredTriangle(
+        operation: Int,
+        triangle: XColorTriangleCommand,
+        clipRectangles: List<XRectangleCommand>?,
+    ): Boolean {
+        val x1 = triangle.p1.point.x.fixedToDouble()
+        val y1 = triangle.p1.point.y.fixedToDouble()
+        val x2 = triangle.p2.point.x.fixedToDouble()
+        val y2 = triangle.p2.point.y.fixedToDouble()
+        val x3 = triangle.p3.point.x.fixedToDouble()
+        val y3 = triangle.p3.point.y.fixedToDouble()
+        val area = edge(x1, y1, x2, y2, x3, y3)
+        if (area == 0.0) return false
+        val startX = maxOf(0, floor(minOf(x1, x2, x3)).toInt())
+        val endX = minOf(width, ceil(maxOf(x1, x2, x3)).toInt())
+        val startY = maxOf(0, floor(minOf(y1, y2, y3)).toInt())
+        val endY = minOf(height, ceil(maxOf(y1, y2, y3)).toInt())
+        var painted = false
+        for (y in startY until endY) {
+            val sampleY = y + 0.5
+            for (x in startX until endX) {
+                if (!insideClip(x, y, clipRectangles)) continue
+                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area)
+                if (coverage == 0) continue
+                val maskAlpha = maskAlpha(XRender.A8Format, coverage)
+                if (maskAlpha == 0) continue
+                val sampleX = x + 0.5
+                val source = interpolatedColorTrianglePixel(triangle, x1, y1, x2, y2, x3, y3, area, sampleX, sampleY)
+                val index = y * width + x
+                pixels[index] = renderPixel(source, pixels[index], operation, maskAlpha)
+                painted = true
+            }
+        }
+        return painted
+    }
+
+    private fun interpolatedColorTrianglePixel(
+        triangle: XColorTriangleCommand,
+        x1: Double,
+        y1: Double,
+        x2: Double,
+        y2: Double,
+        x3: Double,
+        y3: Double,
+        area: Double,
+        x: Double,
+        y: Double,
+    ): Int {
+        val w1 = edge(x2, y2, x3, y3, x, y) / area
+        val w2 = edge(x3, y3, x1, y1, x, y) / area
+        val w3 = edge(x1, y1, x2, y2, x, y) / area
+        fun channel(channel: (XRenderColor) -> Int): Int {
+            val value = channel(triangle.p1.color) * w1 +
+                channel(triangle.p2.color) * w2 +
+                channel(triangle.p3.color) * w3
+            return value.roundToInt().coerceIn(0, 0xffff)
+        }
+        return XRender.argb32Pixel(
+            red = channel { it.red },
+            green = channel { it.green },
+            blue = channel { it.blue },
+            alpha = channel { it.alpha },
+        )
     }
 
     private fun triangleCoverage(
