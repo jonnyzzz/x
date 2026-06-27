@@ -3568,7 +3568,11 @@ internal class X11State(
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val sourcePixelAt = source.sourcePixelSampler() ?: return false
+        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+            source.sourcePixelSamplerOptional()
+        } else {
+            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        } ?: return false
         val first = trapezoids.firstOrNull() ?: return false
         val originY = floor(first.top.fixedToDouble()).toInt()
         val originX = floor(first.left.xAt(first.top.fixedToDouble())).toInt()
@@ -3606,7 +3610,11 @@ internal class X11State(
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val sourcePixelAt = source.sourcePixelSampler() ?: return false
+        val sourcePixelAt = if (source.clipRectangles.isNotEmpty()) {
+            source.sourcePixelSamplerOptional()
+        } else {
+            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        } ?: return false
         val first = triangles.firstOrNull() ?: return false
         val originX = floor(first.p1.x.fixedToDouble()).toInt()
         val originY = floor(first.p1.y.fixedToDouble()).toInt()

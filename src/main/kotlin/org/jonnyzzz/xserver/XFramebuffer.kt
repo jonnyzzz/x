@@ -811,7 +811,7 @@ internal class XFramebuffer(
         trapezoids: List<XTrapezoidCommand>,
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
@@ -853,7 +853,7 @@ internal class XFramebuffer(
         triangles: List<XTriangleCommand>,
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
@@ -1112,7 +1112,7 @@ internal class XFramebuffer(
         trapezoid: XTrapezoidCommand,
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val top = trapezoid.top.fixedToDouble()
         val bottom = trapezoid.bottom.fixedToDouble()
@@ -1136,7 +1136,7 @@ internal class XFramebuffer(
                 val maskAlpha = maskAlpha(maskFormat, coverage)
                 if (maskAlpha == 0) continue
                 val index = y * width + x
-                val pixel = sourcePixelAt(x, y)
+                val pixel = sourcePixelAt(x, y) ?: continue
                 pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
@@ -1276,7 +1276,7 @@ internal class XFramebuffer(
         triangle: XTriangleCommand,
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
-        sourcePixelAt: (x: Int, y: Int) -> Int,
+        sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val x1 = triangle.p1.x.fixedToDouble()
         val y1 = triangle.p1.y.fixedToDouble()
@@ -1299,7 +1299,7 @@ internal class XFramebuffer(
                 val maskAlpha = maskAlpha(maskFormat, coverage)
                 if (maskAlpha == 0) continue
                 val index = y * width + x
-                val pixel = sourcePixelAt(x, y)
+                val pixel = sourcePixelAt(x, y) ?: continue
                 pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
