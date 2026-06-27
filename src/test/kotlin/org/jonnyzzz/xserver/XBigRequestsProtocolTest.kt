@@ -42,6 +42,32 @@ class XBigRequestsProtocolTest {
     }
 
     @Test
+    fun `extended length requests require BIG REQUESTS Enable`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                socket.soTimeout = 2_000
+
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(GcId, WindowId))
+                out.write(extendedRequest(72, 2, putImageBody(WindowId, GcId)))
+                out.write(request(XBigRequests.MajorOpcode, XBigRequests.Enable, ByteArray(0)))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, opcode = 72, minorOpcode = 2, sequence = 3)
+                val enabled = readReply(socket.getInputStream())
+                assertEquals(4, u16le(enabled, 2))
+                assertEquals(XBigRequests.MaximumRequestLength, u32le(enabled, 8))
+                assertContains(httpGet(server.localPort, "/state.json"), """"drawings":0""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `BIG REQUESTS Enable validates fixed request length`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

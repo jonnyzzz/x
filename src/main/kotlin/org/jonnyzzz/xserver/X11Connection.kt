@@ -18,6 +18,7 @@ internal class X11Connection(
 ) : XEventSink {
     private lateinit var byteOrder: ByteOrder
     private var sequence = 0
+    private var bigRequestsEnabled = false
     private val trace = java.lang.Boolean.getBoolean("x.trace")
     private val writeLock = Any()
     private val closeDownLock = Any()
@@ -75,11 +76,21 @@ internal class X11Connection(
                 val body = if (units == 0) {
                     val extendedLengthBytes = input.readExactly(4)
                     val extendedUnits = byteOrder.u32(extendedLengthBytes, 0)
-                    if (extendedUnits < 2) {
-                        writeError(error = 1, opcode = opcode, minorOpcode = minorOpcode, badValue = extendedUnits)
+                    val extendedBodySize = extendedRequestBodySize(extendedUnits)
+                    if (!bigRequestsEnabled) {
+                        if (extendedBodySize == null) {
+                            writeFramingBadLength(opcode, minorOpcode)
+                            return
+                        }
+                        input.readExactly(extendedBodySize)
+                        writeFramingBadLength(opcode, minorOpcode)
+                        continue
+                    }
+                    if (extendedBodySize == null) {
+                        writeFramingBadLength(opcode, minorOpcode)
                         return
                     }
-                    input.readExactly(extendedUnits * 4 - 8)
+                    input.readExactly(extendedBodySize)
                 } else {
                     input.readExactly(units * 4 - 4)
                 }
@@ -94,6 +105,24 @@ internal class X11Connection(
             }
         } finally {
             closeDownClient()
+        }
+    }
+
+    private fun extendedRequestBodySize(extendedUnits: Int): Int? {
+        val units = extendedUnits.toUInt().toLong()
+        if (units < 2L || units > XBigRequests.MaximumRequestLength.toLong()) return null
+        val bytes = units * 4L - 8L
+        return bytes.takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
+
+    private fun writeFramingBadLength(opcode: Int, minorOpcode: Int) {
+        state.processWhenServerGrabAllows(this) {
+            sequence = (sequence + 1) and 0xffff
+            if (trace) {
+                System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode framing=BadLength")
+            }
+            state.recordRequest(requestName(opcode, minorOpcode))
+            writeError(error = 16, opcode = opcode, minorOpcode = minorOpcode, badValue = 0)
         }
     }
 
@@ -300,6 +329,7 @@ internal class X11Connection(
             return unsupportedRequest(majorOpcode, minorOpcode, "BIG-REQUESTS.$minorOpcode")
         }
         if (requestUnits != 1 || body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        bigRequestsEnabled = true
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, XBigRequests.MaximumRequestLength)
         write(reply)
