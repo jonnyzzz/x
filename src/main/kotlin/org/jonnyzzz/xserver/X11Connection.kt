@@ -2330,6 +2330,9 @@ internal class X11Connection(
         if (fbConfig != XGlx.RootFbConfigId) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = fbConfig)
         }
+        if (renderType != XGlx.RgbaType) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = renderType)
+        }
         state.putGlxContext(
             XGlxContext(
                 id = context,

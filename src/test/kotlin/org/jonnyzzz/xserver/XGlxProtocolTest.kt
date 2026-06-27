@@ -857,10 +857,12 @@ class XGlxProtocolTest {
             val validContext = 0x0020_010b
             val badVisual = X11Ids.RootVisual + 1
             val badFbConfig = XGlx.RootFbConfigId + 1
+            val badRenderType = XGlx.RgbaType + 1
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, screen = 1))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContext, createContextBody(legacyContext, direct = false, visual = badVisual))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false, screen = 1))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false, fbConfig = badFbConfig))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(fbConfigContext, direct = false, renderType = badRenderType))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(attribsContext, direct = false, screen = 1))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, createContextAttribsBody(attribsContext, direct = false, fbConfig = badFbConfig))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(validContext, direct = false))
@@ -870,10 +872,11 @@ class XGlxProtocolTest {
             assertGlxError(socket.getInputStream(), error = 2, badValue = badVisual, minorOpcode = XGlx.CreateContext, sequence = 2)
             assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateNewContext, sequence = 3)
             assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = badFbConfig, minorOpcode = XGlx.CreateNewContext, sequence = 4)
-            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 5)
-            assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = badFbConfig, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 6)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = badRenderType, minorOpcode = XGlx.CreateNewContext, sequence = 5)
+            assertGlxError(socket.getInputStream(), error = 2, badValue = 1, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 6)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadFBConfig, badValue = badFbConfig, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 7)
             val query = readReply(socket.getInputStream())
-            assertEquals(8, u16le(query, 2))
+            assertEquals(9, u16le(query, 2))
             assertEquals(5, u32le(query, 8))
         }
     }
