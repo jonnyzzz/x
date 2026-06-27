@@ -2769,9 +2769,16 @@ internal class X11State(
     }
 
     private fun XPicture.maskAlphaSampler(): ((x: Int, y: Int) -> Int)? {
-        if (transform == IdentityTransform && repeat == XRender.RepeatNone) return null
+        solidPixel?.let { pixel ->
+            val alpha = (pixel ushr 24) and 0xff
+            return { x, y -> if (insidePictureClip(x, y)) alpha else 0 }
+        }
+        gradientSampler()?.let { sampler ->
+            return { x, y -> if (insidePictureClip(x, y)) (sampler(x, y) ushr 24) and 0xff else 0 }
+        }
+        if (transform == IdentityTransform && repeat == XRender.RepeatNone && clipRectangles.isEmpty()) return null
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
-        return { x, y -> framebuffer.transformedAlphaAt(x, y, repeat, transform, filterName) }
+        return { x, y -> if (insidePictureClip(x, y)) framebuffer.transformedAlphaAt(x, y, repeat, transform, filterName) else 0 }
     }
 
     private fun XFramebuffer.transformedPixelAt(x: Int, y: Int, repeat: Int, transform: List<Int>, filterName: String?): Int {
