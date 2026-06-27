@@ -164,6 +164,41 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX vendor private requests report unsupported private request and recover stream`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val vendorCode = 0x0001_0004
+            val vendorReplyCode = 0x0001_0005
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.VendorPrivate, ByteArray(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.VendorPrivate, u32(vendorCode) + u32(0x1234_5678))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.VendorPrivateWithReply, u32(vendorReplyCode))
+            writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
+
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.VendorPrivate, sequence = 1)
+            assertGlxError(
+                socket.getInputStream(),
+                error = XGlx.BadUnsupportedPrivateRequest,
+                badValue = vendorCode,
+                minorOpcode = XGlx.VendorPrivate,
+                sequence = 2,
+            )
+            assertGlxError(
+                socket.getInputStream(),
+                error = XGlx.BadUnsupportedPrivateRequest,
+                badValue = vendorReplyCode,
+                minorOpcode = XGlx.VendorPrivateWithReply,
+                sequence = 3,
+            )
+            val pointer = readReply(socket.getInputStream())
+            assertEquals(4, u16le(pointer, 2))
+
+            val text = httpGet(socket, "/text.txt")
+            val unsupportedSection = text.substringAfter("Unsupported requests:").substringBefore("\n\nGLX operations:")
+            assertEquals("\n- None.", unsupportedSection)
+        }
+    }
+
+    @Test
     fun `GLX context lifecycle is modeled and make current returns a tag`() {
         withServer { socket ->
             val contextId = 0x0020_0100

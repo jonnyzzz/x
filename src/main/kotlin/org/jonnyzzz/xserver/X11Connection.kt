@@ -295,6 +295,7 @@ internal class X11Connection(
             XGlx.CreateGLXPixmap -> glxCreatePixmap(body)
             XGlx.GetVisualConfigs -> glxGetVisualConfigs(body)
             XGlx.DestroyGLXPixmap -> glxDestroyPixmap(body)
+            XGlx.VendorPrivate, XGlx.VendorPrivateWithReply -> glxVendorPrivate(body, minorOpcode)
             XGlx.QueryExtensionsString -> glxQueryExtensionsString(body)
             XGlx.QueryServerString -> glxQueryServerString(body)
             XGlx.ClientInfo -> glxClientInfo(body)
@@ -2284,6 +2285,12 @@ internal class X11Connection(
         }
     }
 
+    private fun glxVendorPrivate(body: ByteArray, minorOpcode: Int) {
+        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val vendorCode = byteOrder.u32(body, 0)
+        writeError(error = XGlx.BadUnsupportedPrivateRequest, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = vendorCode)
+    }
+
     private fun glxStringReply(value: String) {
         val bytes = value.encodeToByteArray()
         val reply = reply(extra = 0, payloadUnits = paddedLength(bytes.size) / 4)
@@ -2843,6 +2850,7 @@ internal class X11Connection(
             XGlx.CopyContext -> "source=${hex(0)} destination=${hex(4)} mask=${hex(8)} contextTag=${hex(12)}"
             XGlx.SwapBuffers -> "contextTag=${hex(0)} drawable=${hex(4)}"
             XGlx.UseXFont -> "contextTag=${hex(0)} font=${hex(4)} first=${u32(8)} count=${u32(12)} listBase=${u32(16)}"
+            XGlx.VendorPrivate, XGlx.VendorPrivateWithReply -> "vendorCode=${hex(0)} bytes=${(body.size - 4).coerceAtLeast(0)}"
             else -> ""
         }
     }

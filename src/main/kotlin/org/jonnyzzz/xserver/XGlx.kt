@@ -10,6 +10,7 @@ internal object XGlx {
     const val BadContextTag = FirstError + 4
     const val BadRenderRequest = FirstError + 6
     const val BadLargeRequest = FirstError + 7
+    const val BadUnsupportedPrivateRequest = FirstError + 8
     const val BadFBConfig = FirstError + 9
     const val BadPbuffer = FirstError + 10
     const val BadWindow = FirstError + 12
@@ -28,6 +29,8 @@ internal object XGlx {
     const val CreateGLXPixmap = 13
     const val GetVisualConfigs = 14
     const val DestroyGLXPixmap = 15
+    const val VendorPrivate = 16
+    const val VendorPrivateWithReply = 17
     const val QueryExtensionsString = 18
     const val QueryServerString = 19
     const val ClientInfo = 20
@@ -91,8 +94,8 @@ internal object XGlx {
             CreateGLXPixmap -> "CreateGLXPixmap"
             GetVisualConfigs -> "GetVisualConfigs"
             DestroyGLXPixmap -> "DestroyGLXPixmap"
-            16 -> "VendorPrivate"
-            17 -> "VendorPrivateWithReply"
+            VendorPrivate -> "VendorPrivate"
+            VendorPrivateWithReply -> "VendorPrivateWithReply"
             QueryExtensionsString -> "QueryExtensionsString"
             QueryServerString -> "QueryServerString"
             ClientInfo -> "ClientInfo"
