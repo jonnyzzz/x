@@ -2419,6 +2419,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateGC and ChangeGC reject tile and stipple depth mismatches without changing fill style`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val depthOnePixmap = PixmapId
+                val depthTwentyFourPixmap = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(depthOnePixmap, width = 2, height = 2, depth = 1))
+                out.write(createPixmapRequest(depthTwentyFourPixmap, width = 2, height = 2, depth = 24))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_0400, values = listOf(depthOnePixmap)))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_0800, values = listOf(depthTwentyFourPixmap)))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = depthOnePixmap, xOrigin = 0, yOrigin = 0))
+                out.write(changeGcStippledFillRequest(GcId, fillStyle = FillStippled, stipplePixmap = depthTwentyFourPixmap, xOrigin = 0, yOrigin = 0))
+                out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 1, 2, 2))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 4))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 8, opcode = 55, badValue = depthOnePixmap, sequence = 4)
+                assertError(socket.getInputStream(), error = 8, opcode = 55, badValue = depthTwentyFourPixmap, sequence = 5)
+                assertError(socket.getInputStream(), error = 8, opcode = 56, badValue = depthOnePixmap, sequence = 7)
+                assertError(socket.getInputStream(), error = 8, opcode = 56, badValue = depthTwentyFourPixmap, sequence = 8)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 2, 2))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `FillPoly and PolyFillArc honor GC tiled fill style`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -2467,18 +2503,10 @@ class XCoreDrawingProtocolTest {
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId, width = 80, height = 40))
-                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 8))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2, depth = 1))
                 out.write(createGcRequest(GcId, foreground = Red, background = Blue))
-                out.write(createGcRequest(GcId + 1, foreground = Red, drawable = PixmapId))
-                out.write(
-                    putImage8PixelsRequest(
-                        PixmapId,
-                        gc = GcId + 1,
-                        width = 2,
-                        height = 2,
-                        alphas = byteArrayOf(0xff.toByte(), 0x00, 0x00, 0xff.toByte()),
-                    ),
-                )
+                out.write(createGcRequest(GcId + 1, foreground = 1, background = 0, drawable = PixmapId))
+                out.write(putImageBitmapRequest(PixmapId, gc = GcId + 1, width = 2, height = 2, bits = listOf(true, false, false, true)))
                 out.write(changeGcStippledFillRequest(GcId, fillStyle = FillStippled, stipplePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
                 out.write(polyFillRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 1, 2, 2))))
                 out.write(changeGcStippledFillRequest(GcId, fillStyle = FillOpaqueStippled, stipplePixmap = PixmapId, xOrigin = 0, yOrigin = 0))

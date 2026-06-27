@@ -3792,7 +3792,7 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = 55, drawableId = drawableId) ?: return
         val mask = byteOrder.u32(body, 8)
         if (!validateGcValueLength(mask, body, 12, opcode = 55)) return
-        if (!validateGcValues(mask, body, 12, opcode = 55)) return
+        if (!validateGcValues(mask, body, 12, opcode = 55, drawableRootId = drawable.rootId, drawableDepth = drawable.depth)) return
         state.putGc(XGraphicsContext(id = id, drawableRootId = drawable.rootId, drawableDepth = drawable.depth))
         own(id)
         applyGcValues(id, mask, body, 12, opcode = 55)
@@ -3804,6 +3804,8 @@ internal class X11Connection(
         if (!state.hasGc(id)) return writeError(error = 13, opcode = 56, badValue = id)
         val mask = byteOrder.u32(body, 4)
         if (!validateGcValueLength(mask, body, 8, opcode = 56)) return
+        val gc = state.gc(id)
+        if (!validateGcValues(mask, body, 8, opcode = 56, drawableRootId = gc.drawableRootId, drawableDepth = gc.drawableDepth)) return
         applyGcValues(id, mask, body, 8, opcode = 56)
     }
 
@@ -6078,7 +6080,14 @@ internal class X11Connection(
         return true
     }
 
-    private fun validateGcValues(mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int): Boolean {
+    private fun validateGcValues(
+        mask: Int,
+        body: ByteArray,
+        valuesOffset: Int,
+        opcode: Int,
+        drawableRootId: Int,
+        drawableDepth: Int,
+    ): Boolean {
         if ((mask and GcValueMask.inv()) != 0) {
             writeError(error = 2, opcode = opcode, badValue = mask)
             return false
@@ -6111,9 +6120,25 @@ internal class X11Connection(
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
                 }
-                10, 11 -> if (state.pixmapImage(value) == null) {
-                    writeError(error = 4, opcode = opcode, badValue = value)
-                    return false
+                10 -> {
+                    val pixmap = state.pixmap(value) ?: run {
+                        writeError(error = 4, opcode = opcode, badValue = value)
+                        return false
+                    }
+                    if (pixmap.rootId != drawableRootId || pixmap.depth != drawableDepth) {
+                        writeError(error = 8, opcode = opcode, badValue = value)
+                        return false
+                    }
+                }
+                11 -> {
+                    val pixmap = state.pixmap(value) ?: run {
+                        writeError(error = 4, opcode = opcode, badValue = value)
+                        return false
+                    }
+                    if (pixmap.rootId != drawableRootId || pixmap.depth != 1) {
+                        writeError(error = 8, opcode = opcode, badValue = value)
+                        return false
+                    }
                 }
                 14 -> if (value != 0 && !state.hasFont(value)) {
                     writeError(error = 7, opcode = opcode, badValue = value)
@@ -6144,7 +6169,6 @@ internal class X11Connection(
     }
 
     private fun applyGcValues(id: Int, mask: Int, body: ByteArray, valuesOffset: Int, opcode: Int) {
-        if (!validateGcValues(mask, body, valuesOffset, opcode)) return
         var offset = valuesOffset
         fun nextOffset(): Int? {
             if (offset + 4 > body.size) return null
