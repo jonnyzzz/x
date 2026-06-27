@@ -2540,6 +2540,25 @@ internal class X11State(
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val maskAlphaAt = mask?.maskAlphaSampler()
+        if (source.clipRectangles.isNotEmpty()) {
+            val sourcePixelAt = source.sourcePixelSamplerOptional() ?: return null
+            return destinationFramebuffer.compositeGeneratedOptional(
+                sourceX = sourceX,
+                sourceY = sourceY,
+                destinationX = destinationX,
+                destinationY = destinationY,
+                width = width,
+                height = height,
+                operation = operation,
+                clipRectangles = destination.clipRectangles.takeIf { it.isNotEmpty() },
+                mask = maskFramebuffer,
+                maskX = maskX,
+                maskY = maskY,
+                maskAlphaAt = maskAlphaAt,
+            ) { x, y ->
+                sourcePixelAt(x, y)
+            }
+        }
         val gradientSampler = source.gradientSampler()
         if (gradientSampler != null) {
             return destinationFramebuffer.compositeGenerated(
@@ -2923,6 +2942,33 @@ internal class X11State(
         val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
         return { x, y -> framebuffer.transformedPixelAt(x, y, repeat, transform, filterName) }
     }
+
+    private fun XPicture.sourcePixelSamplerOptional(): ((x: Int, y: Int) -> Int?)? {
+        solidPixel?.let { pixel -> return { x, y -> if (insidePictureClip(x, y)) pixel else null } }
+        gradientSampler()?.let { sampler ->
+            return { x, y -> if (insidePictureClip(x, y)) sampler(x, y) else null }
+        }
+        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        return if (transform != IdentityTransform || repeat != XRender.RepeatNone) {
+            { x, y ->
+                if (!insidePictureClip(x, y)) {
+                    null
+                } else {
+                    framebuffer.transformedPixelAt(x, y, repeat, transform, filterName)
+                }
+            }
+        } else {
+            { x, y -> if (insidePictureClip(x, y)) framebuffer.pixelAt(x, y) else null }
+        }
+    }
+
+    private fun XPicture.insidePictureClip(x: Int, y: Int): Boolean =
+        clipRectangles.isEmpty() || clipRectangles.any { rectangle ->
+            x >= rectangle.x &&
+                y >= rectangle.y &&
+                x < rectangle.x + rectangle.width &&
+                y < rectangle.y + rectangle.height
+        }
 
     private fun glyphMaskFromPicture(
         format: Int,

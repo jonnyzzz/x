@@ -989,6 +989,34 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER composite honors source picture clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderSetPictureClipRectangles(PixmapPictureId, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(renderComposite(PixmapPictureId, PictureId, operation = XRender.OpSrc, destinationX = 0, destinationY = 0, width = 2, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed mask picture samples mask coordinates`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3518,6 +3546,26 @@ class XRenderProtocolTest {
             put32le(body, valuesOffset + index * 4, value)
         }
         return request(XRender.MajorOpcode, 30, body)
+    }
+
+    private fun renderSetPictureClipRectangles(
+        picture: Int,
+        originX: Int = 0,
+        originY: Int = 0,
+        rectangles: List<XRectangleCommand>,
+    ): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, picture)
+        put16le(body, 4, originX)
+        put16le(body, 6, originY)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 8 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(XRender.MajorOpcode, 6, body)
     }
 
     private fun renderQueryFilters(drawable: Int): ByteArray {

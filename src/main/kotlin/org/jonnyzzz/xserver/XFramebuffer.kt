@@ -569,6 +569,10 @@ internal class XFramebuffer(
         height: Int,
         operation: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -585,7 +589,8 @@ internal class XFramebuffer(
                 generated[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
-                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha = 255)
+                val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
+                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
         }
