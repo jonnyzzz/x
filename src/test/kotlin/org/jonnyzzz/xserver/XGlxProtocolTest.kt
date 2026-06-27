@@ -927,6 +927,38 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX CreateContextAttribs validates render type attribute before creating context`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val badContext = 0x0020_0108
+            val validContext = 0x0020_0109
+            val badRenderType = 0
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.CreateContextAttribsARB,
+                createContextAttribsBody(badContext, direct = false, attributes = listOf(XGlx.RenderType to badRenderType)),
+            )
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(badContext))
+            writeRequest(
+                socket,
+                XGlx.MajorOpcode,
+                XGlx.CreateContextAttribsARB,
+                createContextAttribsBody(validContext, direct = false, attributes = listOf(XGlx.RenderType to XGlx.RgbaType)),
+            )
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.QueryContext, u32(validContext))
+
+            assertGlxError(socket.getInputStream(), error = 2, badValue = badRenderType, minorOpcode = XGlx.CreateContextAttribsARB, sequence = 1)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadContext, badValue = badContext, minorOpcode = XGlx.QueryContext, sequence = 2)
+            val query = readReply(socket.getInputStream())
+            assertEquals(4, u16le(query, 2))
+            assertEquals(5, u32le(query, 8))
+            val attributes = attributeMap(query, offset = 32, count = u32le(query, 8))
+            assertEquals(XGlx.RgbaType, attributes.getValue(XGlx.RenderType))
+        }
+    }
+
+    @Test
     fun `GLX CreateContextAttribs rejects duplicate resource id without replacing existing context`() {
         withServer { socket ->
             socket.soTimeout = 2_000

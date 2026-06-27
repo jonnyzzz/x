@@ -2362,12 +2362,17 @@ internal class X11Connection(
         if (fbConfig != XGlx.RootFbConfigId) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = fbConfig)
         }
+        val attributes = glxAttributePairs(body, 24, attribCount.toInt())
+        val renderType = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.RenderType }?.second ?: XGlx.RgbaType
+        if (renderType != XGlx.RgbaType) {
+            return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = renderType)
+        }
         state.putGlxContext(
             XGlxContext(
                 id = context,
                 fbConfigId = fbConfig,
                 screen = screen,
-                renderType = XGlx.RgbaType,
+                renderType = renderType,
                 direct = body[16].toInt() != 0,
             ),
         )
