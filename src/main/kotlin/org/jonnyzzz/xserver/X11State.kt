@@ -24,7 +24,7 @@ internal class X11State(
     private val pixmaps = linkedMapOf<Int, XPixmap>()
     private val gcs = linkedMapOf<Int, XGraphicsContext>()
     private val fonts = linkedSetOf<Int>()
-    private val cursors = linkedSetOf<Int>()
+    private val cursors = linkedMapOf<Int, XCursor>()
     private val colormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val installedColormaps = linkedSetOf(X11Ids.DefaultColormap)
     private val pictures = linkedMapOf<Int, XPicture>()
@@ -2045,6 +2045,7 @@ internal class X11State(
             keyboardControl = keyboardControl.snapshot(),
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
+            cursors = cursors.values.map { it.snapshot() },
             glxPixmaps = glxPixmaps.values.map { pixmap ->
                 XGlxPixmapSnapshot(
                     id = pixmap.id,
@@ -3667,7 +3668,7 @@ internal class X11State(
             pixmaps.containsKey(id) ||
             gcs.containsKey(id) ||
             fonts.contains(id) ||
-            cursors.contains(id) ||
+            cursors.containsKey(id) ||
             colormaps.contains(id) ||
             pictures.containsKey(id) ||
             glyphSets.containsKey(id) ||
@@ -3759,12 +3760,34 @@ internal class X11State(
     }
 
     @Synchronized
-    fun putCursor(id: Int) {
-        cursors += id
+    fun putCursor(cursor: XCursor) {
+        cursors[cursor.id] = cursor
     }
 
     @Synchronized
-    fun hasCursor(id: Int): Boolean = cursors.contains(id)
+    fun hasCursor(id: Int): Boolean = cursors.containsKey(id)
+
+    @Synchronized
+    fun recolorCursor(
+        id: Int,
+        foregroundRed: Int,
+        foregroundGreen: Int,
+        foregroundBlue: Int,
+        backgroundRed: Int,
+        backgroundGreen: Int,
+        backgroundBlue: Int,
+    ) {
+        cursors[id]?.let {
+            cursors[id] = it.copy(
+                foregroundRed = foregroundRed,
+                foregroundGreen = foregroundGreen,
+                foregroundBlue = foregroundBlue,
+                backgroundRed = backgroundRed,
+                backgroundGreen = backgroundGreen,
+                backgroundBlue = backgroundBlue,
+            )
+        }
+    }
 
     @Synchronized
     fun putColormap(id: Int) {
@@ -5016,6 +5039,7 @@ internal data class XScreenSnapshot(
     val keyboardControl: XKeyboardControlSnapshot,
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
+    val cursors: List<XCursorSnapshot>,
     val glxPixmaps: List<XGlxPixmapSnapshot>,
     val glxWindows: List<XGlxWindowSnapshot>,
     val glxPbuffers: List<XGlxPbufferSnapshot>,
@@ -5480,6 +5504,89 @@ internal data class XPixmapSnapshot(
     val pictureIdHexes: List<String> get() = pictureIds.map { "0x${it.toUInt().toString(16)}" }
     val matchingWindowIdHexes: List<String> get() = matchingWindowIds.map { "0x${it.toUInt().toString(16)}" }
 }
+
+internal data class XCursor(
+    val id: Int,
+    val kind: String,
+    val sourcePixmapId: Int? = null,
+    val maskPixmapId: Int? = null,
+    val sourceFontId: Int? = null,
+    val maskFontId: Int? = null,
+    val sourceChar: Int? = null,
+    val maskChar: Int? = null,
+    val sourcePictureId: Int? = null,
+    val animationElements: List<XAnimatedCursorElement> = emptyList(),
+    val hotspotX: Int? = null,
+    val hotspotY: Int? = null,
+    val foregroundRed: Int = 0,
+    val foregroundGreen: Int = 0,
+    val foregroundBlue: Int = 0,
+    val backgroundRed: Int = 0xffff,
+    val backgroundGreen: Int = 0xffff,
+    val backgroundBlue: Int = 0xffff,
+) {
+    fun snapshot(): XCursorSnapshot =
+        XCursorSnapshot(
+            id = id,
+            kind = kind,
+            sourcePixmapId = sourcePixmapId,
+            maskPixmapId = maskPixmapId,
+            sourceFontId = sourceFontId,
+            maskFontId = maskFontId,
+            sourceChar = sourceChar,
+            maskChar = maskChar,
+            sourcePictureId = sourcePictureId,
+            animationElements = animationElements,
+            hotspotX = hotspotX,
+            hotspotY = hotspotY,
+            foregroundRed = foregroundRed,
+            foregroundGreen = foregroundGreen,
+            foregroundBlue = foregroundBlue,
+            backgroundRed = backgroundRed,
+            backgroundGreen = backgroundGreen,
+            backgroundBlue = backgroundBlue,
+        )
+}
+
+internal data class XCursorSnapshot(
+    val id: Int,
+    val kind: String,
+    val sourcePixmapId: Int?,
+    val maskPixmapId: Int?,
+    val sourceFontId: Int?,
+    val maskFontId: Int?,
+    val sourceChar: Int?,
+    val maskChar: Int?,
+    val sourcePictureId: Int?,
+    val animationElements: List<XAnimatedCursorElement>,
+    val hotspotX: Int?,
+    val hotspotY: Int?,
+    val foregroundRed: Int,
+    val foregroundGreen: Int,
+    val foregroundBlue: Int,
+    val backgroundRed: Int,
+    val backgroundGreen: Int,
+    val backgroundBlue: Int,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val sourcePixmapIdHex: String? get() = sourcePixmapId?.let { "0x${it.toUInt().toString(16)}" }
+    val maskPixmapIdHex: String? get() = maskPixmapId?.let { "0x${it.toUInt().toString(16)}" }
+    val sourceFontIdHex: String? get() = sourceFontId?.let { "0x${it.toUInt().toString(16)}" }
+    val maskFontIdHex: String? get() = maskFontId?.let { "0x${it.toUInt().toString(16)}" }
+    val sourcePictureIdHex: String? get() = sourcePictureId?.let { "0x${it.toUInt().toString(16)}" }
+    val foregroundHex: String get() = rgb16Hex(foregroundRed, foregroundGreen, foregroundBlue)
+    val backgroundHex: String get() = rgb16Hex(backgroundRed, backgroundGreen, backgroundBlue)
+}
+
+internal data class XAnimatedCursorElement(
+    val cursorId: Int,
+    val delayMilliseconds: Long,
+) {
+    val cursorIdHex: String get() = "0x${cursorId.toUInt().toString(16)}"
+}
+
+private fun rgb16Hex(red: Int, green: Int, blue: Int): String =
+    "0x${red.toUInt().toString(16).padStart(4, '0')}${green.toUInt().toString(16).padStart(4, '0')}${blue.toUInt().toString(16).padStart(4, '0')}"
 
 internal data class XWindowSnapshot(
     val id: Int,

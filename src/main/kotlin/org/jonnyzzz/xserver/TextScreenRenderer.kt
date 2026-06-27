@@ -35,6 +35,7 @@ internal object TextScreenRenderer {
             appendLine("Mapped windows: ${snapshot.windows.count { it.mapped }}")
             appendLine("Pixmaps: ${snapshot.pixmaps.size}")
             appendLine("Painted pixmaps: ${snapshot.pixmaps.count { it.painted }}")
+            appendLine("Cursors: ${snapshot.cursors.size}")
             appendLine("Focus: ${snapshot.windows.firstOrNull { it.focused }?.idHex ?: "none"}")
             appendLine()
             appendLine("Window hierarchy and geometry:")
@@ -105,6 +106,32 @@ internal object TextScreenRenderer {
                         append(" candidate-for=")
                         append(pixmap.matchingWindowIdHexes.joinToString(","))
                     }
+                    appendLine()
+                }
+            }
+            appendLine()
+            appendLine("Cursors:")
+            if (snapshot.cursors.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (cursor in snapshot.cursors) {
+                    append("- ")
+                    append(cursor.idHex)
+                    append(" kind=").append(cursor.kind)
+                    cursor.sourcePixmapIdHex?.let { append(" sourcePixmap=").append(it) }
+                    cursor.maskPixmapIdHex?.let { append(" maskPixmap=").append(it) }
+                    cursor.sourceFontIdHex?.let { append(" sourceFont=").append(it) }
+                    cursor.maskFontIdHex?.let { append(" maskFont=").append(it) }
+                    cursor.sourceChar?.let { append(" sourceChar=0x").append(it.toString(16)) }
+                    cursor.maskChar?.let { append(" maskChar=0x").append(it.toString(16)) }
+                    cursor.sourcePictureIdHex?.let { append(" sourcePicture=").append(it) }
+                    if (cursor.animationElements.isNotEmpty()) {
+                        append(" animation=")
+                        append(cursor.animationElements.joinToString(",") { "${it.cursorIdHex}@${it.delayMilliseconds}ms" })
+                    }
+                    cursor.hotspotX?.let { append(" hotspot=").append(it).append(',').append(cursor.hotspotY ?: 0) }
+                    append(" foreground=").append(cursor.foregroundHex)
+                    append(" background=").append(cursor.backgroundHex)
                     appendLine()
                 }
             }

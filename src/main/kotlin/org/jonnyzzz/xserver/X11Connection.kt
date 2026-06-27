@@ -1710,7 +1710,15 @@ internal class X11Connection(
         if (state.picture(source) == null) {
             return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = source)
         }
-        state.putCursor(id)
+        state.putCursor(
+            XCursor(
+                id = id,
+                kind = "render",
+                sourcePictureId = source,
+                hotspotX = byteOrder.u16(body, 8),
+                hotspotY = byteOrder.u16(body, 10),
+            ),
+        )
         own(id)
     }
 
@@ -1822,7 +1830,16 @@ internal class X11Connection(
             }
             offset += 8
         }
-        state.putCursor(id)
+        val elements = mutableListOf<XAnimatedCursorElement>()
+        offset = 4
+        while (offset < body.size) {
+            elements += XAnimatedCursorElement(
+                cursorId = byteOrder.u32(body, offset),
+                delayMilliseconds = byteOrder.u32(body, offset + 4).toUInt().toLong(),
+            )
+            offset += 8
+        }
+        state.putCursor(XCursor(id = id, kind = "animated", animationElements = elements))
         own(id)
     }
 
@@ -4879,7 +4896,22 @@ internal class X11Connection(
         if (hotspotX >= sourcePixmap.width || hotspotY >= sourcePixmap.height) {
             return writeError(error = 8, opcode = 93, badValue = 0)
         }
-        state.putCursor(id)
+        state.putCursor(
+            XCursor(
+                id = id,
+                kind = "pixmap",
+                sourcePixmapId = source,
+                maskPixmapId = mask.takeIf { it != 0 },
+                hotspotX = hotspotX,
+                hotspotY = hotspotY,
+                foregroundRed = byteOrder.u16(body, 12),
+                foregroundGreen = byteOrder.u16(body, 14),
+                foregroundBlue = byteOrder.u16(body, 16),
+                backgroundRed = byteOrder.u16(body, 18),
+                backgroundGreen = byteOrder.u16(body, 20),
+                backgroundBlue = byteOrder.u16(body, 22),
+            ),
+        )
         own(id)
     }
 
@@ -4891,7 +4923,22 @@ internal class X11Connection(
         if (state.hasResource(id)) return writeError(error = 14, opcode = 94, badValue = id)
         if (!state.hasFont(sourceFont)) return writeError(error = 7, opcode = 94, badValue = sourceFont)
         if (maskFont != 0 && !state.hasFont(maskFont)) return writeError(error = 7, opcode = 94, badValue = maskFont)
-        state.putCursor(id)
+        state.putCursor(
+            XCursor(
+                id = id,
+                kind = "glyph",
+                sourceFontId = sourceFont,
+                maskFontId = maskFont.takeIf { it != 0 },
+                sourceChar = byteOrder.u16(body, 12),
+                maskChar = byteOrder.u16(body, 14),
+                foregroundRed = byteOrder.u16(body, 16),
+                foregroundGreen = byteOrder.u16(body, 18),
+                foregroundBlue = byteOrder.u16(body, 20),
+                backgroundRed = byteOrder.u16(body, 22),
+                backgroundGreen = byteOrder.u16(body, 24),
+                backgroundBlue = byteOrder.u16(body, 26),
+            ),
+        )
         own(id)
     }
 
@@ -4899,6 +4946,15 @@ internal class X11Connection(
         if (body.size != 16) return writeError(error = 16, opcode = 96, badValue = 0)
         val cursor = byteOrder.u32(body, 0)
         if (!state.hasCursor(cursor)) return writeError(error = 6, opcode = 96, badValue = cursor)
+        state.recolorCursor(
+            id = cursor,
+            foregroundRed = byteOrder.u16(body, 4),
+            foregroundGreen = byteOrder.u16(body, 6),
+            foregroundBlue = byteOrder.u16(body, 8),
+            backgroundRed = byteOrder.u16(body, 10),
+            backgroundGreen = byteOrder.u16(body, 12),
+            backgroundBlue = byteOrder.u16(body, 14),
+        )
     }
 
     private fun queryBestSize(sizeClass: Int, body: ByteArray) {

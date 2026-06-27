@@ -733,6 +733,7 @@ class XRenderProtocolTest {
                 val sourceCursor = WindowId + 0x180
                 val animatedCursor = sourceCursor + 1
                 val missingCursor = sourceCursor + 2
+                val animationDelay = Int.MIN_VALUE + 5
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
@@ -744,7 +745,7 @@ class XRenderProtocolTest {
                 }))
                 out.write(renderCreateAnimCursor(animatedCursor))
                 out.write(renderCreateAnimCursor(animatedCursor, missingCursor to 75))
-                out.write(renderCreateAnimCursor(animatedCursor, sourceCursor to 75))
+                out.write(renderCreateAnimCursor(animatedCursor, sourceCursor to animationDelay))
                 out.write(renderCreateAnimCursorRaw(ByteArray(8).also {
                     put32le(it, 0, animatedCursor)
                     put32le(it, 4, sourceCursor)
@@ -760,6 +761,13 @@ class XRenderProtocolTest {
                 assertError(socket.getInputStream(), error = 14, badValue = animatedCursor, sequence = 9, minorOpcode = 31)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_ff00.toInt(), u32le(image, 32))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"id":"0x${animatedCursor.toUInt().toString(16)}","kind":"animated"""")
+                assertContains(
+                    stateJson,
+                    """"animation":[{"cursor":"0x${sourceCursor.toUInt().toString(16)}","delay":${animationDelay.toUInt().toLong()}}]""",
+                )
             }
             server.close()
             serverThread.join(1_000)

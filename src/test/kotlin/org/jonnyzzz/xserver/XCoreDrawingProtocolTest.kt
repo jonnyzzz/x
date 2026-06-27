@@ -755,8 +755,32 @@ class XCoreDrawingProtocolTest {
                 out.write(request(94, 0, ByteArray(32)))
                 out.write(createGlyphCursorRequest(cursor, sourceFont = missingSourceFont, maskFont = 0))
                 out.write(createGlyphCursorRequest(cursor, sourceFont = sourceFont, maskFont = missingMaskFont))
-                out.write(createGlyphCursorRequest(cursor, sourceFont = sourceFont, maskFont = 0))
-                out.write(recolorCursorRequest(cursor))
+                out.write(
+                    createGlyphCursorRequest(
+                        cursor,
+                        sourceFont = sourceFont,
+                        maskFont = maskFont,
+                        sourceChar = 0x1234,
+                        maskChar = 0x5678,
+                        foregroundRed = 0x0101,
+                        foregroundGreen = 0x0202,
+                        foregroundBlue = 0x0303,
+                        backgroundRed = 0x0404,
+                        backgroundGreen = 0x0505,
+                        backgroundBlue = 0x0606,
+                    ),
+                )
+                out.write(
+                    recolorCursorRequest(
+                        cursor,
+                        foregroundRed = 0x1111,
+                        foregroundGreen = 0x2222,
+                        foregroundBlue = 0x3333,
+                        backgroundRed = 0xaaaa,
+                        backgroundGreen = 0xbbbb,
+                        backgroundBlue = 0xcccc,
+                    ),
+                )
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0, green = 0xffff, blue = 0))
                 out.flush()
 
@@ -768,6 +792,16 @@ class XCoreDrawingProtocolTest {
                 val green = readReply(socket.getInputStream())
                 assertEquals(9, u16le(green, 2))
                 assertEquals(0x0000_ff00, u32le(green, 16))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val cursorJson = Regex("""\{"id":"0x${cursor.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
+                assertContains(cursorJson, """"kind":"glyph"""")
+                assertContains(cursorJson, """"sourceFont":"0x${sourceFont.toUInt().toString(16)}"""")
+                assertContains(cursorJson, """"maskFont":"0x${maskFont.toUInt().toString(16)}"""")
+                assertContains(cursorJson, """"sourceChar":4660""")
+                assertContains(cursorJson, """"maskChar":22136""")
+                assertContains(cursorJson, """"foreground":"0x111122223333"""")
+                assertContains(cursorJson, """"background":"0xaaaabbbbcccc"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -786,7 +820,17 @@ class XCoreDrawingProtocolTest {
                 val out = socket.getOutputStream()
                 out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
                 out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
-                out.write(recolorCursorRequest(cursor))
+                out.write(
+                    recolorCursorRequest(
+                        cursor,
+                        foregroundRed = 0x1111,
+                        foregroundGreen = 0x2222,
+                        foregroundBlue = 0x3333,
+                        backgroundRed = 0xaaaa,
+                        backgroundGreen = 0xbbbb,
+                        backgroundBlue = 0xcccc,
+                    ),
+                )
                 out.write(recolorCursorRequest(missingCursor))
                 out.write(request(96, 0, ByteArray(12)))
                 out.write(allocColorRequest(X11Ids.DefaultColormap, red = 0xffff, green = 0, blue = 0))
@@ -798,6 +842,16 @@ class XCoreDrawingProtocolTest {
                 val red = readReply(socket.getInputStream())
                 assertEquals(6, u16le(red, 2))
                 assertEquals(Red, u32le(red, 16))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                val cursorJson = Regex("""\{"id":"0x${cursor.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
+                assertContains(cursorJson, """"kind":"pixmap"""")
+                assertContains(cursorJson, """"sourcePixmap":"0x${PixmapId.toUInt().toString(16)}"""")
+                assertContains(cursorJson, """"maskPixmap":null""")
+                assertContains(cursorJson, """"hotspotX":0""")
+                assertContains(cursorJson, """"hotspotY":0""")
+                assertContains(cursorJson, """"foreground":"0x111122223333"""")
+                assertContains(cursorJson, """"background":"0xaaaabbbbcccc"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -13439,13 +13493,29 @@ class XCoreDrawingProtocolTest {
         return request(60, 0, body)
     }
 
-    private fun createCursorRequest(cursor: Int, source: Int, mask: Int, x: Int = 0, y: Int = 0): ByteArray {
+    private fun createCursorRequest(
+        cursor: Int,
+        source: Int,
+        mask: Int,
+        x: Int = 0,
+        y: Int = 0,
+        foregroundRed: Int = 0xffff,
+        foregroundGreen: Int = 0,
+        foregroundBlue: Int = 0,
+        backgroundRed: Int = 0xffff,
+        backgroundGreen: Int = 0,
+        backgroundBlue: Int = 0,
+    ): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, cursor)
         put32le(body, 4, source)
         put32le(body, 8, mask)
-        put16le(body, 12, 0xffff)
-        put16le(body, 18, 0xffff)
+        put16le(body, 12, foregroundRed)
+        put16le(body, 14, foregroundGreen)
+        put16le(body, 16, foregroundBlue)
+        put16le(body, 18, backgroundRed)
+        put16le(body, 20, backgroundGreen)
+        put16le(body, 22, backgroundBlue)
         put16le(body, 24, x)
         put16le(body, 26, y)
         return request(93, 0, body)
@@ -13457,21 +13527,51 @@ class XCoreDrawingProtocolTest {
         return request(95, 0, body)
     }
 
-    private fun createGlyphCursorRequest(cursor: Int, sourceFont: Int, maskFont: Int): ByteArray {
+    private fun createGlyphCursorRequest(
+        cursor: Int,
+        sourceFont: Int,
+        maskFont: Int,
+        sourceChar: Int = 0,
+        maskChar: Int = 0,
+        foregroundRed: Int = 0xffff,
+        foregroundGreen: Int = 0,
+        foregroundBlue: Int = 0,
+        backgroundRed: Int = 0xffff,
+        backgroundGreen: Int = 0,
+        backgroundBlue: Int = 0,
+    ): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, cursor)
         put32le(body, 4, sourceFont)
         put32le(body, 8, maskFont)
-        put16le(body, 16, 0xffff)
-        put16le(body, 22, 0xffff)
+        put16le(body, 12, sourceChar)
+        put16le(body, 14, maskChar)
+        put16le(body, 16, foregroundRed)
+        put16le(body, 18, foregroundGreen)
+        put16le(body, 20, foregroundBlue)
+        put16le(body, 22, backgroundRed)
+        put16le(body, 24, backgroundGreen)
+        put16le(body, 26, backgroundBlue)
         return request(94, 0, body)
     }
 
-    private fun recolorCursorRequest(cursor: Int): ByteArray {
+    private fun recolorCursorRequest(
+        cursor: Int,
+        foregroundRed: Int = 0xffff,
+        foregroundGreen: Int = 0,
+        foregroundBlue: Int = 0,
+        backgroundRed: Int = 0xffff,
+        backgroundGreen: Int = 0,
+        backgroundBlue: Int = 0,
+    ): ByteArray {
         val body = ByteArray(16)
         put32le(body, 0, cursor)
-        put16le(body, 4, 0xffff)
-        put16le(body, 10, 0xffff)
+        put16le(body, 4, foregroundRed)
+        put16le(body, 6, foregroundGreen)
+        put16le(body, 8, foregroundBlue)
+        put16le(body, 10, backgroundRed)
+        put16le(body, 12, backgroundGreen)
+        put16le(body, 14, backgroundBlue)
         return request(96, 0, body)
     }
 

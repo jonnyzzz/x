@@ -111,6 +111,35 @@ internal object SvgScreenRenderer {
                 }
                 append("""]}""")
             }
+            append("""],"cursors":[""")
+            snapshot.cursors.forEachIndexed { index, cursor ->
+                if (index > 0) append(',')
+                append('{')
+                append(""""id":"${cursor.idHex}","kind":"${escapeJson(cursor.kind)}","sourcePixmap":""")
+                cursor.sourcePixmapIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","maskPixmap":""")
+                cursor.maskPixmapIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","sourceFont":""")
+                cursor.sourceFontIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","maskFont":""")
+                cursor.maskFontIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","sourceChar":""")
+                cursor.sourceChar?.let { append(it) } ?: append("null")
+                append(""","maskChar":""")
+                cursor.maskChar?.let { append(it) } ?: append("null")
+                append(""","sourcePicture":""")
+                cursor.sourcePictureIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","animation":[""")
+                cursor.animationElements.forEachIndexed { elementIndex, element ->
+                    if (elementIndex > 0) append(',')
+                    append("""{"cursor":"${element.cursorIdHex}","delay":${element.delayMilliseconds}}""")
+                }
+                append("""],"hotspotX":""")
+                cursor.hotspotX?.let { append(it) } ?: append("null")
+                append(""","hotspotY":""")
+                cursor.hotspotY?.let { append(it) } ?: append("null")
+                append(""","foreground":"${cursor.foregroundHex}","background":"${cursor.backgroundHex}"}""")
+            }
             append("""],"glxPixmaps":[""")
             snapshot.glxPixmaps.forEachIndexed { index, pixmap ->
                 if (index > 0) append(',')
