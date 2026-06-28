@@ -2687,7 +2687,7 @@ internal class X11State(
         val solid = source.solidPixel
         if (solid != null) {
             return when (operation) {
-                XRender.OpClear, XRender.OpDisjointClear -> {
+                XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> {
                     if (maskFramebuffer == null && maskAlphaAt == null) {
                         destinationFramebuffer.fill(
                             destinationX,
@@ -4049,7 +4049,7 @@ internal class X11State(
         for (rectangle in rectangles) {
             painted = when (operation) {
                 XRender.OpDst, XRender.OpDisjointDst -> false
-                XRender.OpClear, XRender.OpDisjointClear -> framebuffer.fill(
+                XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> framebuffer.fill(
                     rectangle.x,
                     rectangle.y,
                     rectangle.width,
