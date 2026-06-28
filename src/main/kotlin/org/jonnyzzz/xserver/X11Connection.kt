@@ -4657,6 +4657,8 @@ internal class X11Connection(
                 background = gc.background,
                 lineWidth = gc.lineWidth,
                 lineStyle = gc.lineStyle,
+                capStyle = gc.capStyle,
+                joinStyle = gc.joinStyle,
                 dashOffset = gc.dashOffset,
                 dashes = gc.dashes,
                 points = points,
@@ -4701,6 +4703,8 @@ internal class X11Connection(
                 background = gc.background,
                 lineWidth = gc.lineWidth,
                 lineStyle = gc.lineStyle,
+                capStyle = gc.capStyle,
+                joinStyle = gc.joinStyle,
                 dashOffset = gc.dashOffset,
                 dashes = gc.dashes,
                 points = points,
@@ -4743,6 +4747,8 @@ internal class X11Connection(
                 kind = kind,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
+                capStyle = gc.capStyle,
+                joinStyle = gc.joinStyle,
                 rectangles = rectangles,
                 framebufferBacked = kind == XDrawingKind.FillRectangle || kind == XDrawingKind.Rectangle,
             ),
@@ -4784,6 +4790,8 @@ internal class X11Connection(
                 kind = if (filled) XDrawingKind.FillArc else XDrawingKind.Arc,
                 foreground = gc.foreground,
                 lineWidth = gc.lineWidth,
+                capStyle = gc.capStyle,
+                joinStyle = gc.joinStyle,
                 arcs = arcs,
                 framebufferBacked = true,
             ),
@@ -6751,6 +6759,14 @@ internal class X11Connection(
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
                 }
+                6 -> if (value !in XGraphicsContext.CapNotLast..XGraphicsContext.CapProjecting) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
+                7 -> if (value !in XGraphicsContext.JoinMiter..XGraphicsContext.JoinBevel) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
                 8 -> if (value !in XGraphicsContext.FillSolid..XGraphicsContext.FillOpaqueStippled) {
                     writeError(error = 2, opcode = opcode, badValue = value)
                     return false
@@ -6819,6 +6835,8 @@ internal class X11Connection(
         var background: Int? = null
         var lineWidth: Int? = null
         var lineStyle: Int? = null
+        var capStyle: Int? = null
+        var joinStyle: Int? = null
         var function: Int? = null
         var planeMask: Int? = null
         var fontId: Int? = null
@@ -6853,6 +6871,16 @@ internal class X11Connection(
                 4 -> lineWidth = value.coerceAtLeast(1)
                 5 -> if (value in XGraphicsContext.LineSolid..XGraphicsContext.LineDoubleDash) {
                     lineStyle = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
+                6 -> if (value in XGraphicsContext.CapNotLast..XGraphicsContext.CapProjecting) {
+                    capStyle = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
+                7 -> if (value in XGraphicsContext.JoinMiter..XGraphicsContext.JoinBevel) {
+                    joinStyle = value
                 } else {
                     return writeError(error = 2, opcode = opcode, badValue = value)
                 }
@@ -6911,6 +6939,8 @@ internal class X11Connection(
             background = background,
             lineWidth = lineWidth,
             lineStyle = lineStyle,
+            capStyle = capStyle,
+            joinStyle = joinStyle,
             function = function,
             planeMask = planeMask,
             fontId = fontId,

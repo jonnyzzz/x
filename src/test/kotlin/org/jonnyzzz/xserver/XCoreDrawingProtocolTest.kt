@@ -2382,6 +2382,32 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CreateGC and ChangeGC reject invalid cap and join styles`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_0040, values = listOf(4)))
+                out.write(createGcRequest(GcId, foreground = Blue))
+                out.write(changeGcRawRequest(GcId, mask = 0x0000_0080, values = listOf(3)))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(0 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = 55, badValue = 4, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = 56, badValue = 3, sequence = 4)
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CreateGC graphics exposures bool ignores value list padding bytes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3057,6 +3083,34 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 1, 0))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 2, 0))
                 assertEquals(0xffff_ffff.toInt(), pixelAt(image, 4, 3, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CopyGC copies cap and join styles into semantic drawing state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createGcRawRequest(GcId, mask = 0x0000_00c4, values = listOf(Red, 3, 2)))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(copyGcRequest(GcId, GcId + 1, mask = 0x0000_00c0))
+                out.write(polyLineRequest(WindowId, GcId + 1, points = listOf(0 to 0, 3 to 0)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 0, 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 4, 3, 0))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"kind":"Line","framebufferBacked":true""")
+                assertContains(stateJson, """"capStyle":3,"joinStyle":2""")
             }
             server.close()
             serverThread.join(1_000)

@@ -4047,6 +4047,8 @@ internal class X11State(
                 3 -> destination.background = source.background
                 4 -> destination.lineWidth = source.lineWidth
                 5 -> destination.lineStyle = source.lineStyle
+                6 -> destination.capStyle = source.capStyle
+                7 -> destination.joinStyle = source.joinStyle
                 8 -> destination.fillStyle = source.fillStyle
                 9 -> destination.fillRule = source.fillRule
                 10 -> {
@@ -4093,6 +4095,8 @@ internal class X11State(
         background: Int? = null,
         lineWidth: Int? = null,
         lineStyle: Int? = null,
+        capStyle: Int? = null,
+        joinStyle: Int? = null,
         function: Int? = null,
         planeMask: Int? = null,
         fontId: Int? = null,
@@ -4116,6 +4120,8 @@ internal class X11State(
         background?.let { gc.background = it }
         lineWidth?.let { gc.lineWidth = it }
         lineStyle?.let { gc.lineStyle = it }
+        capStyle?.let { gc.capStyle = it }
+        joinStyle?.let { gc.joinStyle = it }
         function?.let { gc.function = it }
         planeMask?.let { gc.planeMask = it }
         fontId?.let { gc.fontId = it }
@@ -5150,6 +5156,8 @@ internal data class XGraphicsContext(
     var background: Int = 0x00ff_ffff,
     var lineWidth: Int = 1,
     var lineStyle: Int = LineSolid,
+    var capStyle: Int = CapButt,
+    var joinStyle: Int = JoinMiter,
     var function: Int = GXcopy,
     var planeMask: Int = -1,
     var fontId: Int = 0,
@@ -5200,6 +5208,13 @@ internal data class XGraphicsContext(
         const val LineSolid = 0
         const val LineOnOffDash = 1
         const val LineDoubleDash = 2
+        const val CapNotLast = 0
+        const val CapButt = 1
+        const val CapRound = 2
+        const val CapProjecting = 3
+        const val JoinMiter = 0
+        const val JoinRound = 1
+        const val JoinBevel = 2
         const val FillSolid = 0
         const val FillTiled = 1
         const val FillStippled = 2
@@ -5340,6 +5355,8 @@ internal data class XDrawingCommand(
     val background: Int = 0x00ff_ffff,
     val lineWidth: Int = 1,
     val lineStyle: Int = XGraphicsContext.LineSolid,
+    val capStyle: Int = XGraphicsContext.CapButt,
+    val joinStyle: Int = XGraphicsContext.JoinMiter,
     val dashOffset: Int = 0,
     val dashes: List<Int> = emptyList(),
     val points: List<XPoint> = emptyList(),

@@ -159,9 +159,18 @@ internal object SvgScreenRenderer {
             snapshot.drawings.forEachIndexed { index, drawing ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""drawable":"0x${drawing.drawableId.toUInt().toString(16)}","kind":"${drawing.kind.name}","framebufferBacked":${drawing.framebufferBacked},"sourceDrawable":""")
+                append(
+                    """"drawable":"0x${drawing.drawableId.toUInt().toString(16)}","kind":"${drawing.kind.name}","framebufferBacked":${drawing.framebufferBacked},"sourceDrawable":""",
+                )
                 drawing.sourceDrawableId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
-                append(""","rectangles":[""")
+                append(
+                    ""","foreground":"0x${drawing.foreground.toUInt().toString(16)}","lineWidth":${drawing.lineWidth},"lineStyle":${drawing.lineStyle},"capStyle":${drawing.capStyle},"joinStyle":${drawing.joinStyle},"dashOffset":${drawing.dashOffset},"dashes":[""",
+                )
+                drawing.dashes.forEachIndexed { dashIndex, dash ->
+                    if (dashIndex > 0) append(',')
+                    append(dash)
+                }
+                append("""],"rectangles":[""")
                 drawing.rectangles.forEachIndexed { rectangleIndex, rectangle ->
                     if (rectangleIndex > 0) append(',')
                     append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
@@ -820,6 +829,7 @@ internal object SvgScreenRenderer {
                 "fill" to "none",
                 "stroke" to color,
                 "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
+                "stroke-linejoin" to strokeLineJoin(drawing.joinStyle),
                 "stroke-dasharray" to dash,
             )
         }
@@ -858,6 +868,8 @@ internal object SvgScreenRenderer {
                 "fill" to if (filled) pixelColor(drawing.foreground) else "none",
                 "stroke" to if (filled) null else pixelColor(drawing.foreground),
                 "stroke-width" to if (filled) null else drawing.lineWidth.coerceAtLeast(1),
+                "stroke-linecap" to if (filled) null else strokeLineCap(drawing.capStyle),
+                "stroke-linejoin" to if (filled) null else strokeLineJoin(drawing.joinStyle),
             )
         }
     }
@@ -870,8 +882,8 @@ internal object SvgScreenRenderer {
             "fill" to "none",
             "stroke" to pixelColor(drawing.foreground),
             "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
-            "stroke-linecap" to "round",
-            "stroke-linejoin" to "round",
+            "stroke-linecap" to strokeLineCap(drawing.capStyle),
+            "stroke-linejoin" to strokeLineJoin(drawing.joinStyle),
             "stroke-dasharray" to dashArray(drawing),
             "stroke-dashoffset" to dashOffset(drawing),
         )
@@ -889,12 +901,26 @@ internal object SvgScreenRenderer {
                 "y2" to segment[1].y,
                 "stroke" to color,
                 "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
-                "stroke-linecap" to "round",
+                "stroke-linecap" to strokeLineCap(drawing.capStyle),
                 "stroke-dasharray" to dashArray(drawing),
                 "stroke-dashoffset" to dashOffset(drawing),
             )
         }
     }
+
+    private fun strokeLineCap(capStyle: Int): String =
+        when (capStyle) {
+            XGraphicsContext.CapRound -> "round"
+            XGraphicsContext.CapProjecting -> "square"
+            else -> "butt"
+        }
+
+    private fun strokeLineJoin(joinStyle: Int): String =
+        when (joinStyle) {
+            XGraphicsContext.JoinRound -> "round"
+            XGraphicsContext.JoinBevel -> "bevel"
+            else -> "miter"
+        }
 
     private fun dashArray(drawing: XDrawingCommand): String? {
         if (drawing.lineStyle == XGraphicsContext.LineSolid) return null
