@@ -254,6 +254,41 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES SetWindowShapeRegion validates resources`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingWindow = WindowId + 1
+                val inputOnly = WindowId + 2
+                val missingRegion = RegionId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createInputOnlyWindowRequest(inputOnly))
+                out.write(xfixesSetWindowShapeRegionRaw(ByteArray(12).also { put32le(it, 0, WindowId) }))
+                out.write(xfixesSetWindowShapeRegion(missingWindow, XFixes.ShapeClip, 0, 0, 0))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, 0, 0, missingRegion))
+                out.write(xfixesSetWindowShapeRegion(WindowId, 3, 0, 0, 0))
+                out.write(xfixesSetWindowShapeRegion(inputOnly, XFixes.ShapeClip, 0, 0, 0))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, 0, 0, 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XFixes.SetWindowShapeRegion)
+                assertExtensionError(socket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, badValue = missingWindow, sequence = 4, minorOpcode = XFixes.SetWindowShapeRegion)
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingRegion, sequence = 5, minorOpcode = XFixes.SetWindowShapeRegion)
+                assertExtensionError(socket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, badValue = 3, sequence = 6, minorOpcode = XFixes.SetWindowShapeRegion)
+                assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = inputOnly, sequence = 7, minorOpcode = XFixes.SetWindowShapeRegion)
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES InvertRegion validates framing and resources`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -273,6 +308,176 @@ class XRenderProtocolTest {
                 assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XFixes.InvertRegion)
                 assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingRegion, sequence = 3, minorOpcode = XFixes.InvertRegion)
                 assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingDestination, sequence = 5, minorOpcode = XFixes.InvertRegion)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetWindowShapeRegion applies copied clip to core drawing`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(PutImageGcId, WindowId))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 1, yOffset = 0, region = RegionId))
+                out.write(xfixesSetRegion(RegionId, listOf(XRectangleCommand(3, 0, 1, 1))))
+                out.write(polyFillRectangle(WindowId, PutImageGcId, listOf(XRectangleCommand(0, 0, 5, 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = 0))
+                out.write(polyFillRectangle(WindowId, PutImageGcId, listOf(XRectangleCommand(4, 0, 1, 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                val clipped = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 0, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(clipped, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 2, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 3, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 4, y = 0))
+
+                val unclipped = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(unclipped, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(unclipped, imageWidth = 5, x = 4, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetWindowShapeRegion intersects with GC clip and leaves pixmaps unaffected`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val pixmapGc = PutImageGcId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 3, height = 1))
+                out.write(createGcRequest(PutImageGcId, WindowId))
+                out.write(createGcRequest(pixmapGc, PixmapId))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(1, 0, 2, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = RegionId))
+                out.write(setClipRectangles(PutImageGcId, originX = 0, originY = 0, rectangles = listOf(XRectangleCommand(2, 0, 2, 1))))
+                out.write(polyFillRectangle(WindowId, PutImageGcId, listOf(XRectangleCommand(0, 0, 5, 1))))
+                out.write(polyFillRectangle(PixmapId, pixmapGc, listOf(XRectangleCommand(0, 0, 3, 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val windowImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, imageWidth = 5, x = 0, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(windowImage, imageWidth = 5, x = 2, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, imageWidth = 5, x = 3, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(windowImage, imageWidth = 5, x = 4, y = 0))
+
+                val pixmapImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(pixmapImage, imageWidth = 3, x = 0, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(pixmapImage, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(pixmapImage, imageWidth = 3, x = 2, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetWindowShapeRegion clips CopyPlane and copy exposure background repair`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val copyGc = PutImageGcId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 1, width = 3, height = 1))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1, height = 1))
+                out.write(createGcRequest(PutImageGcId, MaskPixmapId))
+                out.write(putImage1OnlyRequest(MaskPixmapId, width = 3, height = 1, bits = listOf(true, true, true)))
+                out.write(createGcRequest(copyGc, WindowId, graphicsExposures = false))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = RegionId))
+                out.write(copyPlaneRequest(MaskPixmapId, WindowId, copyGc, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 3, height = 1, bitPlane = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 3, height = 1))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = 0))
+                out.write(polyFillRectangle(WindowId, copyGc, listOf(XRectangleCommand(0, 0, 3, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = RegionId))
+                out.write(copyAreaRequest(PixmapId, WindowId, copyGc, sourceX = 0, sourceY = 0, destinationX = 0, destinationY = 0, width = 3, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val copyPlaneImage = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(copyPlaneImage, imageWidth = 3, x = 0, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(copyPlaneImage, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(copyPlaneImage, imageWidth = 3, x = 2, y = 0))
+
+                val exposureRepairImage = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(exposureRepairImage, imageWidth = 3, x = 0, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(exposureRepairImage, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(exposureRepairImage, imageWidth = 3, x = 2, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetWindowShapeRegion clips RENDER fill destinations`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = RegionId))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 3, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 3, x = 0, y = 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 3, x = 2, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetWindowShapeRegion applies input shape to pointer hit testing`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                server.input.click(12, 20)
+                out.write(queryPointerRequest())
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeInput, xOffset = 0, yOffset = 0, region = RegionId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val beforeShape = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(WindowId, u32le(beforeShape, 12))
+
+                val afterShape = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(0, u32le(afterShape, 12))
             }
             server.close()
             serverThread.join(1_000)
@@ -11641,6 +11846,19 @@ class XRenderProtocolTest {
         return request(1, 24, body)
     }
 
+    private fun createInputOnlyWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, id)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 8, 10)
+        put16le(body, 10, 20)
+        put16le(body, 12, 100)
+        put16le(body, 14, 80)
+        put16le(body, 18, 2)
+        put32le(body, 20, X11Ids.RootVisual)
+        return request(1, 0, body)
+    }
+
     private fun getImageRequest(drawable: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
         val body = ByteArray(16)
         put32le(body, 0, drawable)
@@ -11650,6 +11868,12 @@ class XRenderProtocolTest {
         put16le(body, 10, height)
         put32le(body, 12, 0xffff_ffff.toInt())
         return request(73, 2, body)
+    }
+
+    private fun mapWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(8, 0, body)
     }
 
     private fun renderCreatePicture(picture: Int, drawable: Int, format: Int): ByteArray {
@@ -12077,6 +12301,25 @@ class XRenderProtocolTest {
         put16le(body, 10, originY)
         return request(XFixes.MajorOpcode, XFixes.SetGCClipRegion, body)
     }
+
+    private fun xfixesSetWindowShapeRegion(
+        window: Int,
+        kind: Int,
+        xOffset: Int,
+        yOffset: Int,
+        region: Int,
+    ): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, window)
+        body[4] = kind.toByte()
+        put16le(body, 8, xOffset)
+        put16le(body, 10, yOffset)
+        put32le(body, 12, region)
+        return xfixesSetWindowShapeRegionRaw(body)
+    }
+
+    private fun xfixesSetWindowShapeRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.SetWindowShapeRegion, body)
 
     private fun xfixesSetPictureClipRegion(
         picture: Int,
@@ -12739,10 +12982,34 @@ class XRenderProtocolTest {
         return request(54, 0, body)
     }
 
-    private fun createGcRequest(id: Int, drawable: Int): ByteArray {
-        val body = ByteArray(12)
+    private fun createGcRequest(
+        id: Int,
+        drawable: Int,
+        foreground: Int? = null,
+        background: Int? = null,
+        graphicsExposures: Boolean? = null,
+    ): ByteArray {
+        val values = mutableListOf<Int>()
+        var mask = 0
+        if (foreground != null) {
+            mask = mask or 0x0000_0004
+            values += foreground
+        }
+        if (background != null) {
+            mask = mask or 0x0000_0008
+            values += background
+        }
+        if (graphicsExposures != null) {
+            mask = mask or 0x0001_0000
+            values += if (graphicsExposures) 1 else 0
+        }
+        val body = ByteArray(12 + values.size * 4)
         put32le(body, 0, id)
         put32le(body, 4, drawable)
+        put32le(body, 8, mask)
+        values.forEachIndexed { index, value ->
+            put32le(body, 12 + index * 4, value)
+        }
         return request(55, 0, body)
     }
 
@@ -12775,6 +13042,59 @@ class XRenderProtocolTest {
         return request(70, 0, body)
     }
 
+    private fun copyAreaRequest(
+        source: Int,
+        destination: Int,
+        gc: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+    ): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        put32le(body, 8, gc)
+        put16le(body, 12, sourceX)
+        put16le(body, 14, sourceY)
+        put16le(body, 16, destinationX)
+        put16le(body, 18, destinationY)
+        put16le(body, 20, width)
+        put16le(body, 22, height)
+        return request(62, 0, body)
+    }
+
+    private fun copyPlaneRequest(
+        source: Int,
+        destination: Int,
+        gc: Int,
+        sourceX: Int,
+        sourceY: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        bitPlane: Int,
+    ): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        put32le(body, 8, gc)
+        put16le(body, 12, sourceX)
+        put16le(body, 14, sourceY)
+        put16le(body, 16, destinationX)
+        put16le(body, 18, destinationY)
+        put16le(body, 20, width)
+        put16le(body, 22, height)
+        put32le(body, 24, bitPlane)
+        return request(63, 0, body)
+    }
+
+    private fun queryPointerRequest(): ByteArray =
+        request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
+
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
         val bytes = ByteArray(4 + body.size)
         bytes[0] = opcode.toByte()
@@ -12788,6 +13108,17 @@ class XRenderProtocolTest {
         val header = input.readExactly(32)
         val payloadUnits = u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun readReplySkippingEvents(input: InputStream): ByteArray {
+        while (true) {
+            val header = input.readExactly(32)
+            val type = header[0].toInt() and 0xff
+            if (type == 0 || type == 1) {
+                val payloadUnits = if (type == 1) u32le(header, 4) else 0
+                return header + input.readExactly(payloadUnits * 4)
+            }
+        }
     }
 
     private fun assertRegionReply(input: InputStream, extents: XRectangleCommand, rectangles: List<XRectangleCommand>) {

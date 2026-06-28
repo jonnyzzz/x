@@ -2119,6 +2119,7 @@ internal class X11State(
     fun paintWindowBackground(windowId: Int, rectangle: XRectangleCommand? = null): Boolean {
         val window = windows[windowId] ?: return false
         val target = rectangle ?: XRectangleCommand(0, 0, window.width, window.height)
+        val effectiveClip = effectiveDrawableClip(windowId, listOf(target))
         return when (val background = resolveWindowBackground(window)) {
             XResolvedWindowBackground.None -> false
 
@@ -2131,9 +2132,17 @@ internal class X11State(
                 patternHeight = background.pixmap.height,
                 patternXOrigin = background.xOrigin,
                 patternYOrigin = background.yOrigin,
+                clipRectangles = effectiveClip,
             ) { x, y -> background.pixmap.framebuffer.pixelAt(x, y) }
 
-            is XResolvedWindowBackground.Pixel -> window.framebuffer.fill(target.x, target.y, target.width, target.height, background.pixel)
+            is XResolvedWindowBackground.Pixel -> window.framebuffer.fill(
+                target.x,
+                target.y,
+                target.width,
+                target.height,
+                background.pixel,
+                clipRectangles = effectiveClip,
+            )
         }
     }
 
@@ -2592,6 +2601,17 @@ internal class X11State(
     }
 
     @Synchronized
+    fun setWindowShapeRegion(windowId: Int, kind: Int, rectangles: List<XRectangleCommand>?) {
+        val window = windows[windowId] ?: return
+        val copy = rectangles?.map { it.copy() }
+        when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape = copy
+            XFixes.ShapeClip -> window.clipShape = copy
+            XFixes.ShapeInput -> window.inputShape = copy
+        }
+    }
+
+    @Synchronized
     fun putGlyphSet(glyphSet: XGlyphSet) {
         glyphSets[glyphSet.id] = glyphSet
     }
@@ -2712,7 +2732,8 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        return framebuffer.putImage(x, y, image, clipRectangles, function, planeMask)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        return framebuffer.putImage(x, y, image, effectiveClip, function, planeMask)
     }
 
     @Synchronized
@@ -2731,6 +2752,7 @@ internal class X11State(
     ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles)
         return source.copyAreaTo(
             destination = destination,
             sourceX = sourceX,
@@ -2739,7 +2761,7 @@ internal class X11State(
             destinationY = destinationY,
             width = width,
             height = height,
-            clipRectangles = clipRectangles,
+            clipRectangles = effectiveClip,
             function = function,
             planeMask = planeMask,
         )
@@ -2764,6 +2786,7 @@ internal class X11State(
     ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles)
         return source.copyPlaneTo(
             destination = destination,
             sourceX = sourceX,
@@ -2775,7 +2798,7 @@ internal class X11State(
             bitPlane = bitPlane,
             foreground = foreground,
             background = background,
-            clipRectangles = clipRectangles,
+            clipRectangles = effectiveClip,
             function = function,
             planeMask = planeMask,
         )
@@ -2821,7 +2844,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 maskX = maskX,
                 maskY = maskY,
@@ -2840,7 +2863,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = maskFramebuffer,
                 maskX = maskX,
@@ -2860,7 +2883,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = maskFramebuffer,
                 maskX = maskX,
@@ -2880,7 +2903,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = maskFramebuffer,
                 maskX = maskX,
@@ -2902,7 +2925,7 @@ internal class X11State(
                             height,
                             0,
                             preserveAlpha = true,
-                            clipRectangles = destination.clipRectangles,
+                            clipRectangles = effectivePictureClip(destination),
                             clipMask = destinationClipMask,
                         )
                     } else {
@@ -2915,7 +2938,7 @@ internal class X11State(
                             width = width,
                             height = height,
                             operation = operation,
-                            clipRectangles = destination.clipRectangles,
+                            clipRectangles = effectivePictureClip(destination),
                             clipMask = destinationClipMask,
                             mask = maskFramebuffer,
                             maskX = maskX,
@@ -2934,7 +2957,7 @@ internal class X11State(
                             height,
                             solid,
                             preserveAlpha = true,
-                            clipRectangles = destination.clipRectangles,
+                            clipRectangles = effectivePictureClip(destination),
                             clipMask = destinationClipMask,
                         )
                     } else {
@@ -2947,7 +2970,7 @@ internal class X11State(
                             width = width,
                             height = height,
                             operation = operation,
-                            clipRectangles = destination.clipRectangles,
+                            clipRectangles = effectivePictureClip(destination),
                             clipMask = destinationClipMask,
                             mask = maskFramebuffer,
                             maskX = maskX,
@@ -2964,7 +2987,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -2980,7 +3003,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -2996,7 +3019,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3012,7 +3035,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3028,7 +3051,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3044,7 +3067,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3060,7 +3083,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3076,7 +3099,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3092,7 +3115,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3108,7 +3131,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3124,7 +3147,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3140,7 +3163,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3156,7 +3179,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3172,7 +3195,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3188,7 +3211,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3204,7 +3227,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3220,7 +3243,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3236,7 +3259,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3252,7 +3275,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3268,7 +3291,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3284,7 +3307,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3300,7 +3323,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3316,7 +3339,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3332,7 +3355,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3348,7 +3371,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3364,7 +3387,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3380,7 +3403,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3396,7 +3419,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3412,7 +3435,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3428,7 +3451,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3444,7 +3467,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3460,7 +3483,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3476,7 +3499,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3492,7 +3515,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3508,7 +3531,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3524,7 +3547,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3540,7 +3563,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3556,7 +3579,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3572,7 +3595,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3588,7 +3611,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3604,7 +3627,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3620,7 +3643,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3636,7 +3659,7 @@ internal class X11State(
                         destinationY = destinationY,
                         width = width,
                         height = height,
-                        clipRectangles = destination.clipRectangles,
+                        clipRectangles = effectivePictureClip(destination),
                         clipMask = destinationClipMask,
                         mask = maskFramebuffer,
                         maskX = maskX,
@@ -3658,7 +3681,7 @@ internal class X11State(
                 width = width,
                 height = height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = maskFramebuffer,
                 maskX = maskX,
@@ -3677,7 +3700,7 @@ internal class X11State(
             width = width,
             height = height,
             operation = operation,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destinationClipMask,
             mask = maskFramebuffer,
             maskX = maskX,
@@ -3720,7 +3743,7 @@ internal class X11State(
             width = width,
             height = height,
             operation = XRender.OpSrc,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         ) { x, y ->
             sourcePixelAt(x, y)
@@ -4359,6 +4382,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (rectangle in rectangles) {
@@ -4372,14 +4396,14 @@ internal class X11State(
                     patternHeight = pattern.height,
                     patternXOrigin = tileStippleXOrigin,
                     patternYOrigin = tileStippleYOrigin,
-                    clipRectangles = clipRectangles,
+                    clipRectangles = effectiveClip,
                     function = function,
                     planeMask = planeMask,
                 ) { sourceX, sourceY ->
                     pattern.pixelAt(sourceX, sourceY)
                 }
             } else {
-                framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, clipRectangles, function, planeMask)
+                framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, effectiveClip, function, planeMask)
             } || painted
         }
         return painted
@@ -4405,6 +4429,39 @@ internal class X11State(
         }
 
     @Synchronized
+    fun effectiveDrawableClip(drawableId: Int, clipRectangles: List<XRectangleCommand>?): List<XRectangleCommand>? {
+        val window = windows[drawableId] ?: return clipRectangles
+        val shapeClip = intersectClips(window.boundingShape, window.clipShape)
+        return intersectClips(clipRectangles, shapeClip)
+    }
+
+    private fun effectivePictureClip(picture: XPicture): List<XRectangleCommand>? {
+        val drawableId = picture.drawableId ?: return picture.clipRectangles
+        return effectiveDrawableClip(drawableId, picture.clipRectangles)
+    }
+
+    private fun intersectClips(
+        first: List<XRectangleCommand>?,
+        second: List<XRectangleCommand>?,
+    ): List<XRectangleCommand>? =
+        when {
+            first == null -> second?.map { it.copy() }
+            second == null -> first
+            else -> first.flatMap { left ->
+                second.mapNotNull { right -> intersectRectangles(left, right) }
+            }
+        }
+
+    private fun intersectRectangles(first: XRectangleCommand, second: XRectangleCommand): XRectangleCommand? {
+        val left = maxOf(first.x, second.x)
+        val top = maxOf(first.y, second.y)
+        val right = minOf(first.x + first.width, second.x + second.width)
+        val bottom = minOf(first.y + first.height, second.y + second.height)
+        if (right <= left || bottom <= top) return null
+        return XRectangleCommand(left, top, right - left, bottom - top)
+    }
+
+    @Synchronized
     fun drawPoints(
         drawableId: Int,
         pixel: Int,
@@ -4415,9 +4472,10 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         var painted = false
         for (point in points) {
-            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, effectiveClip, function, planeMask) || painted
         }
         return painted
     }
@@ -4437,6 +4495,7 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         var painted = false
         val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
         for (index in 0 until points.lastIndex) {
@@ -4449,7 +4508,7 @@ internal class X11State(
                 end.y,
                 pixel,
                 lineWidth,
-                clipRectangles,
+                effectiveClip,
                 function,
                 planeMask,
                 dashPattern,
@@ -4474,13 +4533,14 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         var painted = false
         var index = 0
         while (index + 1 < points.size) {
             val start = points[index]
             val end = points[index + 1]
             val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern) || painted
+            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, effectiveClip, function, planeMask, dashPattern) || painted
             index += 2
         }
         return painted
@@ -4497,9 +4557,10 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, effectiveClip, function, planeMask) || painted
         }
         return painted
     }
@@ -4515,9 +4576,10 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         var painted = false
         for (arc in arcs) {
-            painted = framebuffer.drawArc(arc, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            painted = framebuffer.drawArc(arc, pixel, lineWidth, effectiveClip, function, planeMask) || painted
         }
         return painted
     }
@@ -4539,6 +4601,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (arc in arcs) {
@@ -4550,14 +4613,14 @@ internal class X11State(
                     patternYOrigin = tileStippleYOrigin,
                     patternWidth = pattern.width,
                     patternHeight = pattern.height,
-                    clipRectangles = clipRectangles,
+                    clipRectangles = effectiveClip,
                     function = function,
                     planeMask = planeMask,
                 ) { sourceX, sourceY ->
                     pattern.pixelAt(sourceX, sourceY)
                 }
             } else {
-                framebuffer.fillArc(arc, pixel, arcMode, clipRectangles, function, planeMask)
+                framebuffer.fillArc(arc, pixel, arcMode, effectiveClip, function, planeMask)
             } || painted
         }
         return painted
@@ -4580,6 +4643,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         return if (pattern != null) {
             framebuffer.fillPolygonPattern(
@@ -4589,14 +4653,14 @@ internal class X11State(
                 patternYOrigin = tileStippleYOrigin,
                 patternWidth = pattern.width,
                 patternHeight = pattern.height,
-                clipRectangles = clipRectangles,
+                clipRectangles = effectiveClip,
                 function = function,
                 planeMask = planeMask,
             ) { sourceX, sourceY ->
                 pattern.pixelAt(sourceX, sourceY)
             }
         } else {
-            framebuffer.fillPolygon(points, pixel, fillRule, clipRectangles, function, planeMask)
+            framebuffer.fillPolygon(points, pixel, fillRule, effectiveClip, function, planeMask)
         }
     }
 
@@ -4613,13 +4677,14 @@ internal class X11State(
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
         return framebuffer.drawText(
             x = x,
             baselineY = baselineY,
             text = text,
             foreground = foreground,
             background = background,
-            clipRectangles = clipRectangles,
+            clipRectangles = effectiveClip,
             function = function,
             planeMask = planeMask,
         )
@@ -4646,7 +4711,7 @@ internal class X11State(
                     rectangle.height,
                     0,
                     preserveAlpha = true,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> framebuffer.fill(
@@ -4656,7 +4721,7 @@ internal class X11State(
                     rectangle.height,
                     pixel,
                     preserveAlpha = true,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOver -> framebuffer.blendSolidOver(
@@ -4665,7 +4730,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAdd -> framebuffer.blendSolidAdd(
@@ -4674,7 +4739,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendMultiply -> framebuffer.blendSolidMultiply(
@@ -4683,7 +4748,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendScreen -> framebuffer.blendSolidScreen(
@@ -4692,7 +4757,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendOverlay -> framebuffer.blendSolidOverlay(
@@ -4701,7 +4766,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendDarken -> framebuffer.blendSolidDarken(
@@ -4710,7 +4775,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendLighten -> framebuffer.blendSolidLighten(
@@ -4719,7 +4784,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendColorDodge -> framebuffer.blendSolidColorDodge(
@@ -4728,7 +4793,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendColorBurn -> framebuffer.blendSolidColorBurn(
@@ -4737,7 +4802,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHardLight -> framebuffer.blendSolidHardLight(
@@ -4746,7 +4811,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendSoftLight -> framebuffer.blendSolidSoftLight(
@@ -4755,7 +4820,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendDifference -> framebuffer.blendSolidDifference(
@@ -4764,7 +4829,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendExclusion -> framebuffer.blendSolidExclusion(
@@ -4773,7 +4838,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLHue -> framebuffer.blendSolidHslHue(
@@ -4782,7 +4847,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLSaturation -> framebuffer.blendSolidHslSaturation(
@@ -4791,7 +4856,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLColor -> framebuffer.blendSolidHslColor(
@@ -4800,7 +4865,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLLuminosity -> framebuffer.blendSolidHslLuminosity(
@@ -4809,7 +4874,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpSaturate, XRender.OpDisjointOverReverse -> framebuffer.blendSolidSaturate(
@@ -4818,7 +4883,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOverReverse -> framebuffer.blendSolidOverReverse(
@@ -4827,7 +4892,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOver -> framebuffer.blendSolidDisjointOver(
@@ -4836,7 +4901,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOver -> framebuffer.blendSolidConjointOver(
@@ -4845,7 +4910,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOverReverse -> framebuffer.blendSolidConjointOverReverse(
@@ -4854,7 +4919,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointIn -> framebuffer.blendSolidDisjointIn(
@@ -4863,7 +4928,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointIn -> framebuffer.blendSolidConjointIn(
@@ -4872,7 +4937,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpIn -> framebuffer.blendSolidIn(
@@ -4881,7 +4946,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOut -> framebuffer.blendSolidOut(
@@ -4890,7 +4955,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOut -> framebuffer.blendSolidDisjointOut(
@@ -4899,7 +4964,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOut -> framebuffer.blendSolidConjointOut(
@@ -4908,7 +4973,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpInReverse -> framebuffer.blendSolidInReverse(
@@ -4917,7 +4982,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointInReverse -> framebuffer.blendSolidDisjointInReverse(
@@ -4926,7 +4991,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointInReverse -> framebuffer.blendSolidConjointInReverse(
@@ -4935,7 +5000,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOutReverse -> framebuffer.blendSolidOutReverse(
@@ -4944,7 +5009,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOutReverse -> framebuffer.blendSolidDisjointOutReverse(
@@ -4953,7 +5018,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOutReverse -> framebuffer.blendSolidConjointOutReverse(
@@ -4962,7 +5027,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointAtop -> framebuffer.blendSolidConjointAtop(
@@ -4971,7 +5036,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointAtopReverse -> framebuffer.blendSolidConjointAtopReverse(
@@ -4980,7 +5045,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAtop -> framebuffer.blendSolidAtop(
@@ -4989,7 +5054,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointAtop -> framebuffer.blendSolidDisjointAtop(
@@ -4998,7 +5063,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAtopReverse -> framebuffer.blendSolidAtopReverse(
@@ -5007,7 +5072,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointAtopReverse -> framebuffer.blendSolidDisjointAtopReverse(
@@ -5016,7 +5081,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointXor -> framebuffer.blendSolidDisjointXor(
@@ -5025,7 +5090,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointXor -> framebuffer.blendSolidConjointXor(
@@ -5034,7 +5099,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpXor -> framebuffer.blendSolidXor(
@@ -5043,7 +5108,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 else -> framebuffer.blendSolidOver(
@@ -5052,7 +5117,7 @@ internal class X11State(
                     destinationY = rectangle.y,
                     width = rectangle.width,
                     height = rectangle.height,
-                    clipRectangles = destination.clipRectangles,
+                    clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
             } || painted
@@ -5086,7 +5151,7 @@ internal class X11State(
             operation = operation,
             trapezoids = trapezoids,
             maskFormat = maskFormat,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
@@ -5101,7 +5166,7 @@ internal class X11State(
         return framebuffer.addTrapezoids(
             trapezoids = trapezoids,
             maskFormat = destination.format,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         )
     }
@@ -5132,7 +5197,7 @@ internal class X11State(
             operation = operation,
             triangles = triangles,
             maskFormat = maskFormat,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
@@ -5150,7 +5215,7 @@ internal class X11State(
         return framebuffer.compositeColoredTriangles(
             operation = operation,
             triangles = triangles,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         )
     }
@@ -5166,7 +5231,7 @@ internal class X11State(
         return framebuffer.compositeColoredTrapezoids(
             operation = operation,
             trapezoids = trapezoids,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
         )
     }
@@ -5187,7 +5252,7 @@ internal class X11State(
             operation = operation,
             sourceQuad = sourceQuad,
             destinationQuad = destinationQuad,
-            clipRectangles = destination.clipRectangles,
+            clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
             sourcePixelAt = sourcePixelAt,
         )
@@ -5232,7 +5297,7 @@ internal class X11State(
                 width = glyph.width,
                 height = glyph.height,
                 operation = operation,
-                clipRectangles = destination.clipRectangles,
+                clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = mask,
                 sourcePixelAt = sourcePixelAt,
@@ -6184,22 +6249,37 @@ internal class X11State(
                 rootX >= absolute.first &&
                     rootY >= absolute.second &&
                     rootX < absolute.first + window.width &&
-                    rootY < absolute.second + window.height
+                    rootY < absolute.second + window.height &&
+                    windowInputShapeContains(window, rootX, rootY, absolute)
             }
 
     private fun windowAt(x: Int, y: Int): XWindow? =
         windows.values.toList()
             .asReversed()
             .firstOrNull { window ->
+                val absolute = absolutePosition(window)
                 window.mapped &&
                     windowIsViewable(window.id) &&
-                    visibleBounds(window, absolutePosition(window).first, absolutePosition(window).second)?.let { bounds ->
+                    visibleBounds(window, absolute.first, absolute.second)?.let { bounds ->
                         x >= bounds.x &&
                             y >= bounds.y &&
                             x < bounds.x + bounds.width &&
-                            y < bounds.y + bounds.height
+                            y < bounds.y + bounds.height &&
+                            windowInputShapeContains(window, x, y, absolute)
                     } == true
             }
+
+    private fun windowInputShapeContains(window: XWindow, rootX: Int, rootY: Int, absolute: Pair<Int, Int>): Boolean {
+        val inputClip = intersectClips(window.boundingShape, window.inputShape) ?: return true
+        val localX = rootX - absolute.first
+        val localY = rootY - absolute.second
+        return inputClip.any { rectangle ->
+            localX >= rectangle.x &&
+                localY >= rectangle.y &&
+                localX < rectangle.x + rectangle.width &&
+                localY < rectangle.y + rectangle.height
+        }
+    }
 
     private fun windowPathToRoot(windowId: Int): List<XWindow> {
         val path = mutableListOf<XWindow>()
@@ -6498,6 +6578,9 @@ internal data class XWindow(
     var cursorId: Int? = null,
     var cursorImage: XCursorImage? = null,
     var cursorGeneration: Long? = null,
+    var boundingShape: List<XRectangleCommand>? = null,
+    var clipShape: List<XRectangleCommand>? = null,
+    var inputShape: List<XRectangleCommand>? = null,
     val properties: MutableMap<Int, XProperty> = linkedMapOf(),
     val framebuffer: XFramebuffer = XFramebuffer(width, height, backgroundPixel),
 )

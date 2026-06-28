@@ -509,6 +509,7 @@ internal class X11Connection(
             XFixes.RegionExtents -> xfixesRegionExtents(body, majorOpcode)
             XFixes.FetchRegion -> xfixesFetchRegion(body, majorOpcode)
             XFixes.SetGCClipRegion -> xfixesSetGcClipRegion(body, majorOpcode)
+            XFixes.SetWindowShapeRegion -> xfixesSetWindowShapeRegion(body, majorOpcode)
             XFixes.SetPictureClipRegion -> xfixesSetPictureClipRegion(body, majorOpcode)
             else -> xfixesBadImplementation(majorOpcode, minorOpcode)
         }
@@ -802,6 +803,38 @@ internal class X11Connection(
             clipXOrigin = byteOrder.i16(body, 8),
             clipYOrigin = byteOrder.i16(body, 10),
             clipRectangles = rectangles?.toList(),
+        )
+    }
+
+    private fun xfixesSetWindowShapeRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 16) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetWindowShapeRegion, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val targetWindow = state.window(window)
+        if (targetWindow == null) {
+            return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.SetWindowShapeRegion, badValue = window)
+        }
+        val region = byteOrder.u32(body, 12)
+        val rectangles = if (region == 0) {
+            null
+        } else {
+            state.xfixesRegion(region)?.rectangles
+                ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.SetWindowShapeRegion, badValue = region)
+        }
+        val kind = body[4].toInt() and 0xff
+        if (kind !in XFixes.ShapeBounding..XFixes.ShapeInput) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.SetWindowShapeRegion, badValue = kind)
+        }
+        if (kind == XFixes.ShapeClip && targetWindow.windowClass == XWindowClass.InputOnly) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.SetWindowShapeRegion, badValue = window)
+        }
+        val xOffset = byteOrder.i16(body, 8)
+        val yOffset = byteOrder.i16(body, 10)
+        state.setWindowShapeRegion(
+            window,
+            kind,
+            rectangles?.map { rectangle ->
+                rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
+            },
         )
     }
 
@@ -4896,6 +4929,7 @@ internal class X11Connection(
         val clipRectangles = gc.effectiveClipRectangles()
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
+        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles)
         val sourceX = byteOrder.i16(body, 12)
         val sourceY = byteOrder.i16(body, 14)
         val destinationX = byteOrder.i16(body, 16)
@@ -4955,7 +4989,7 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
-            clipRectangles = clipRectangles,
+            clipRectangles = destinationClipRectangles,
         )
         paintCopyExposureBackground(destinationDrawable, exposureRectangles)
         if (gc.graphicsExposures) {
@@ -4975,6 +5009,7 @@ internal class X11Connection(
         val clipRectangles = gc.effectiveClipRectangles()
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
+        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles)
         val sourceX = byteOrder.i16(body, 12)
         val sourceY = byteOrder.i16(body, 14)
         val destinationX = byteOrder.i16(body, 16)
@@ -5044,7 +5079,7 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
-            clipRectangles = clipRectangles,
+            clipRectangles = destinationClipRectangles,
         )
         paintCopyExposureBackground(destinationDrawable, exposureRectangles)
         if (gc.graphicsExposures) {

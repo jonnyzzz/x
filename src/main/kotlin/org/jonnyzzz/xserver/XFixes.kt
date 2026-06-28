@@ -29,7 +29,12 @@ internal object XFixes {
     const val RegionExtents = 18
     const val FetchRegion = 19
     const val SetGCClipRegion = 20
+    const val SetWindowShapeRegion = 21
     const val SetPictureClipRegion = 22
+
+    const val ShapeBounding = 0
+    const val ShapeClip = 1
+    const val ShapeInput = 2
 
     const val SaveSetNearest = 0
     const val SaveSetRoot = 1
@@ -73,6 +78,7 @@ internal object XFixes {
             RegionExtents -> "RegionExtents"
             FetchRegion -> "FetchRegion"
             SetGCClipRegion -> "SetGCClipRegion"
+            SetWindowShapeRegion -> "SetWindowShapeRegion"
             SetPictureClipRegion -> "SetPictureClipRegion"
             else -> "Unknown"
         }
