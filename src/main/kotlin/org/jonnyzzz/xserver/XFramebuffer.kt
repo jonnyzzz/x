@@ -1309,6 +1309,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidHslLuminosity(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            hslLuminosityOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -2339,6 +2360,7 @@ internal class XFramebuffer(
             XRender.OpBlendHSLHue -> hslHueOperator(source, destination, maskAlpha)
             XRender.OpBlendHSLSaturation -> hslSaturationOperator(source, destination, maskAlpha)
             XRender.OpBlendHSLColor -> hslColorOperator(source, destination, maskAlpha)
+            XRender.OpBlendHSLLuminosity -> hslLuminosityOperator(source, destination, maskAlpha)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturate(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
@@ -2389,6 +2411,7 @@ internal class XFramebuffer(
             XRender.OpBlendHSLHue -> hslHueComponentMask(source, destination, mask)
             XRender.OpBlendHSLSaturation -> hslSaturationComponentMask(source, destination, mask)
             XRender.OpBlendHSLColor -> hslColorComponentMask(source, destination, mask)
+            XRender.OpBlendHSLLuminosity -> hslLuminosityComponentMask(source, destination, mask)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturateComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
@@ -2855,6 +2878,31 @@ internal class XFramebuffer(
         val sourceAlphaBlue = sourceAlphaFor(mask and 0xff)
         val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
         val result = hslColorBlendChannels(
+            sourceRed = ((((source ushr 16) and 0xff) * sourceAlphaRed + 127) / 255),
+            sourceGreen = ((((source ushr 8) and 0xff) * sourceAlphaGreen + 127) / 255),
+            sourceBlue = (((source and 0xff) * sourceAlphaBlue + 127) / 255),
+            sourceAlphaRed = sourceAlphaRed,
+            sourceAlphaGreen = sourceAlphaGreen,
+            sourceAlphaBlue = sourceAlphaBlue,
+            destinationRed = (destination ushr 16) and 0xff,
+            destinationGreen = (destination ushr 8) and 0xff,
+            destinationBlue = destination and 0xff,
+            destinationAlpha = destinationAlpha,
+        )
+        val inverseSourceAlphaMasked = 255 - sourceAlphaMasked
+        val alpha = sourceAlphaMasked + (destinationAlpha * inverseSourceAlphaMasked + 127) / 255
+        return (alpha shl 24) or (result.red shl 16) or (result.green shl 8) or result.blue
+    }
+
+    private fun hslLuminosityComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        val sourceAlphaRed = sourceAlphaFor((mask ushr 16) and 0xff)
+        val sourceAlphaGreen = sourceAlphaFor((mask ushr 8) and 0xff)
+        val sourceAlphaBlue = sourceAlphaFor(mask and 0xff)
+        val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+        val result = hslLuminosityChannels(
             sourceRed = ((((source ushr 16) and 0xff) * sourceAlphaRed + 127) / 255),
             sourceGreen = ((((source ushr 8) and 0xff) * sourceAlphaGreen + 127) / 255),
             sourceBlue = (((source and 0xff) * sourceAlphaBlue + 127) / 255),
@@ -4294,6 +4342,27 @@ internal class XFramebuffer(
         return (alpha shl 24) or (result.red shl 16) or (result.green shl 8) or result.blue
     }
 
+    private fun hslLuminosityOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        if (sourceAlpha <= 0) return destination
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val result = hslLuminosityChannels(
+            sourceRed = ((((source ushr 16) and 0xff) * sourceAlpha + 127) / 255),
+            sourceGreen = ((((source ushr 8) and 0xff) * sourceAlpha + 127) / 255),
+            sourceBlue = (((source and 0xff) * sourceAlpha + 127) / 255),
+            sourceAlphaRed = sourceAlpha,
+            sourceAlphaGreen = sourceAlpha,
+            sourceAlphaBlue = sourceAlpha,
+            destinationRed = (destination ushr 16) and 0xff,
+            destinationGreen = (destination ushr 8) and 0xff,
+            destinationBlue = destination and 0xff,
+            destinationAlpha = destinationAlpha,
+        )
+        val inverseSourceAlpha = 255 - sourceAlpha
+        val alpha = sourceAlpha + (destinationAlpha * inverseSourceAlpha + 127) / 255
+        return (alpha shl 24) or (result.red shl 16) or (result.green shl 8) or result.blue
+    }
+
     private data class RgbChannels(val red: Int, val green: Int, val blue: Int)
 
     private data class RgbDouble(val red: Double, val green: Double, val blue: Double)
@@ -4423,6 +4492,54 @@ internal class XFramebuffer(
             blue = unpremultiplyChannel(destinationBlue, destinationAlpha),
         )
         val blended = setLuminosity(sourceColor, luminosity(destinationColor))
+        return RgbChannels(
+            red = hslColorChannel(
+                sourceContribution = sourceRed,
+                sourceAlpha = sourceAlphaRed,
+                destinationChannel = destinationRed,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.red,
+            ),
+            green = hslColorChannel(
+                sourceContribution = sourceGreen,
+                sourceAlpha = sourceAlphaGreen,
+                destinationChannel = destinationGreen,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.green,
+            ),
+            blue = hslColorChannel(
+                sourceContribution = sourceBlue,
+                sourceAlpha = sourceAlphaBlue,
+                destinationChannel = destinationBlue,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.blue,
+            ),
+        )
+    }
+
+    private fun hslLuminosityChannels(
+        sourceRed: Int,
+        sourceGreen: Int,
+        sourceBlue: Int,
+        sourceAlphaRed: Int,
+        sourceAlphaGreen: Int,
+        sourceAlphaBlue: Int,
+        destinationRed: Int,
+        destinationGreen: Int,
+        destinationBlue: Int,
+        destinationAlpha: Int,
+    ): RgbChannels {
+        val sourceColor = RgbDouble(
+            red = unpremultiplyChannel(sourceRed, sourceAlphaRed),
+            green = unpremultiplyChannel(sourceGreen, sourceAlphaGreen),
+            blue = unpremultiplyChannel(sourceBlue, sourceAlphaBlue),
+        )
+        val destinationColor = RgbDouble(
+            red = unpremultiplyChannel(destinationRed, destinationAlpha),
+            green = unpremultiplyChannel(destinationGreen, destinationAlpha),
+            blue = unpremultiplyChannel(destinationBlue, destinationAlpha),
+        )
+        val blended = setLuminosity(destinationColor, luminosity(sourceColor))
         return RgbChannels(
             red = hslColorChannel(
                 sourceContribution = sourceRed,
@@ -4582,6 +4699,7 @@ internal class XFramebuffer(
             this == XRender.OpBlendHSLHue ||
             this == XRender.OpBlendHSLSaturation ||
             this == XRender.OpBlendHSLColor ||
+            this == XRender.OpBlendHSLLuminosity ||
             this == XRender.OpDisjointOverReverse
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
