@@ -825,6 +825,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidConjointAtop(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            conjointAtopOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun blendSolidAtop(
         pixel: Int,
         destinationX: Int,
@@ -1957,6 +1978,7 @@ internal class XFramebuffer(
             XRender.OpOutReverse -> outReverseOperator(source, destination, maskAlpha)
             XRender.OpDisjointOutReverse -> disjointOutReverseOperator(source, destination, maskAlpha)
             XRender.OpConjointOutReverse -> conjointOutReverseOperator(source, destination, maskAlpha)
+            XRender.OpConjointAtop -> conjointAtopOperator(source, destination, maskAlpha)
             XRender.OpAtop -> atopOperator(source, destination, maskAlpha)
             XRender.OpDisjointAtop -> disjointAtopOperator(source, destination, maskAlpha)
             XRender.OpAtopReverse -> atopReverseOperator(source, destination, maskAlpha)
@@ -1990,6 +2012,7 @@ internal class XFramebuffer(
             XRender.OpOutReverse -> outReverseComponentMask(source, destination, mask)
             XRender.OpDisjointOutReverse -> disjointOutReverseComponentMask(source, destination, mask)
             XRender.OpConjointOutReverse -> conjointOutReverseComponentMask(source, destination, mask)
+            XRender.OpConjointAtop -> conjointAtopComponentMask(source, destination, mask)
             XRender.OpAtop -> atopComponentMask(source, destination, mask)
             XRender.OpDisjointAtop -> disjointAtopComponentMask(source, destination, mask)
             XRender.OpAtopReverse -> atopReverseComponentMask(source, destination, mask)
@@ -2373,6 +2396,30 @@ internal class XFramebuffer(
             return (destinationChannel * contributionAlpha + 127) / 255
         }
         fun alphaChannel(): Int = contributionFor((mask ushr 24) and 0xff)
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun conjointAtopComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        fun colorChannel(shift: Int): Int {
+            val sourceAlphaChannel = sourceAlphaFor((mask ushr shift) and 0xff)
+            val sourceContributionAlpha = conjointInContributionAlpha(sourceAlphaChannel, destinationAlpha)
+            val destinationContributionAlpha = conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaChannel)
+            val sourceChannel = (source ushr shift) and 0xff
+            val destinationChannel = (destination ushr shift) and 0xff
+            val sourceContribution = (sourceChannel * sourceContributionAlpha + 127) / 255
+            val destinationContribution = (destinationChannel * destinationContributionAlpha + 127) / 255
+            return (sourceContribution + destinationContribution).coerceAtMost(255)
+        }
+        fun alphaChannel(): Int {
+            val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+            return (
+                conjointInContributionAlpha(sourceAlphaMasked, destinationAlpha) +
+                    conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaMasked)
+                ).coerceAtMost(255)
+        }
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
@@ -2869,6 +2916,23 @@ internal class XFramebuffer(
     private fun conjointOutReverseContributionAlpha(destinationAlpha: Int, sourceAlphaMasked: Int): Int =
         (destinationAlpha - sourceAlphaMasked).coerceAtLeast(0)
 
+    private fun conjointAtopOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val destinationAlpha = (destination ushr 24) and 0xff
+        if (destinationAlpha <= 0) return 0
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        val sourceContributionAlpha = conjointInContributionAlpha(sourceAlphaMasked, destinationAlpha)
+        val destinationContributionAlpha = conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaMasked)
+        fun channel(shift: Int): Int =
+            if (shift == 24) {
+                (sourceContributionAlpha + destinationContributionAlpha).coerceAtMost(255)
+            } else {
+                val sourceContribution = (((source ushr shift) and 0xff) * sourceContributionAlpha + 127) / 255
+                val destinationContribution = (((destination ushr shift) and 0xff) * destinationContributionAlpha + 127) / 255
+                (sourceContribution + destinationContribution).coerceAtMost(255)
+            }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
     private fun atopOperator(source: Int, destination: Int, maskAlpha: Int): Int {
         val destinationAlpha = (destination ushr 24) and 0xff
         if (destinationAlpha <= 0) return 0
@@ -3051,6 +3115,7 @@ internal class XFramebuffer(
             this == XRender.OpOutReverse ||
             this == XRender.OpDisjointOutReverse ||
             this == XRender.OpConjointOutReverse ||
+            this == XRender.OpConjointAtop ||
             this == XRender.OpAtop ||
             this == XRender.OpDisjointAtop ||
             this == XRender.OpAtopReverse ||
