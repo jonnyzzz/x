@@ -1246,6 +1246,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidHslHue(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            hslHueOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -2273,6 +2294,7 @@ internal class XFramebuffer(
             XRender.OpBlendSoftLight -> softLightOperator(source, destination, maskAlpha)
             XRender.OpBlendDifference -> differenceOperator(source, destination, maskAlpha)
             XRender.OpBlendExclusion -> exclusionOperator(source, destination, maskAlpha)
+            XRender.OpBlendHSLHue -> hslHueOperator(source, destination, maskAlpha)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturate(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
@@ -2320,6 +2342,7 @@ internal class XFramebuffer(
             XRender.OpBlendSoftLight -> softLightComponentMask(source, destination, mask)
             XRender.OpBlendDifference -> differenceComponentMask(source, destination, mask)
             XRender.OpBlendExclusion -> exclusionComponentMask(source, destination, mask)
+            XRender.OpBlendHSLHue -> hslHueComponentMask(source, destination, mask)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturateComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
@@ -2725,6 +2748,31 @@ internal class XFramebuffer(
             return sourceAlphaMasked + (destinationAlpha * inverseSourceAlphaMasked + 127) / 255
         }
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun hslHueComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        val sourceAlphaRed = sourceAlphaFor((mask ushr 16) and 0xff)
+        val sourceAlphaGreen = sourceAlphaFor((mask ushr 8) and 0xff)
+        val sourceAlphaBlue = sourceAlphaFor(mask and 0xff)
+        val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+        val result = hslHueChannels(
+            sourceRed = ((((source ushr 16) and 0xff) * sourceAlphaRed + 127) / 255),
+            sourceGreen = ((((source ushr 8) and 0xff) * sourceAlphaGreen + 127) / 255),
+            sourceBlue = (((source and 0xff) * sourceAlphaBlue + 127) / 255),
+            sourceAlphaRed = sourceAlphaRed,
+            sourceAlphaGreen = sourceAlphaGreen,
+            sourceAlphaBlue = sourceAlphaBlue,
+            destinationRed = (destination ushr 16) and 0xff,
+            destinationGreen = (destination ushr 8) and 0xff,
+            destinationBlue = destination and 0xff,
+            destinationAlpha = destinationAlpha,
+        )
+        val inverseSourceAlphaMasked = 255 - sourceAlphaMasked
+        val alpha = sourceAlphaMasked + (destinationAlpha * inverseSourceAlphaMasked + 127) / 255
+        return (alpha shl 24) or (result.red shl 16) or (result.green shl 8) or result.blue
     }
 
     private fun saturateComponentMask(source: Int, destination: Int, mask: Int): Int {
@@ -4087,6 +4135,151 @@ internal class XFramebuffer(
         return (sourceTerm + destinationTerm + blendTerm).coerceIn(0, 255)
     }
 
+    private fun hslHueOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        if (sourceAlpha <= 0) return destination
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val result = hslHueChannels(
+            sourceRed = ((((source ushr 16) and 0xff) * sourceAlpha + 127) / 255),
+            sourceGreen = ((((source ushr 8) and 0xff) * sourceAlpha + 127) / 255),
+            sourceBlue = (((source and 0xff) * sourceAlpha + 127) / 255),
+            sourceAlphaRed = sourceAlpha,
+            sourceAlphaGreen = sourceAlpha,
+            sourceAlphaBlue = sourceAlpha,
+            destinationRed = (destination ushr 16) and 0xff,
+            destinationGreen = (destination ushr 8) and 0xff,
+            destinationBlue = destination and 0xff,
+            destinationAlpha = destinationAlpha,
+        )
+        val inverseSourceAlpha = 255 - sourceAlpha
+        val alpha = sourceAlpha + (destinationAlpha * inverseSourceAlpha + 127) / 255
+        return (alpha shl 24) or (result.red shl 16) or (result.green shl 8) or result.blue
+    }
+
+    private data class RgbChannels(val red: Int, val green: Int, val blue: Int)
+
+    private data class RgbDouble(val red: Double, val green: Double, val blue: Double)
+
+    private fun hslHueChannels(
+        sourceRed: Int,
+        sourceGreen: Int,
+        sourceBlue: Int,
+        sourceAlphaRed: Int,
+        sourceAlphaGreen: Int,
+        sourceAlphaBlue: Int,
+        destinationRed: Int,
+        destinationGreen: Int,
+        destinationBlue: Int,
+        destinationAlpha: Int,
+    ): RgbChannels {
+        val sourceColor = RgbDouble(
+            red = unpremultiplyChannel(sourceRed, sourceAlphaRed),
+            green = unpremultiplyChannel(sourceGreen, sourceAlphaGreen),
+            blue = unpremultiplyChannel(sourceBlue, sourceAlphaBlue),
+        )
+        val destinationColor = RgbDouble(
+            red = unpremultiplyChannel(destinationRed, destinationAlpha),
+            green = unpremultiplyChannel(destinationGreen, destinationAlpha),
+            blue = unpremultiplyChannel(destinationBlue, destinationAlpha),
+        )
+        val blended = setLuminosity(
+            setSaturation(sourceColor, saturation(destinationColor)),
+            luminosity(destinationColor),
+        )
+        return RgbChannels(
+            red = hslColorChannel(
+                sourceContribution = sourceRed,
+                sourceAlpha = sourceAlphaRed,
+                destinationChannel = destinationRed,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.red,
+            ),
+            green = hslColorChannel(
+                sourceContribution = sourceGreen,
+                sourceAlpha = sourceAlphaGreen,
+                destinationChannel = destinationGreen,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.green,
+            ),
+            blue = hslColorChannel(
+                sourceContribution = sourceBlue,
+                sourceAlpha = sourceAlphaBlue,
+                destinationChannel = destinationBlue,
+                destinationAlpha = destinationAlpha,
+                blendedChannel = blended.blue,
+            ),
+        )
+    }
+
+    private fun hslColorChannel(
+        sourceContribution: Int,
+        sourceAlpha: Int,
+        destinationChannel: Int,
+        destinationAlpha: Int,
+        blendedChannel: Double,
+    ): Int {
+        val sourceTerm = (sourceContribution * (255 - destinationAlpha) + 127) / 255
+        val destinationTerm = (destinationChannel * (255 - sourceAlpha) + 127) / 255
+        val blendTerm = (blendedChannel.coerceIn(0.0, 1.0) * sourceAlpha * destinationAlpha / 255.0).roundToInt()
+        return (sourceTerm + destinationTerm + blendTerm).coerceIn(0, 255)
+    }
+
+    private fun unpremultiplyChannel(channel: Int, alpha: Int): Double =
+        if (alpha <= 0) 0.0 else (channel.toDouble() / alpha.toDouble()).coerceIn(0.0, 1.0)
+
+    private fun luminosity(color: RgbDouble): Double =
+        0.3 * color.red + 0.59 * color.green + 0.11 * color.blue
+
+    private fun saturation(color: RgbDouble): Double =
+        maxOf(color.red, color.green, color.blue) - minOf(color.red, color.green, color.blue)
+
+    private fun setLuminosity(color: RgbDouble, luminosity: Double): RgbDouble {
+        val delta = luminosity - luminosity(color)
+        return clipColor(
+            RgbDouble(
+                red = color.red + delta,
+                green = color.green + delta,
+                blue = color.blue + delta,
+            ),
+        )
+    }
+
+    private fun clipColor(color: RgbDouble): RgbDouble {
+        val luminosity = luminosity(color)
+        val min = minOf(color.red, color.green, color.blue)
+        val max = maxOf(color.red, color.green, color.blue)
+        var red = color.red
+        var green = color.green
+        var blue = color.blue
+        if (min < 0.0) {
+            red = luminosity + (red - luminosity) * luminosity / (luminosity - min)
+            green = luminosity + (green - luminosity) * luminosity / (luminosity - min)
+            blue = luminosity + (blue - luminosity) * luminosity / (luminosity - min)
+        }
+        if (max > 1.0) {
+            red = luminosity + (red - luminosity) * (1.0 - luminosity) / (max - luminosity)
+            green = luminosity + (green - luminosity) * (1.0 - luminosity) / (max - luminosity)
+            blue = luminosity + (blue - luminosity) * (1.0 - luminosity) / (max - luminosity)
+        }
+        return RgbDouble(red.coerceIn(0.0, 1.0), green.coerceIn(0.0, 1.0), blue.coerceIn(0.0, 1.0))
+    }
+
+    private fun setSaturation(color: RgbDouble, saturation: Double): RgbDouble {
+        val channels = doubleArrayOf(color.red, color.green, color.blue)
+        val min = channels.min()
+        val max = channels.max()
+        if (max <= min) {
+            return RgbDouble(0.0, 0.0, 0.0)
+        }
+        val minIndex = channels.indices.minBy { channels[it] }
+        val maxIndex = channels.indices.maxBy { channels[it] }
+        val midIndex = 3 - minIndex - maxIndex
+        channels[midIndex] = ((channels[midIndex] - min) * saturation) / (max - min)
+        channels[maxIndex] = saturation
+        channels[minIndex] = 0.0
+        return RgbDouble(channels[0], channels[1], channels[2])
+    }
+
     private fun saturate(source: Int, destination: Int, maskAlpha: Int): Int {
         val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
         if (sourceAlpha <= 0) return destination
@@ -4149,6 +4342,7 @@ internal class XFramebuffer(
             this == XRender.OpBlendSoftLight ||
             this == XRender.OpBlendDifference ||
             this == XRender.OpBlendExclusion ||
+            this == XRender.OpBlendHSLHue ||
             this == XRender.OpDisjointOverReverse
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
