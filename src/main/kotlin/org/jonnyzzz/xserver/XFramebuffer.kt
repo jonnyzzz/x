@@ -1119,6 +1119,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidColorDodge(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            colorDodgeOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun compositeSourceOverMask(
         sourceX: Int,
         sourceY: Int,
@@ -2140,6 +2161,7 @@ internal class XFramebuffer(
             XRender.OpBlendOverlay -> overlayOperator(source, destination, maskAlpha)
             XRender.OpBlendDarken -> darkenOperator(source, destination, maskAlpha)
             XRender.OpBlendLighten -> lightenOperator(source, destination, maskAlpha)
+            XRender.OpBlendColorDodge -> colorDodgeOperator(source, destination, maskAlpha)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturate(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
@@ -2181,6 +2203,7 @@ internal class XFramebuffer(
             XRender.OpBlendOverlay -> overlayComponentMask(source, destination, mask)
             XRender.OpBlendDarken -> darkenComponentMask(source, destination, mask)
             XRender.OpBlendLighten -> lightenComponentMask(source, destination, mask)
+            XRender.OpBlendColorDodge -> colorDodgeComponentMask(source, destination, mask)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturateComponentMask(source, destination, mask)
             else -> overComponentMask(source, destination, mask)
         }
@@ -2436,6 +2459,29 @@ internal class XFramebuffer(
             val sourceContribution = (((source ushr shift) and 0xff) * sourceAlphaChannel + 127) / 255
             val destinationChannel = (destination ushr shift) and 0xff
             return lightenColorChannel(
+                sourceContribution = sourceContribution,
+                sourceAlpha = sourceAlphaChannel,
+                destinationChannel = destinationChannel,
+                destinationAlpha = destinationAlpha,
+            )
+        }
+        fun alphaChannel(): Int {
+            val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+            val inverseSourceAlphaMasked = 255 - sourceAlphaMasked
+            return sourceAlphaMasked + (destinationAlpha * inverseSourceAlphaMasked + 127) / 255
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun colorDodgeComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        fun colorChannel(shift: Int): Int {
+            val sourceAlphaChannel = sourceAlphaFor((mask ushr shift) and 0xff)
+            val sourceContribution = (((source ushr shift) and 0xff) * sourceAlphaChannel + 127) / 255
+            val destinationChannel = (destination ushr shift) and 0xff
+            return colorDodgeColorChannel(
                 sourceContribution = sourceContribution,
                 sourceAlpha = sourceAlphaChannel,
                 destinationChannel = destinationChannel,
@@ -3573,6 +3619,48 @@ internal class XFramebuffer(
         return (sourceTerm + destinationTerm + blendTerm).coerceIn(0, 255)
     }
 
+    private fun colorDodgeOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        if (sourceAlpha <= 0) return destination
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun channel(shift: Int): Int {
+            val sourceContribution = (((source ushr shift) and 0xff) * sourceAlpha + 127) / 255
+            val destinationChannel = (destination ushr shift) and 0xff
+            return colorDodgeColorChannel(
+                sourceContribution = sourceContribution,
+                sourceAlpha = sourceAlpha,
+                destinationChannel = destinationChannel,
+                destinationAlpha = destinationAlpha,
+            )
+        }
+        val inverseSourceAlpha = 255 - sourceAlpha
+        val alpha = sourceAlpha + (destinationAlpha * inverseSourceAlpha + 127) / 255
+        return (alpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun colorDodgeColorChannel(
+        sourceContribution: Int,
+        sourceAlpha: Int,
+        destinationChannel: Int,
+        destinationAlpha: Int,
+    ): Int {
+        val sourceTerm = (sourceContribution * (255 - destinationAlpha) + 127) / 255
+        val destinationTerm = (destinationChannel * (255 - sourceAlpha) + 127) / 255
+        val blendTerm = when {
+            destinationChannel == 0 -> 0
+            destinationChannel * sourceAlpha >= destinationAlpha * (sourceAlpha - sourceContribution) ->
+                (sourceAlpha * destinationAlpha + 127) / 255
+            sourceAlpha == sourceContribution ->
+                (sourceAlpha * destinationAlpha + 127) / 255
+            else -> {
+                val denominator = 255L * (sourceAlpha - sourceContribution)
+                ((sourceAlpha.toLong() * sourceAlpha * destinationChannel + denominator / 2) / denominator)
+                    .toInt()
+            }
+        }
+        return (sourceTerm + destinationTerm + blendTerm).coerceIn(0, 255)
+    }
+
     private fun saturate(source: Int, destination: Int, maskAlpha: Int): Int {
         val sourceAlpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
         if (sourceAlpha <= 0) return destination
@@ -3629,6 +3717,7 @@ internal class XFramebuffer(
             this == XRender.OpBlendOverlay ||
             this == XRender.OpBlendDarken ||
             this == XRender.OpBlendLighten ||
+            this == XRender.OpBlendColorDodge ||
             this == XRender.OpDisjointOverReverse
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
