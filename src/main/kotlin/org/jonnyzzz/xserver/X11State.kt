@@ -11,6 +11,12 @@ import kotlin.math.sqrt
 internal data class XWindowRemoval(
     val removedResources: Set<Int>,
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
+    val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch> = emptyList(),
+)
+
+internal data class XResourceRemoval(
+    val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
+    val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
 )
 
 internal class X11State(
@@ -33,6 +39,7 @@ internal class X11State(
     private val atomNames = linkedMapOf<Int, String>()
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
     private val selectionLastChangeTimes = linkedMapOf<Int, Int>()
+    private val xfixesSelectionInputs = linkedMapOf<XEventSink, LinkedHashMap<XXFixesSelectionInputKey, Int>>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -199,8 +206,18 @@ internal class X11State(
             glxWindows.remove(glxWindowId)
             resourceOwners.remove(glxWindowId)
         }
+        val xfixesSelectionNotifyDispatches = selectionOwners
+            .filterValues { it.windowId in removed }
+            .flatMap { (selection) ->
+                xfixesSelectionOwnerLostDispatches(
+                    selection = selection,
+                    subtype = XFixes.SelectionWindowDestroyNotify,
+                )
+            }
         releaseInputGrabsForResources(removed)
         selectionOwners.entries.removeIf { it.value.windowId in removed }
+        xfixesSelectionInputs.values.forEach { selections -> selections.keys.removeIf { it.windowId in removed } }
+        xfixesSelectionInputs.entries.removeIf { it.value.isEmpty() }
         saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
@@ -210,32 +227,37 @@ internal class X11State(
         return XWindowRemoval(
             removedResources = removedResources,
             destroyNotifyDispatches = destroyNotifyDispatches,
+            xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
         )
     }
 
     @Synchronized
-    fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>): List<XDestroyNotifyDispatch> {
+    fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>): XResourceRemoval {
         val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
         processSaveSet(owner, currentResourceIds)
-        val notifications = removeClientResources(currentResourceIds, excludedSink = owner)
+        val removal = removeClientResources(currentResourceIds, excludedSink = owner)
         saveSets.remove(owner)
         releaseInputGrabs(owner)
-        return notifications
+        return removal
     }
 
     @Synchronized
-    fun removeClientResources(resourceIds: Set<Int>): List<XDestroyNotifyDispatch> =
+    fun removeClientResources(resourceIds: Set<Int>): XResourceRemoval =
         removeClientResources(resourceIds, excludedSink = null)
 
-    private fun removeClientResources(resourceIds: Set<Int>, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> {
-        if (resourceIds.isEmpty()) return emptyList()
+    private fun removeClientResources(resourceIds: Set<Int>, excludedSink: XEventSink?): XResourceRemoval {
+        if (resourceIds.isEmpty()) {
+            return XResourceRemoval(destroyNotifyDispatches = emptyList(), xfixesSelectionNotifyDispatches = emptyList())
+        }
         val removedWindows = linkedSetOf<Int>()
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
+        val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
         for (id in resourceIds) {
             if (id != X11Ids.RootWindow && windows.containsKey(id)) {
                 val removal = removeWindow(id, sendDestroyNotify = true, excludedSink = excludedSink)
                 removedWindows += removal.removedResources
                 destroyNotifyDispatches += removal.destroyNotifyDispatches
+                xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
             }
         }
         val ids = resourceIds - removedWindows
@@ -259,7 +281,10 @@ internal class X11State(
         releaseInputGrabsForResources(resourceIds)
         discardRetainedResourceIds(resourceIds)
         ensureDefaultColormapInstalled()
-        return destroyNotifyDispatches
+        return XResourceRemoval(
+            destroyNotifyDispatches = destroyNotifyDispatches,
+            xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -283,7 +308,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun destroyRetainedClientByResource(resourceId: Int): List<XDestroyNotifyDispatch>? {
+    fun destroyRetainedClientByResource(resourceId: Int): XResourceRemoval? {
         val retained = retainedClients.entries.firstOrNull { resourceId in it.value.resourceIds } ?: return null
         retainedClients.remove(retained.key)
         processRetainedSaveSet(retained.value)
@@ -291,18 +316,24 @@ internal class X11State(
     }
 
     @Synchronized
-    fun destroyTemporaryRetainedClients(): List<XDestroyNotifyDispatch> {
+    fun destroyTemporaryRetainedClients(): XResourceRemoval {
         val temporaryIds = retainedClients
             .filterValues { it.closeDownMode == XCloseDownMode.RetainTemporary }
             .keys
             .toList()
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
+        val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
         for (id in temporaryIds) {
             val retained = retainedClients.remove(id) ?: continue
             processRetainedSaveSet(retained)
-            destroyNotifyDispatches += removeClientResources(retained.resourceIds)
+            val removal = removeClientResources(retained.resourceIds)
+            destroyNotifyDispatches += removal.destroyNotifyDispatches
+            xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
         }
-        return destroyNotifyDispatches
+        return XResourceRemoval(
+            destroyNotifyDispatches = destroyNotifyDispatches,
+            xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -329,6 +360,17 @@ internal class X11State(
         } else {
             saveSets[owner]?.remove(windowId)
             if (saveSets[owner]?.isEmpty() == true) saveSets.remove(owner)
+        }
+    }
+
+    @Synchronized
+    fun selectXFixesSelectionInput(owner: XEventSink, windowId: Int, selection: Int, eventMask: Int) {
+        val key = XXFixesSelectionInputKey(windowId, selection)
+        if (eventMask == 0) {
+            xfixesSelectionInputs[owner]?.remove(key)
+            if (xfixesSelectionInputs[owner]?.isEmpty() == true) xfixesSelectionInputs.remove(owner)
+        } else {
+            xfixesSelectionInputs.getOrPut(owner) { linkedMapOf() }[key] = eventMask
         }
     }
 
@@ -1340,13 +1382,23 @@ internal class X11State(
     }
 
     @Synchronized
-    fun unregisterEventSink(sink: XEventSink) {
+    fun unregisterEventSink(sink: XEventSink): List<XXFixesSelectionNotifyDispatch> {
+        val xfixesSelectionNotifyDispatches = selectionOwners
+            .filterValues { it.sink == sink }
+            .flatMap { (selection) ->
+                xfixesSelectionOwnerLostDispatches(
+                    selection = selection,
+                    subtype = XFixes.SelectionClientCloseNotify,
+                )
+            }
         eventSinks.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
+        xfixesSelectionInputs.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
         releaseInputGrabs(sink)
         releaseServerGrab(sink)
+        return xfixesSelectionNotifyDispatches
     }
 
     @Synchronized
@@ -5308,7 +5360,7 @@ internal class X11State(
     fun atomName(id: Int): String? = atomNames[id]
 
     @Synchronized
-    fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink, time: Int): XSelectionClearDispatch? {
+    fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink, time: Int): XSelectionOwnerUpdate? {
         val current = selectionOwners[selection]
         val lastChangeTime = selectionLastChangeTimes[selection] ?: 0
         val serverTime = currentServerTime(lastChangeTime)
@@ -5327,15 +5379,26 @@ internal class X11State(
         } else {
             selectionOwners[selection] = XSelectionOwner(owner, sink)
         }
-        if (current == null || (owner != 0 && current.sink == sink)) return null
-        return XSelectionClearDispatch(
-            sink = current.sink,
-            event = XSelectionClearEvent(
-                time = effectiveTime,
-                ownerWindowId = current.windowId,
-                selection = selection,
-            ),
+        val clear = if (current == null || (owner != 0 && current.sink == sink)) {
+            null
+        } else {
+            XSelectionClearDispatch(
+                sink = current.sink,
+                event = XSelectionClearEvent(
+                    time = effectiveTime,
+                    ownerWindowId = current.windowId,
+                    selection = selection,
+                ),
+            )
+        }
+        val selectionNotify = xfixesSelectionNotifyDispatches(
+            selection = selection,
+            subtype = XFixes.SetSelectionOwnerNotify,
+            owner = owner,
+            timestamp = serverTime,
+            selectionTimestamp = effectiveTime,
         )
+        return XSelectionOwnerUpdate(clear = clear, selectionNotify = selectionNotify)
     }
 
     @Synchronized
@@ -5734,6 +5797,46 @@ internal class X11State(
             sink.takeIf { (selectedMask and eventMask) != 0 }
         }
 
+    private fun xfixesSelectionNotifyDispatches(
+        selection: Int,
+        subtype: Int,
+        owner: Int,
+        timestamp: Int,
+        selectionTimestamp: Int,
+    ): List<XXFixesSelectionNotifyDispatch> {
+        val eventMask = 1 shl subtype
+        return xfixesSelectionInputs.flatMap { (sink, selections) ->
+            selections.mapNotNull { (key, selectedMask) ->
+                if (key.selection != selection || (selectedMask and eventMask) == 0) return@mapNotNull null
+                XXFixesSelectionNotifyDispatch(
+                    sink = sink,
+                    event = XXFixesSelectionNotifyEvent(
+                        subtype = subtype,
+                        windowId = key.windowId,
+                        ownerWindowId = owner,
+                        selection = selection,
+                        timestamp = timestamp,
+                        selectionTimestamp = selectionTimestamp,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun xfixesSelectionOwnerLostDispatches(
+        selection: Int,
+        subtype: Int,
+    ): List<XXFixesSelectionNotifyDispatch> {
+        val selectionTimestamp = selectionLastChangeTimes[selection] ?: 0
+        return xfixesSelectionNotifyDispatches(
+            selection = selection,
+            subtype = subtype,
+            owner = 0,
+            timestamp = currentServerTime(selectionTimestamp),
+            selectionTimestamp = selectionTimestamp,
+        )
+    }
+
     private fun destroyNotifySinksInDestroyOrder(rootId: Int, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> =
         windowsInDestroyNotifyOrder(rootId).flatMap { window ->
             destroyNotifySinks(window).filter { dispatch -> dispatch.sink != excludedSink }
@@ -5923,6 +6026,16 @@ internal class X11State(
 private data class XSelectionOwner(
     val windowId: Int,
     val sink: XEventSink,
+)
+
+internal data class XSelectionOwnerUpdate(
+    val clear: XSelectionClearDispatch?,
+    val selectionNotify: List<XXFixesSelectionNotifyDispatch>,
+)
+
+private data class XXFixesSelectionInputKey(
+    val windowId: Int,
+    val selection: Int,
 )
 
 private data class XRetainedClientResources(

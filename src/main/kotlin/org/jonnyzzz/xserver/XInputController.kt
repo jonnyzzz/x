@@ -174,6 +174,7 @@ internal interface XEventSink {
     fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)
     fun sendSelectionClearEvent(event: XSelectionClearEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
+    fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
 }
 
@@ -424,6 +425,20 @@ internal data class XSelectionRequestDispatch(
 internal data class XSelectionClearDispatch(
     val sink: XEventSink,
     val event: XSelectionClearEvent,
+)
+
+internal data class XXFixesSelectionNotifyEvent(
+    val subtype: Int,
+    val windowId: Int,
+    val ownerWindowId: Int,
+    val selection: Int,
+    val timestamp: Int,
+    val selectionTimestamp: Int,
+)
+
+internal data class XXFixesSelectionNotifyDispatch(
+    val sink: XEventSink,
+    val event: XXFixesSelectionNotifyEvent,
 )
 
 internal data class XSyntheticEvent(

@@ -1029,6 +1029,187 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES SelectSelectionInput validates selection atom and event mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val missingAtom = 0x0020_2001
+                val out = socket.getOutputStream()
+                out.write(xfixesSelectSelectionInputRequest(X11Ids.RootWindow, selection = missingAtom))
+                out.write(
+                    xfixesSelectSelectionInputRequest(
+                        X11Ids.RootWindow,
+                        selection = PrimaryAtom,
+                        eventMask = XFixes.SelectionNotifyMask + 1,
+                    ),
+                )
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 5, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = missingAtom, sequence = 1)
+                assertError(socket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = XFixes.SelectionNotifyMask + 1, sequence = 2)
+                assertEquals(3, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SelectSelectionInput delivers SetSelectionOwner notify events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(
+                        xfixesSelectSelectionInputRequest(
+                            X11Ids.RootWindow,
+                            selection = PrimaryAtom,
+                            eventMask = XFixes.SetSelectionOwnerNotifyMask,
+                        ),
+                    )
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    ownerOut.write(getSelectionOwnerRequest(PrimaryAtom))
+                    ownerOut.flush()
+                    assertEquals(WindowId, u32le(readReply(owner.getInputStream()), 8))
+                    assertXFixesSelectionNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        subtype = XFixes.SetSelectionOwnerNotify,
+                        window = X11Ids.RootWindow,
+                        owner = WindowId,
+                        selection = PrimaryAtom,
+                        timestamp = 1,
+                    )
+
+                    ownerOut.write(setSelectionOwnerRequest(0, PrimaryAtom))
+                    ownerOut.write(getSelectionOwnerRequest(PrimaryAtom))
+                    ownerOut.flush()
+                    val clear = owner.getInputStream().readExactly(32)
+                    assertEquals(29, clear[0].toInt() and 0xff)
+                    assertEquals(4, u16le(clear, 2))
+                    assertEquals(WindowId, u32le(clear, 8))
+                    assertEquals(PrimaryAtom, u32le(clear, 12))
+                    assertEquals(0, u32le(readReply(owner.getInputStream()), 8))
+                    assertXFixesSelectionNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        subtype = XFixes.SetSelectionOwnerNotify,
+                        window = X11Ids.RootWindow,
+                        owner = 0,
+                        selection = PrimaryAtom,
+                        timestamp = 1,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SelectSelectionInput delivers owner loss notify subtypes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                observer.soTimeout = 2_000
+                setup(observer)
+                val observerOut = observer.getOutputStream()
+                observerOut.write(
+                    xfixesSelectSelectionInputRequest(
+                        X11Ids.RootWindow,
+                        selection = PrimaryAtom,
+                        eventMask = XFixes.SelectionNotifyMask,
+                    ),
+                )
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+                assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    owner.soTimeout = 2_000
+                    setup(owner)
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(WindowId))
+                    ownerOut.write(setSelectionOwnerRequest(WindowId, PrimaryAtom))
+                    ownerOut.write(destroyWindowRequest(WindowId))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(4, u16le(readReply(owner.getInputStream()), 2))
+                }
+                assertXFixesSelectionNotify(
+                    observer.getInputStream().readExactly(32),
+                    sequence = 2,
+                    subtype = XFixes.SetSelectionOwnerNotify,
+                    window = X11Ids.RootWindow,
+                    owner = WindowId,
+                    selection = PrimaryAtom,
+                    timestamp = 1,
+                )
+                assertXFixesSelectionNotify(
+                    observer.getInputStream().readExactly(32),
+                    sequence = 2,
+                    subtype = XFixes.SelectionWindowDestroyNotify,
+                    window = X11Ids.RootWindow,
+                    owner = 0,
+                    selection = PrimaryAtom,
+                    timestamp = 1,
+                    selectionTimestamp = 1,
+                )
+
+                val retainedWindow = WindowId + 1
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    owner.soTimeout = 2_000
+                    setup(owner)
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(retainedWindow))
+                    ownerOut.write(setSelectionOwnerRequest(retainedWindow, PrimaryAtom))
+                    ownerOut.write(setCloseDownModeRequest(XCloseDownMode.RetainPermanent))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(4, u16le(readReply(owner.getInputStream()), 2))
+                    closeClientAndWait(owner)
+                }
+                assertXFixesSelectionNotify(
+                    observer.getInputStream().readExactly(32),
+                    sequence = 2,
+                    subtype = XFixes.SetSelectionOwnerNotify,
+                    window = X11Ids.RootWindow,
+                    owner = retainedWindow,
+                    selection = PrimaryAtom,
+                    timestamp = 1,
+                )
+                assertXFixesSelectionNotify(
+                    observer.getInputStream().readExactly(32),
+                    sequence = 2,
+                    subtype = XFixes.SelectionClientCloseNotify,
+                    window = X11Ids.RootWindow,
+                    owner = 0,
+                    selection = PrimaryAtom,
+                    timestamp = 1,
+                    selectionTimestamp = 1,
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES ChangeSaveSet mirrors core save set validation`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -16413,6 +16594,27 @@ class XCoreDrawingProtocolTest {
         assertZeroBytes(event, 12, 16)
         assertEquals(place, event[16].toInt() and 0xff)
         assertZeroBytes(event, 17, 32)
+    }
+
+    private fun assertXFixesSelectionNotify(
+        event: ByteArray,
+        sequence: Int,
+        subtype: Int,
+        window: Int,
+        owner: Int,
+        selection: Int,
+        timestamp: Int = 0,
+        selectionTimestamp: Int = timestamp,
+    ) {
+        assertEquals(XFixes.FirstEvent + XFixes.SelectionNotify, event[0].toInt() and 0xff)
+        assertEquals(subtype, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(owner, u32le(event, 8))
+        assertEquals(selection, u32le(event, 12))
+        assertEquals(timestamp, u32le(event, 16))
+        assertEquals(selectionTimestamp, u32le(event, 20))
+        assertZeroBytes(event, 24, 32)
     }
 
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {

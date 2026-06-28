@@ -545,6 +545,13 @@ internal class X11Connection(
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = windowId)
+        val selection = byteOrder.u32(body, 4)
+        if (state.atomName(selection) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = selection)
+        val eventMask = byteOrder.u32(body, 8)
+        if ((eventMask and XFixes.SelectionNotifyMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = eventMask)
+        }
+        state.selectXFixesSelectionInput(this, windowId, selection, eventMask)
     }
 
     private fun xfixesSelectCursorInput(body: ByteArray, majorOpcode: Int) {
@@ -3315,6 +3322,7 @@ internal class X11Connection(
         val removal = state.removeWindowWithDestroyNotify(windowId)
         ownedResources.removeAll(removal.removedResources)
         sendDestroyNotify(removal.destroyNotifyDispatches)
+        sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
     }
 
     private fun destroySubwindows(body: ByteArray) {
@@ -3325,6 +3333,7 @@ internal class X11Connection(
             val removal = state.removeWindowWithDestroyNotify(child.id)
             ownedResources.removeAll(removal.removedResources)
             sendDestroyNotify(removal.destroyNotifyDispatches)
+            sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         }
     }
 
@@ -3800,9 +3809,12 @@ internal class X11Connection(
         val time = byteOrder.u32(body, 8)
         if (state.atomName(selection) == null) return writeError(error = 5, opcode = 22, badValue = selection)
         if (owner != 0 && state.window(owner) == null) return writeError(error = 3, opcode = 22, badValue = owner)
-        val clear = state.setSelectionOwner(selection, owner, this, time)
-        if (clear != null) {
+        val update = state.setSelectionOwner(selection, owner, this, time)
+        update?.clear?.let { clear ->
             runCatching { clear.sink.sendSelectionClearEvent(clear.event) }
+        }
+        update?.selectionNotify?.forEach { notification ->
+            runCatching { notification.sink.sendXFixesSelectionNotifyEvent(notification.event) }
         }
     }
 
@@ -5908,12 +5920,12 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 113, badValue = 0)
         val resource = byteOrder.u32(body, 0)
         if (resource == AllTemporary) {
-            sendDestroyNotify(state.destroyTemporaryRetainedClients())
+            sendResourceRemoval(state.destroyTemporaryRetainedClients())
             return
         }
         if (!state.hasResource(resource)) return writeError(error = 2, opcode = 113, badValue = resource)
-        state.destroyRetainedClientByResource(resource)?.let { notifications ->
-            sendDestroyNotify(notifications)
+        state.destroyRetainedClientByResource(resource)?.let { removal ->
+            sendResourceRemoval(removal)
             return
         }
         val client = state.liveClientOwningResource(resource)
@@ -6386,6 +6398,19 @@ internal class X11Connection(
         byteOrder.put32(bytes, 16, event.selection)
         byteOrder.put32(bytes, 20, event.target)
         byteOrder.put32(bytes, 24, event.property)
+        write(bytes)
+    }
+
+    override fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XFixes.FirstEvent + XFixes.SelectionNotify).toByte()
+        bytes[1] = event.subtype.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put32(bytes, 8, event.ownerWindowId)
+        byteOrder.put32(bytes, 12, event.selection)
+        byteOrder.put32(bytes, 16, event.timestamp)
+        byteOrder.put32(bytes, 20, event.selectionTimestamp)
         write(bytes)
     }
 
@@ -7508,6 +7533,17 @@ internal class X11Connection(
         }
     }
 
+    private fun sendXFixesSelectionNotify(notifications: List<XXFixesSelectionNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXFixesSelectionNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendResourceRemoval(removal: XResourceRemoval) {
+        sendDestroyNotify(removal.destroyNotifyDispatches)
+        sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
+    }
+
     private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendUnmapNotifyEvent(notification.event) }
@@ -7589,15 +7625,15 @@ internal class X11Connection(
             resources = ownedResources.toSet()
         }
         state.releaseServerGrab(this)
-        val destroyNotifyDispatches = when (mode) {
+        val resourceRemoval = when (mode) {
             XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
             else -> {
                 state.retainClientResources(this, resources, mode)
-                emptyList()
+                XResourceRemoval(destroyNotifyDispatches = emptyList(), xfixesSelectionNotifyDispatches = emptyList())
             }
         }
-        sendDestroyNotify(destroyNotifyDispatches)
-        state.unregisterEventSink(this)
+        sendResourceRemoval(resourceRemoval)
+        sendXFixesSelectionNotify(state.unregisterEventSink(this))
     }
 
     private companion object {

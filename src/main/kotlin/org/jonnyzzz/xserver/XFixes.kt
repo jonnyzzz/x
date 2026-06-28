@@ -18,6 +18,16 @@ internal object XFixes {
     const val SaveSetMap = 0
     const val SaveSetUnmap = 1
 
+    const val SelectionNotify = 0
+    const val SetSelectionOwnerNotify = 0
+    const val SelectionWindowDestroyNotify = 1
+    const val SelectionClientCloseNotify = 2
+    const val SetSelectionOwnerNotifyMask = 1 shl 0
+    const val SelectionWindowDestroyNotifyMask = 1 shl 1
+    const val SelectionClientCloseNotifyMask = 1 shl 2
+    const val SelectionNotifyMask =
+        SetSelectionOwnerNotifyMask or SelectionWindowDestroyNotifyMask or SelectionClientCloseNotifyMask
+
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
             QueryVersion -> "QueryVersion"
