@@ -56,6 +56,7 @@ internal object XRender {
     const val OpConjointOut = 0x27
     const val OpConjointOutReverse = 0x28
     const val OpConjointAtop = 0x29
+    const val OpConjointAtopReverse = 0x2a
     const val OpConjointMaximum = 0x2b
     const val OpBlendMultiply = 0x30
     const val OpBlendMaximum = 0x3e
