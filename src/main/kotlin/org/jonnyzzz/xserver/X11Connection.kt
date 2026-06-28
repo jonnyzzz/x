@@ -145,6 +145,10 @@ internal class X11Connection(
                 shm(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "XFIXES") {
+                xfixes(minorOpcode, body, opcode)
+                return
+            }
             if (extension.name == "XKEYBOARD") {
                 xkb(minorOpcode, body, opcode)
                 return
@@ -480,6 +484,89 @@ internal class X11Connection(
 
     private fun shmBadImplementation(majorOpcode: Int, minorOpcode: Int) {
         state.recordUnsupportedRequest(majorOpcode, minorOpcode, "MIT-SHM.${XShm.operationName(minorOpcode)}")
+        writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+    }
+
+    private fun xfixes(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XFixes.QueryVersion -> xfixesQueryVersion(body, majorOpcode)
+            XFixes.ChangeSaveSet -> xfixesChangeSaveSet(body, majorOpcode)
+            XFixes.SelectSelectionInput -> xfixesSelectSelectionInput(body, majorOpcode)
+            XFixes.SelectCursorInput -> xfixesSelectCursorInput(body, majorOpcode)
+            XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
+            else -> xfixesBadImplementation(majorOpcode, minorOpcode)
+        }
+    }
+
+    private fun xfixesQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.QueryVersion, badValue = 0)
+        val clientMajor = byteOrder.u32(body, 0)
+        val clientMinor = byteOrder.u32(body, 4)
+        val (major, minor) =
+            when {
+                clientMajor < XFixes.MajorVersion -> clientMajor to clientMinor
+                clientMajor > XFixes.MajorVersion -> XFixes.MajorVersion to XFixes.MinorVersion
+                else -> XFixes.MajorVersion to minOf(clientMinor, XFixes.MinorVersion)
+            }
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, major)
+        byteOrder.put32(reply, 12, minor)
+        write(reply)
+    }
+
+    private fun xfixesChangeSaveSet(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0)
+        val mode = body[0].toInt() and 0xff
+        if (mode !in XSaveSetMode.Insert..XSaveSetMode.Delete) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = mode)
+        }
+        val target = body[1].toInt() and 0xff
+        if (target !in XFixes.SaveSetNearest..XFixes.SaveSetRoot) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = target)
+        }
+        val map = body[2].toInt() and 0xff
+        if (map !in XFixes.SaveSetMap..XFixes.SaveSetUnmap) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = map)
+        }
+        if (target != XFixes.SaveSetNearest || map != XFixes.SaveSetMap) {
+            return xfixesBadImplementation(majorOpcode, XFixes.ChangeSaveSet)
+        }
+        val windowId = byteOrder.u32(body, 4)
+        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = windowId)
+        val owner = state.windowOwner(windowId)
+        if (owner == null || owner == this) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0)
+        state.changeSaveSet(this, windowId, insert = mode == XSaveSetMode.Insert)
+    }
+
+    private fun xfixesSelectSelectionInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = windowId)
+    }
+
+    private fun xfixesSelectCursorInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = 0)
+        val windowId = byteOrder.u32(body, 0)
+        state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = windowId)
+    }
+
+    private fun xfixesGetCursorImage(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImage, badValue = 0)
+        val pointer = state.queryPointer(X11Ids.RootWindow) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.GetCursorImage, badValue = X11Ids.RootWindow)
+        val reply = reply(extra = 0, payloadUnits = 1)
+        byteOrder.put16(reply, 8, pointer.rootX)
+        byteOrder.put16(reply, 10, pointer.rootY)
+        byteOrder.put16(reply, 12, 1)
+        byteOrder.put16(reply, 14, 1)
+        byteOrder.put16(reply, 16, 0)
+        byteOrder.put16(reply, 18, 0)
+        byteOrder.put32(reply, 20, 1)
+        byteOrder.put32(reply, 32, 0)
+        write(reply)
+    }
+
+    private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {
+        state.recordUnsupportedRequest(majorOpcode, minorOpcode, "XFIXES.${XFixes.operationName(minorOpcode)}")
         writeError(error = 17, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
     }
 
@@ -5420,6 +5507,7 @@ internal class X11Connection(
             XBigRequests.MajorOpcode -> "BIG-REQUESTS.$minorOpcode"
             XRender.MajorOpcode -> "RENDER.${XRender.operationName(minorOpcode)}"
             XShm.MajorOpcode -> "MIT-SHM.${XShm.operationName(minorOpcode)}"
+            XFixes.MajorOpcode -> "XFIXES.${XFixes.operationName(minorOpcode)}"
             XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"

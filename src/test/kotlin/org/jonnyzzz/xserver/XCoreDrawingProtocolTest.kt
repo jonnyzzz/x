@@ -905,6 +905,7 @@ class XCoreDrawingProtocolTest {
                 out.write(request(98, 0, overlongEmptyName))
                 out.write(queryExtensionRequest("NOT-PRESENT"))
                 out.write(queryExtensionRequest("GLX"))
+                out.write(queryExtensionRequest("XFIXES"))
                 out.flush()
 
                 assertError(socket.getInputStream(), error = 16, opcode = 98, badValue = 0, sequence = 1)
@@ -921,6 +922,13 @@ class XCoreDrawingProtocolTest {
                 assertEquals(128, glx[9].toInt() and 0xff)
                 assertEquals(0, glx[10].toInt() and 0xff)
                 assertEquals(128, glx[11].toInt() and 0xff)
+
+                val xfixes = readReply(socket.getInputStream())
+                assertEquals(6, u16le(xfixes, 2))
+                assertEquals(1, xfixes[8].toInt())
+                assertEquals(XFixes.MajorOpcode, xfixes[9].toInt() and 0xff)
+                assertEquals(XFixes.FirstEvent, xfixes[10].toInt() and 0xff)
+                assertEquals(XFixes.FirstError, xfixes[11].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
@@ -942,9 +950,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(5, reply[1].toInt() and 0xff)
+                assertEquals(6, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(11, u32le(reply, 4))
+                assertEquals(13, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -952,7 +960,124 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XKEYBOARD"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "XKEYBOARD"), names)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES v1 requests validate framing and return cursor image`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                server.input.click(7, 9)
+                val out = socket.getOutputStream()
+                out.write(request(XFixes.MajorOpcode, XFixes.QueryVersion, ByteArray(4)))
+                out.write(xfixesQueryVersionRequest(6, 0))
+                out.write(xfixesQueryVersionRequest(0, 0))
+                out.write(request(XFixes.MajorOpcode, XFixes.SelectSelectionInput, ByteArray(8)))
+                out.write(xfixesSelectSelectionInputRequest(WindowId + 99, selection = 1))
+                out.write(xfixesSelectSelectionInputRequest(X11Ids.RootWindow, selection = 1))
+                out.write(request(XFixes.MajorOpcode, XFixes.SelectCursorInput, ByteArray(4)))
+                out.write(xfixesSelectCursorInputRequest(WindowId + 99))
+                out.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                out.write(request(XFixes.MajorOpcode, XFixes.GetCursorImage, ByteArray(4)))
+                out.write(xfixesGetCursorImageRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.QueryVersion, badValue = 0, sequence = 1)
+
+                val version = readReply(socket.getInputStream())
+                assertEquals(2, u16le(version, 2))
+                assertEquals(XFixes.MajorVersion, u32le(version, 8))
+                assertEquals(XFixes.MinorVersion, u32le(version, 12))
+
+                val oldVersion = readReply(socket.getInputStream())
+                assertEquals(3, u16le(oldVersion, 2))
+                assertEquals(0, u32le(oldVersion, 8))
+                assertEquals(0, u32le(oldVersion, 12))
+
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = 0, sequence = 4)
+                assertError(socket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectSelectionInput, badValue = WindowId + 99, sequence = 5)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = 0, sequence = 7)
+                assertError(socket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = WindowId + 99, sequence = 8)
+                assertError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.GetCursorImage, badValue = 0, sequence = 10)
+
+                val cursor = readReply(socket.getInputStream())
+                assertEquals(11, u16le(cursor, 2))
+                assertEquals(1, u32le(cursor, 4))
+                assertEquals(7, u16le(cursor, 8))
+                assertEquals(9, u16le(cursor, 10))
+                assertEquals(1, u16le(cursor, 12))
+                assertEquals(1, u16le(cursor, 14))
+                assertEquals(0, u16le(cursor, 16))
+                assertEquals(0, u16le(cursor, 18))
+                assertEquals(1, u32le(cursor, 20))
+                assertEquals(0, u32le(cursor, 32))
+
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(12, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES ChangeSaveSet mirrors core save set validation`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { managerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    managerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(managerSocket)
+                    val child = WindowId + 88
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createWindowRequest(child))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(2, u16le(readReply(ownerSocket.getInputStream()), 2))
+
+                    val managerOut = managerSocket.getOutputStream()
+                    val frame = WindowId + 89
+                    managerOut.write(request(XFixes.MajorOpcode, XFixes.ChangeSaveSet, ByteArray(4)))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 2, target = XFixes.SaveSetNearest, map = XFixes.SaveSetMap, window = child))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = 2, map = XFixes.SaveSetMap, window = child))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = 2, window = child))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetMap, window = WindowId + 99))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetRoot, map = XFixes.SaveSetMap, window = child))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetUnmap, window = child))
+                    managerOut.write(createWindowRequest(frame, x = 10, y = 10, width = 50, height = 40))
+                    managerOut.write(reparentWindowRequest(child, frame, x = 7, y = 8))
+                    managerOut.write(xfixesChangeSaveSetRequest(mode = 0, target = XFixes.SaveSetNearest, map = XFixes.SaveSetMap, window = child))
+                    managerOut.write(queryPointerRequest())
+                    managerOut.flush()
+
+                    assertError(managerSocket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0, sequence = 1)
+                    assertError(managerSocket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 2, sequence = 2)
+                    assertError(managerSocket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 2, sequence = 3)
+                    assertError(managerSocket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 2, sequence = 4)
+                    assertError(managerSocket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = WindowId + 99, sequence = 5)
+                    assertError(managerSocket.getInputStream(), error = 17, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0, sequence = 6)
+                    assertError(managerSocket.getInputStream(), error = 17, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.ChangeSaveSet, badValue = 0, sequence = 7)
+
+                    val pointer = readReply(managerSocket.getInputStream())
+                    assertEquals(11, u16le(pointer, 2))
+                    closeClientAndWait(managerSocket)
+                    assertEquals(listOf(child), waitForRootChildren(server.localPort) { it == listOf(child) })
+                    val json = httpGet(server.localPort, "/state.json")
+                    assertContains(
+                        json,
+                        windowJsonId(child) + ""","parent":"${X11Ids.RootWindow.toJsonHex()}","x":17,"y":18,"localX":17,"localY":18,"width":40,"height":30""",
+                    )
+                }
             }
             server.close()
             serverThread.join(1_000)
@@ -13789,6 +13914,40 @@ class XCoreDrawingProtocolTest {
         nameBytes.copyInto(body, 4)
         return request(98, 0, body)
     }
+
+    private fun xfixesQueryVersionRequest(major: Int, minor: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, major)
+        put32le(body, 4, minor)
+        return request(XFixes.MajorOpcode, XFixes.QueryVersion, body)
+    }
+
+    private fun xfixesChangeSaveSetRequest(mode: Int, target: Int, map: Int, window: Int): ByteArray {
+        val body = ByteArray(8)
+        body[0] = mode.toByte()
+        body[1] = target.toByte()
+        body[2] = map.toByte()
+        put32le(body, 4, window)
+        return request(XFixes.MajorOpcode, XFixes.ChangeSaveSet, body)
+    }
+
+    private fun xfixesSelectSelectionInputRequest(window: Int, selection: Int, eventMask: Int = 1): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, selection)
+        put32le(body, 8, eventMask)
+        return request(XFixes.MajorOpcode, XFixes.SelectSelectionInput, body)
+    }
+
+    private fun xfixesSelectCursorInputRequest(window: Int, eventMask: Int = 1): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put32le(body, 4, eventMask)
+        return request(XFixes.MajorOpcode, XFixes.SelectCursorInput, body)
+    }
+
+    private fun xfixesGetCursorImageRequest(): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.GetCursorImage, ByteArray(0))
 
     private fun openFontRequest(font: Int, name: String = "fixed"): ByteArray {
         val nameBytes = name.encodeToByteArray()
