@@ -1058,6 +1058,235 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES SelectCursorInput validates event mask`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val badMask = XFixes.DisplayCursorNotifyMask + 1
+                val out = socket.getOutputStream()
+                out.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow, eventMask = badMask))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = badMask, sequence = 1)
+                assertEquals(2, u16le(readReply(socket.getInputStream()), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SelectCursorInput delivers display cursor notify events and unsubscribe stops delivery`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val cursor = PixmapId + 90
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow, cursor = cursor))
+                    ownerOut.flush()
+                    assertEquals(1, readReply(owner.getInputStream())[0].toInt())
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 2,
+                        timestamp = 1,
+                    )
+
+                    ownerOut.write(changeActivePointerGrabRequest(cursor = 0))
+                    ownerOut.flush()
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 3,
+                        timestamp = 1,
+                    )
+
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow, eventMask = 0))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(4, u16le(readReply(observer.getInputStream()), 2))
+
+                    ownerOut.write(changeActivePointerGrabRequest(cursor = cursor))
+                    ownerOut.flush()
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    val observerReply = readReply(observer.getInputStream())
+                    assertEquals(1, observerReply[0].toInt())
+                    assertEquals(5, u16le(observerReply, 2))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES cursor notify tracks window cursor changes recolor and GetCursorImage serial`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val cursor = PixmapId + 91
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                    ownerOut.write(changeWindowAttributesRawRequest(X11Ids.RootWindow, 1 shl 14, cursor))
+                    ownerOut.write(recolorCursorRequest(cursor, foregroundGreen = 0xffff))
+                    ownerOut.write(xfixesGetCursorImageRequest())
+                    ownerOut.flush()
+
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 2,
+                        timestamp = 1,
+                    )
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 3,
+                        timestamp = 1,
+                    )
+                    val cursorImage = readReply(owner.getInputStream())
+                    assertEquals(3, u32le(cursorImage, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES cursor notify tracks passive GrabButton cursor activation and release`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val cursor = PixmapId + 92
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                    ownerOut.write(grabButtonRequest(X11Ids.RootWindow, eventMask = 0, cursor = cursor))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+                    assertEquals(4, u16le(readReply(owner.getInputStream()), 2))
+
+                    server.input.pointerDown(10, 10, button = 1)
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 2,
+                        timestamp = 1,
+                    )
+
+                    server.input.pointerUp(10, 10, button = 1)
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 3,
+                        timestamp = 2,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES cursor notify tracks mapped window cursor under stationary pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(2, u16le(readReply(observer.getInputStream()), 2))
+
+                    val child = WindowId + 701
+                    val cursor = PixmapId + 93
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                    ownerOut.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                    ownerOut.write(createWindowRequest(child, x = 0, y = 0, width = 20, height = 20, cursor = cursor))
+                    ownerOut.write(mapWindowRequest(child))
+                    ownerOut.write(unmapWindowRequest(child))
+                    ownerOut.flush()
+
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 2,
+                        timestamp = 1,
+                    )
+                    assertXFixesCursorNotify(
+                        observer.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = X11Ids.RootWindow,
+                        cursorSerial = 3,
+                        timestamp = 1,
+                    )
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES SelectSelectionInput delivers SetSelectionOwner notify events`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -16615,6 +16844,25 @@ class XCoreDrawingProtocolTest {
         assertEquals(timestamp, u32le(event, 16))
         assertEquals(selectionTimestamp, u32le(event, 20))
         assertZeroBytes(event, 24, 32)
+    }
+
+    private fun assertXFixesCursorNotify(
+        event: ByteArray,
+        sequence: Int,
+        subtype: Int = XFixes.DisplayCursorNotify,
+        window: Int,
+        cursorSerial: Int,
+        timestamp: Int = 0,
+        name: Int = 0,
+    ) {
+        assertEquals(XFixes.FirstEvent + XFixes.CursorNotify, event[0].toInt() and 0xff)
+        assertEquals(subtype, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(cursorSerial, u32le(event, 8))
+        assertEquals(timestamp, u32le(event, 12))
+        assertEquals(name, u32le(event, 16))
+        assertZeroBytes(event, 20, 32)
     }
 
     private fun assertButtonEvent(event: ByteArray, type: Int, detail: Int) {

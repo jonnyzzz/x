@@ -12,11 +12,18 @@ internal data class XWindowRemoval(
     val removedResources: Set<Int>,
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch> = emptyList(),
+    val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
 internal data class XResourceRemoval(
     val destroyNotifyDispatches: List<XDestroyNotifyDispatch>,
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
+    val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
+)
+
+internal data class XEventSinkRemoval(
+    val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
+    val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
 internal class X11State(
@@ -40,6 +47,7 @@ internal class X11State(
     private val selectionOwners = linkedMapOf<Int, XSelectionOwner>()
     private val selectionLastChangeTimes = linkedMapOf<Int, Int>()
     private val xfixesSelectionInputs = linkedMapOf<XEventSink, LinkedHashMap<XXFixesSelectionInputKey, Int>>()
+    private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -56,6 +64,7 @@ internal class X11State(
     private var keyboardModifierState: Int = 0
     private val pressedLogicalButtons = mutableSetOf<Int>()
     private var inputTime: Int = 1
+    private var cursorSerial: Int = 1
     private val motionHistory = mutableListOf<XMotionHistoryEntry>()
     private var lastPointerGrabTime: Int = 0
     private var lastKeyboardGrabTime: Int = 0
@@ -185,7 +194,9 @@ internal class X11State(
 
     private fun removeWindow(id: Int, sendDestroyNotify: Boolean, excludedSink: XEventSink?): XWindowRemoval {
         val initialRemoved = windowSubtreeIds(id)
-        processRetainedSaveSetsForWindowSubtree(initialRemoved)
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
+        xfixesCursorNotifyDispatches += processRetainedSaveSetsForWindowSubtree(initialRemoved)
+        val previousCursor = displayedCursorId()
         val removed = windowSubtreeIds(id)
         if (removed.isEmpty()) return XWindowRemoval(removedResources = emptySet(), destroyNotifyDispatches = emptyList())
         val destroyNotifyDispatches = if (sendDestroyNotify) {
@@ -218,6 +229,8 @@ internal class X11State(
         selectionOwners.entries.removeIf { it.value.windowId in removed }
         xfixesSelectionInputs.values.forEach { selections -> selections.keys.removeIf { it.windowId in removed } }
         xfixesSelectionInputs.entries.removeIf { it.value.isEmpty() }
+        xfixesCursorInputs.values.forEach { windows -> windows.keys.removeIf { it in removed } }
+        xfixesCursorInputs.entries.removeIf { it.value.isEmpty() }
         saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
@@ -228,17 +241,20 @@ internal class X11State(
             removedResources = removedResources,
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches + xfixesCursorNotifyDispatchesIfChanged(previousCursor),
         )
     }
 
     @Synchronized
     fun removeClientResources(owner: XEventSink, resourceIds: Set<Int>): XResourceRemoval {
         val currentResourceIds = currentResourceIdsOwnedBy(owner, resourceIds)
-        processSaveSet(owner, currentResourceIds)
+        val xfixesCursorNotifyDispatches = processSaveSet(owner, currentResourceIds)
         val removal = removeClientResources(currentResourceIds, excludedSink = owner)
         saveSets.remove(owner)
-        releaseInputGrabs(owner)
-        return removal
+        val cursorNotifyDispatches = releaseInputGrabs(owner)
+        return removal.copy(
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches + cursorNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -252,12 +268,14 @@ internal class X11State(
         val removedWindows = linkedSetOf<Int>()
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         for (id in resourceIds) {
             if (id != X11Ids.RootWindow && windows.containsKey(id)) {
                 val removal = removeWindow(id, sendDestroyNotify = true, excludedSink = excludedSink)
                 removedWindows += removal.removedResources
                 destroyNotifyDispatches += removal.destroyNotifyDispatches
                 xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
+                xfixesCursorNotifyDispatches += removal.xfixesCursorNotifyDispatches
             }
         }
         val ids = resourceIds - removedWindows
@@ -278,12 +296,15 @@ internal class X11State(
             pictures.remove(id)
             glyphSets.remove(id)
         }
+        val previousCursor = displayedCursorId()
         releaseInputGrabsForResources(resourceIds)
+        xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         discardRetainedResourceIds(resourceIds)
         ensureDefaultColormapInstalled()
         return XResourceRemoval(
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
         )
     }
 
@@ -311,8 +332,11 @@ internal class X11State(
     fun destroyRetainedClientByResource(resourceId: Int): XResourceRemoval? {
         val retained = retainedClients.entries.firstOrNull { resourceId in it.value.resourceIds } ?: return null
         retainedClients.remove(retained.key)
-        processRetainedSaveSet(retained.value)
-        return removeClientResources(retained.value.resourceIds)
+        val xfixesCursorNotifyDispatches = processRetainedSaveSet(retained.value)
+        val removal = removeClientResources(retained.value.resourceIds)
+        return removal.copy(
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -323,16 +347,19 @@ internal class X11State(
             .toList()
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         for (id in temporaryIds) {
             val retained = retainedClients.remove(id) ?: continue
-            processRetainedSaveSet(retained)
+            xfixesCursorNotifyDispatches += processRetainedSaveSet(retained)
             val removal = removeClientResources(retained.resourceIds)
             destroyNotifyDispatches += removal.destroyNotifyDispatches
             xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
+            xfixesCursorNotifyDispatches += removal.xfixesCursorNotifyDispatches
         }
         return XResourceRemoval(
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
         )
     }
 
@@ -373,6 +400,26 @@ internal class X11State(
             xfixesSelectionInputs.getOrPut(owner) { linkedMapOf() }[key] = eventMask
         }
     }
+
+    @Synchronized
+    fun selectXFixesCursorInput(owner: XEventSink, windowId: Int, eventMask: Int) {
+        if (eventMask == 0) {
+            xfixesCursorInputs[owner]?.remove(windowId)
+            if (xfixesCursorInputs[owner]?.isEmpty() == true) xfixesCursorInputs.remove(owner)
+        } else {
+            xfixesCursorInputs.getOrPut(owner) { linkedMapOf() }[windowId] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun cursorSerial(): Int = cursorSerial
+
+    @Synchronized
+    fun displayedCursorSnapshot(): Int? = displayedCursorId()
+
+    @Synchronized
+    fun cursorNotifyDispatchesIfDisplayChanged(previousCursor: Int?): List<XXFixesCursorNotifyDispatch> =
+        xfixesCursorNotifyDispatchesIfChanged(previousCursor)
 
     @Synchronized
     fun windowIsViewable(id: Int): Boolean {
@@ -823,10 +870,12 @@ internal class X11State(
     }
 
     @Synchronized
-    fun grabPointer(grab: XInputGrab): Int {
-        if (!windowIsViewable(grab.windowId)) return XGrabStatus.NotViewable
+    fun grabPointer(grab: XInputGrab): XPointerGrabResult {
+        if (!windowIsViewable(grab.windowId)) {
+            return XPointerGrabResult(status = XGrabStatus.NotViewable, cursorNotifyDispatches = emptyList())
+        }
         if (grab.confineTo?.let { !windowIsViewable(it) || !windowIntersectsRootBounds(it) } == true) {
-            return XGrabStatus.NotViewable
+            return XPointerGrabResult(status = XGrabStatus.NotViewable, cursorNotifyDispatches = emptyList())
         }
         val serverTime = currentServerTime(lastPointerGrabTime)
         if (grab.time != 0 &&
@@ -835,27 +884,41 @@ internal class X11State(
                     Integer.compareUnsigned(grab.time, serverTime) > 0
                 )
         ) {
-            return XGrabStatus.InvalidTime
+            return XPointerGrabResult(status = XGrabStatus.InvalidTime, cursorNotifyDispatches = emptyList())
         }
-        if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) return XGrabStatus.AlreadyGrabbed
+        if (activePointerGrab?.owner != null && activePointerGrab?.owner != grab.owner) {
+            return XPointerGrabResult(status = XGrabStatus.AlreadyGrabbed, cursorNotifyDispatches = emptyList())
+        }
+        val previousCursor = displayedCursorId()
         val effectiveTime = if (grab.time == 0) serverTime else grab.time
         lastPointerGrabTime = effectiveTime
         activePointerGrab = grab.copy(time = effectiveTime)
-        return XGrabStatus.Success
+        return XPointerGrabResult(
+            status = XGrabStatus.Success,
+            cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
+        )
     }
 
     @Synchronized
-    fun ungrabPointer(owner: XEventSink, time: Int) {
+    fun ungrabPointer(owner: XEventSink, time: Int): List<XXFixesCursorNotifyDispatch> {
         val grab = activePointerGrab
-        if (grab?.owner == owner && validUngrabTime(time, grab.time)) activePointerGrab = null
+        if (grab?.owner == owner && validUngrabTime(time, grab.time)) {
+            val previousCursor = displayedCursorId()
+            activePointerGrab = null
+            return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
+        }
+        return emptyList()
     }
 
     @Synchronized
-    fun changeActivePointerGrab(owner: XEventSink, eventMask: Int, cursor: Int?, time: Int) {
+    fun changeActivePointerGrab(owner: XEventSink, eventMask: Int, cursor: Int?, time: Int): List<XXFixesCursorNotifyDispatch> {
         val grab = activePointerGrab
         if (grab?.owner == owner && validChangeActivePointerGrabTime(time, grab.time)) {
+            val previousCursor = displayedCursorId()
             activePointerGrab = grab.copy(eventMask = eventMask, cursor = cursor)
+            return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         }
+        return emptyList()
     }
 
     @Synchronized
@@ -991,11 +1054,13 @@ internal class X11State(
     }
 
     @Synchronized
-    fun releaseInputGrabs(owner: XEventSink) {
+    fun releaseInputGrabs(owner: XEventSink): List<XXFixesCursorNotifyDispatch> {
+        val previousCursor = displayedCursorId()
         if (activePointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
         passiveButtonGrabs.removeIf { it.owner == owner }
         passiveKeyGrabs.removeIf { it.owner == owner }
+        return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
     private fun releaseInputGrabsForResources(resourceIds: Set<Int>) {
@@ -1382,7 +1447,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun unregisterEventSink(sink: XEventSink): List<XXFixesSelectionNotifyDispatch> {
+    fun unregisterEventSink(sink: XEventSink): XEventSinkRemoval {
         val xfixesSelectionNotifyDispatches = selectionOwners
             .filterValues { it.sink == sink }
             .flatMap { (selection) ->
@@ -1394,11 +1459,15 @@ internal class X11State(
         eventSinks.remove(sink)
         selectionOwners.entries.removeIf { it.value.sink == sink }
         xfixesSelectionInputs.remove(sink)
+        xfixesCursorInputs.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
-        releaseInputGrabs(sink)
+        val xfixesCursorNotifyDispatches = releaseInputGrabs(sink)
         releaseServerGrab(sink)
-        return xfixesSelectionNotifyDispatches
+        return XEventSinkRemoval(
+            xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
+            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
+        )
     }
 
     @Synchronized
@@ -1424,8 +1493,10 @@ internal class X11State(
 
     fun pointerButton(x: Int, y: Int, button: Int, pressed: Boolean): XPointerDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         synchronized(this) {
+            val previousCursor = displayedCursorId()
             val previousX = pointerX
             val previousY = pointerY
             pointerX = x.coerceIn(0, width - 1)
@@ -1523,12 +1594,14 @@ internal class X11State(
             if (!pressed && activePointerGrab?.activatedByPassiveGrab == true && pressedLogicalButtons.isEmpty()) {
                 activePointerGrab = null
             }
+            xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
             if (targetId != null) focusWindowId = targetId
         }
 
         for ((sink, event) in deliveries) {
             sink.sendPointerEvent(event)
         }
+        sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
         return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
     }
 
@@ -1649,8 +1722,10 @@ internal class X11State(
         destinationY: Int,
     ): XPointerDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         synchronized(this) {
+            val previousCursor = displayedCursorId()
             val sourceWindow = sourceWindowId.takeIf { it != 0 }?.let { windows[it] }
             if (sourceWindow != null && !sourceWindowContainsPointer(sourceWindow, sourceX, sourceY, sourceWidth, sourceHeight)) {
                 return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
@@ -1725,11 +1800,13 @@ internal class X11State(
                     }
                 }
             }
+            xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
         }
 
         for ((sink, event) in deliveries) {
             sink.sendPointerEvent(event)
         }
+        sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
         return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
     }
 
@@ -1998,6 +2075,14 @@ internal class X11State(
             window.cursorId = cursorId
         }
         return window
+    }
+
+    @Synchronized
+    fun updateWindowCursor(id: Int, cursorId: Int?): List<XXFixesCursorNotifyDispatch> {
+        val window = windows[id] ?: return emptyList()
+        val previousCursor = displayedCursorId()
+        window.cursorId = cursorId
+        return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
     @Synchronized
@@ -5283,7 +5368,7 @@ internal class X11State(
         backgroundRed: Int,
         backgroundGreen: Int,
         backgroundBlue: Int,
-    ) {
+    ): List<XXFixesCursorNotifyDispatch> {
         cursors[id]?.let {
             cursors[id] = it.copy(
                 foregroundRed = foregroundRed,
@@ -5293,6 +5378,12 @@ internal class X11State(
                 backgroundGreen = backgroundGreen,
                 backgroundBlue = backgroundBlue,
             )
+        }
+        return if (displayedCursorId() == id) {
+            cursorSerial += 1
+            xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = currentServerTime(inputTime))
+        } else {
+            emptyList()
         }
     }
 
@@ -5324,7 +5415,8 @@ internal class X11State(
     fun installedColormaps(): List<Int> = installedColormaps.toList()
 
     @Synchronized
-    fun removeResource(id: Int) {
+    fun removeResource(id: Int): List<XXFixesCursorNotifyDispatch> {
+        val previousCursor = displayedCursorId()
         pixmaps.remove(id)
         gcs.remove(id)
         fonts.remove(id)
@@ -5340,6 +5432,7 @@ internal class X11State(
         discardRetainedResourceIds(setOf(id))
         releaseInputGrabsForResources(setOf(id))
         ensureDefaultColormapInstalled()
+        return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
     private fun ensureDefaultColormapInstalled() {
@@ -5550,13 +5643,14 @@ internal class X11State(
         return removed
     }
 
-    private fun processSaveSet(owner: XEventSink, resourceIds: Set<Int>) {
+    private fun processSaveSet(owner: XEventSink, resourceIds: Set<Int>): List<XXFixesCursorNotifyDispatch> {
         val saveSet = saveSets[owner]?.values?.toList().orEmpty()
-        processSaveSet(saveSet, resourceIds)
+        return processSaveSet(saveSet, resourceIds)
     }
 
-    private fun processSaveSet(saveSet: List<XSaveSetEntry>, resourceIds: Set<Int>) {
-        if (saveSet.isEmpty()) return
+    private fun processSaveSet(saveSet: List<XSaveSetEntry>, resourceIds: Set<Int>): List<XXFixesCursorNotifyDispatch> {
+        if (saveSet.isEmpty()) return emptyList()
+        val previousCursor = displayedCursorId()
         val ownedWindows = resourceIds.filterTo(linkedSetOf()) { it != X11Ids.RootWindow && windows.containsKey(it) }
         for (entry in saveSet) {
             val windowId = entry.windowId
@@ -5579,23 +5673,26 @@ internal class X11State(
                 unmapWindow(windowId)
             }
         }
+        return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
     }
 
-    private fun processRetainedSaveSetsForWindowSubtree(windowIds: Set<Int>) {
-        if (windowIds.isEmpty()) return
+    private fun processRetainedSaveSetsForWindowSubtree(windowIds: Set<Int>): List<XXFixesCursorNotifyDispatch> {
+        if (windowIds.isEmpty()) return emptyList()
         val retained = retainedClients.values
             .filter { resources -> resources.resourceIds.any { it in windowIds && windows.containsKey(it) } }
             .toList()
+        val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         for (resources in retained) {
-            processRetainedSaveSet(resources)
+            xfixesCursorNotifyDispatches += processRetainedSaveSet(resources)
         }
+        return xfixesCursorNotifyDispatches
     }
 
-    private fun processRetainedSaveSet(resources: XRetainedClientResources) {
+    private fun processRetainedSaveSet(resources: XRetainedClientResources): List<XXFixesCursorNotifyDispatch> {
         val saveSet = resources.saveSet
-        if (saveSet.isEmpty()) return
+        if (saveSet.isEmpty()) return emptyList()
         resources.saveSet = emptyList()
-        processSaveSet(saveSet, resources.resourceIds)
+        return processSaveSet(saveSet, resources.resourceIds)
     }
 
     private fun discardRetainedResourceIds(resourceIds: Set<Int>) {
@@ -5837,6 +5934,43 @@ internal class X11State(
         )
     }
 
+    private fun displayedCursorId(): Int? {
+        activePointerGrab?.cursor?.let { return it }
+        val pointerWindow = windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow] ?: return null
+        return windowPathToRoot(pointerWindow.id).firstNotNullOfOrNull { it.cursorId }
+    }
+
+    private fun xfixesCursorNotifyDispatchesIfChanged(
+        previousCursor: Int?,
+        timestamp: Int = currentServerTime(inputTime),
+    ): List<XXFixesCursorNotifyDispatch> {
+        if (displayedCursorId() == previousCursor) return emptyList()
+        cursorSerial += 1
+        return xfixesCursorNotifyDispatches(cursorSerial = cursorSerial, timestamp = timestamp)
+    }
+
+    private fun xfixesCursorNotifyDispatches(cursorSerial: Int, timestamp: Int): List<XXFixesCursorNotifyDispatch> =
+        xfixesCursorInputs.flatMap { (sink, windows) ->
+            windows.mapNotNull { (windowId, selectedMask) ->
+                if ((selectedMask and XFixes.DisplayCursorNotifyMask) == 0) return@mapNotNull null
+                XXFixesCursorNotifyDispatch(
+                    sink = sink,
+                    event = XXFixesCursorNotifyEvent(
+                        subtype = XFixes.DisplayCursorNotify,
+                        windowId = windowId,
+                        cursorSerial = cursorSerial,
+                        timestamp = timestamp,
+                    ),
+                )
+            }
+        }
+
+    private fun sendXFixesCursorNotify(notifications: List<XXFixesCursorNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXFixesCursorNotifyEvent(notification.event) }
+        }
+    }
+
     private fun destroyNotifySinksInDestroyOrder(rootId: Int, excludedSink: XEventSink?): List<XDestroyNotifyDispatch> =
         windowsInDestroyNotifyOrder(rootId).flatMap { window ->
             destroyNotifySinks(window).filter { dispatch -> dispatch.sink != excludedSink }
@@ -5969,6 +6103,7 @@ internal class X11State(
             .asReversed()
             .firstOrNull { window ->
                 window.mapped &&
+                    windowIsViewable(window.id) &&
                     visibleBounds(window, absolutePosition(window).first, absolutePosition(window).second)?.let { bounds ->
                         x >= bounds.x &&
                             y >= bounds.y &&
@@ -6836,6 +6971,11 @@ internal data class XInputGrabSnapshot(
     val cursorHex: String? get() = cursor?.let { "0x${it.toUInt().toString(16)}" }
     val timeUnsigned: Long get() = time.toUInt().toLong()
 }
+
+internal data class XPointerGrabResult(
+    val status: Int,
+    val cursorNotifyDispatches: List<XXFixesCursorNotifyDispatch>,
+)
 
 internal object XGrabStatus {
     const val Success = 0

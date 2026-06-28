@@ -558,6 +558,11 @@ internal class X11Connection(
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = windowId)
+        val eventMask = byteOrder.u32(body, 4)
+        if ((eventMask and XFixes.DisplayCursorNotifyMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.SelectCursorInput, badValue = eventMask)
+        }
+        state.selectXFixesCursorInput(this, windowId, eventMask)
     }
 
     private fun xfixesGetCursorImage(body: ByteArray, majorOpcode: Int) {
@@ -570,7 +575,7 @@ internal class X11Connection(
         byteOrder.put16(reply, 14, 1)
         byteOrder.put16(reply, 16, 0)
         byteOrder.put16(reply, 18, 0)
-        byteOrder.put32(reply, 20, 1)
+        byteOrder.put32(reply, 20, state.cursorSerial())
         byteOrder.put32(reply, 32, 0)
         write(reply)
     }
@@ -3311,7 +3316,7 @@ internal class X11Connection(
         attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
         attributes.colormapId?.let { state.updateWindowAttributes(windowId, colormapId = colormapId, colormapIdChanged = true) }
-        attributes.cursorId?.let { state.updateWindowAttributes(windowId, cursorId = it.takeIf { id -> id != 0 }, cursorIdChanged = true) }
+        attributes.cursorId?.let { sendXFixesCursorNotify(state.updateWindowCursor(windowId, it.takeIf { id -> id != 0 })) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
     }
 
@@ -3323,6 +3328,7 @@ internal class X11Connection(
         ownedResources.removeAll(removal.removedResources)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
+        sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
     }
 
     private fun destroySubwindows(body: ByteArray) {
@@ -3334,6 +3340,7 @@ internal class X11Connection(
             ownedResources.removeAll(removal.removedResources)
             sendDestroyNotify(removal.destroyNotifyDispatches)
             sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
+            sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
         }
     }
 
@@ -3361,6 +3368,7 @@ internal class X11Connection(
         if (!state.canReparentWindow(windowId, parentId)) {
             return writeError(error = 8, opcode = 7, badValue = 0)
         }
+        val previousCursor = state.displayedCursorSnapshot()
         val wasMapped = window.mapped
         if (wasMapped) {
             val notifications = state.unmapNotifySinks(window)
@@ -3384,6 +3392,7 @@ internal class X11Connection(
             sendMapNotify(notifications)
             sendExposeForViewableMappedSubtree(mapped)
         }
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun mapWindow(body: ByteArray) {
@@ -3398,6 +3407,7 @@ internal class X11Connection(
                 return
             }
         }
+        val previousCursor = state.displayedCursorSnapshot()
         val notifications = state.mapNotifySinks(current)
         val window = state.mapWindow(windowId) ?: return
         if (window.windowClass == XWindowClass.InputOutput) {
@@ -3405,6 +3415,7 @@ internal class X11Connection(
         }
         sendMapNotify(notifications)
         sendExposeForViewableMappedSubtree(window)
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun unmapWindow(body: ByteArray) {
@@ -3412,15 +3423,18 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
         if (!window.mapped) return
+        val previousCursor = state.displayedCursorSnapshot()
         val notifications = state.unmapNotifySinks(window)
         state.unmapWindow(windowId)
         sendUnmapNotify(notifications)
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun mapSubwindows(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 9, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 9, badValue = windowId)
+        val previousCursor = state.displayedCursorSnapshot()
         for (child in state.childrenOf(windowId).asReversed()) {
             if (!child.mapped) {
                 if (!child.overrideRedirect) {
@@ -3439,12 +3453,14 @@ internal class X11Connection(
                 sendExposeForViewableMappedSubtree(mapped)
             }
         }
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun unmapSubwindows(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 11, badValue = 0)
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 11, badValue = windowId)
+        val previousCursor = state.displayedCursorSnapshot()
         for (child in state.childrenOf(windowId)) {
             if (child.mapped) {
                 val notifications = state.unmapNotifySinks(child)
@@ -3452,6 +3468,7 @@ internal class X11Connection(
                 sendUnmapNotify(notifications)
             }
         }
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun configureWindow(body: ByteArray) {
@@ -3525,6 +3542,7 @@ internal class X11Connection(
         if (resizeRequests.isNotEmpty()) {
             sendResizeRequest(resizeRequests)
         }
+        val previousCursor = state.displayedCursorSnapshot()
         val configured = state.configureWindow(
             window.id,
             x = x,
@@ -3539,6 +3557,7 @@ internal class X11Connection(
             sendConfigureNotify(state.configureNotifySinks(configured))
             if (configured.sizeChanged) sendExposeIfViewable(configured.window)
         }
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun circulateWindow(direction: Int, body: ByteArray) {
@@ -3554,8 +3573,10 @@ internal class X11Connection(
             sendCirculateRequest(requests)
             return
         }
+        val previousCursor = state.displayedCursorSnapshot()
         val result = state.circulateWindow(windowId, direction) ?: return
         sendCirculateNotify(state.circulateNotifySinks(result))
+        sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
     private fun getWindowAttributes(body: ByteArray) {
@@ -3907,7 +3928,7 @@ internal class X11Connection(
         if (cursor != 0 && !state.hasCursor(cursor)) return writeError(error = 6, opcode = 26, badValue = cursor)
         val time = byteOrder.u32(body, 16)
 
-        val status = state.grabPointer(
+        val result = state.grabPointer(
             XInputGrab(
                 owner = this,
                 kind = "pointer",
@@ -3921,12 +3942,13 @@ internal class X11Connection(
                 time = time,
             ),
         )
-        write(reply(extra = status, payloadUnits = 0))
+        write(reply(extra = result.status, payloadUnits = 0))
+        sendXFixesCursorNotify(result.cursorNotifyDispatches)
     }
 
     private fun ungrabPointer(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 27, badValue = 0)
-        state.ungrabPointer(this, byteOrder.u32(body, 0))
+        sendXFixesCursorNotify(state.ungrabPointer(this, byteOrder.u32(body, 0)))
     }
 
     private fun grabButton(ownerEvents: Int, body: ByteArray) {
@@ -3984,11 +4006,13 @@ internal class X11Connection(
         if ((eventMask and XEventMasks.ValidPointerEventMask.inv()) != 0) {
             return writeError(error = 2, opcode = 30, badValue = eventMask)
         }
-        state.changeActivePointerGrab(
-            owner = this,
-            eventMask = eventMask,
-            cursor = cursor.takeIf { it != 0 },
-            time = byteOrder.u32(body, 4),
+        sendXFixesCursorNotify(
+            state.changeActivePointerGrab(
+                owner = this,
+                eventMask = eventMask,
+                cursor = cursor.takeIf { it != 0 },
+                time = byteOrder.u32(body, 4),
+            ),
         )
     }
 
@@ -4189,7 +4213,7 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = opcode, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (!exists(id)) return writeError(error = error, opcode = opcode, badValue = id)
-        state.removeResource(id)
+        sendXFixesCursorNotify(state.removeResource(id))
         ownedResources.remove(id)
     }
 
@@ -5473,14 +5497,16 @@ internal class X11Connection(
         if (body.size != 16) return writeError(error = 16, opcode = 96, badValue = 0)
         val cursor = byteOrder.u32(body, 0)
         if (!state.hasCursor(cursor)) return writeError(error = 6, opcode = 96, badValue = cursor)
-        state.recolorCursor(
-            id = cursor,
-            foregroundRed = byteOrder.u16(body, 4),
-            foregroundGreen = byteOrder.u16(body, 6),
-            foregroundBlue = byteOrder.u16(body, 8),
-            backgroundRed = byteOrder.u16(body, 10),
-            backgroundGreen = byteOrder.u16(body, 12),
-            backgroundBlue = byteOrder.u16(body, 14),
+        sendXFixesCursorNotify(
+            state.recolorCursor(
+                id = cursor,
+                foregroundRed = byteOrder.u16(body, 4),
+                foregroundGreen = byteOrder.u16(body, 6),
+                foregroundBlue = byteOrder.u16(body, 8),
+                backgroundRed = byteOrder.u16(body, 10),
+                backgroundGreen = byteOrder.u16(body, 12),
+                backgroundBlue = byteOrder.u16(body, 14),
+            ),
         )
     }
 
@@ -6411,6 +6437,18 @@ internal class X11Connection(
         byteOrder.put32(bytes, 12, event.selection)
         byteOrder.put32(bytes, 16, event.timestamp)
         byteOrder.put32(bytes, 20, event.selectionTimestamp)
+        write(bytes)
+    }
+
+    override fun sendXFixesCursorNotifyEvent(event: XXFixesCursorNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XFixes.FirstEvent + XFixes.CursorNotify).toByte()
+        bytes[1] = event.subtype.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put32(bytes, 8, event.cursorSerial)
+        byteOrder.put32(bytes, 12, event.timestamp)
+        byteOrder.put32(bytes, 16, event.name)
         write(bytes)
     }
 
@@ -7539,9 +7577,16 @@ internal class X11Connection(
         }
     }
 
+    private fun sendXFixesCursorNotify(notifications: List<XXFixesCursorNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendXFixesCursorNotifyEvent(notification.event) }
+        }
+    }
+
     private fun sendResourceRemoval(removal: XResourceRemoval) {
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
+        sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
     }
 
     private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {
@@ -7633,7 +7678,9 @@ internal class X11Connection(
             }
         }
         sendResourceRemoval(resourceRemoval)
-        sendXFixesSelectionNotify(state.unregisterEventSink(this))
+        val sinkRemoval = state.unregisterEventSink(this)
+        sendXFixesSelectionNotify(sinkRemoval.xfixesSelectionNotifyDispatches)
+        sendXFixesCursorNotify(sinkRemoval.xfixesCursorNotifyDispatches)
     }
 
     private companion object {
