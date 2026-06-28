@@ -31,6 +31,7 @@ internal object XRender {
     const val OpBlendMaximum = 0x3e
 
     const val CPRepeat = 1 shl 0
+    const val CPClipMask = 1 shl 6
     const val PictureAttributeMask = 0x0000_1fff
 
     const val RepeatNone = 0

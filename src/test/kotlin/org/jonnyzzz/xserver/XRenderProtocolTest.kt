@@ -325,6 +325,32 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER ChangePicture clip mask None clears source picture clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderSetPictureClipRectangles(SolidPictureId, rectangles = emptyList()))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderScale(SolidPictureId, PictureId, width = 1, height = 1))
+                out.write(renderChangePictureClipMaskNone(SolidPictureId))
+                out.write(renderScale(SolidPictureId, PictureId, width = 1, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 1, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 1, x = 0, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Scale honors gradient source picture clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3969,6 +3995,14 @@ class XRenderProtocolTest {
         put32le(body, 0, picture)
         put32le(body, 4, XRender.CPRepeat)
         put32le(body, 8, repeat)
+        return request(XRender.MajorOpcode, 5, body)
+    }
+
+    private fun renderChangePictureClipMaskNone(picture: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, picture)
+        put32le(body, 4, XRender.CPClipMask)
+        put32le(body, 8, 0)
         return request(XRender.MajorOpcode, 5, body)
     }
 

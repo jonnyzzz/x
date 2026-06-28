@@ -1168,7 +1168,12 @@ internal class X11Connection(
         val valueMask = byteOrder.u32(body, 4)
         if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 8, minorOpcode = 5)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 8)
-        state.updatePicture(picture, valueMask, repeat = attributes.repeat)
+        state.updatePicture(
+            picture,
+            valueMask,
+            repeat = attributes.repeat,
+            clearClip = attributes.clipMask == 0,
+        )
     }
 
     private fun validateRenderPictureValueLength(valueMask: Int, body: ByteArray, valuesOffset: Int, minorOpcode: Int): Boolean {
@@ -1186,15 +1191,17 @@ internal class X11Connection(
     private fun renderPictureAttributes(valueMask: Int, body: ByteArray, valuesOffset: Int): XRenderPictureAttributes {
         var offset = valuesOffset
         var repeat: Int? = null
+        var clipMask: Int? = null
         for (bit in 0..12) {
             val mask = 1 shl bit
             if ((valueMask and mask) == 0) continue
             if (offset + 4 > body.size) break
             val value = byteOrder.u32(body, offset)
             if (mask == XRender.CPRepeat) repeat = value
+            if (mask == XRender.CPClipMask) clipMask = value
             offset += 4
         }
-        return XRenderPictureAttributes(repeat = repeat)
+        return XRenderPictureAttributes(repeat = repeat, clipMask = clipMask)
     }
 
     private fun renderSetPictureClipRectangles(body: ByteArray) {
@@ -8136,6 +8143,7 @@ private object XPropertyType {
 
 private data class XRenderPictureAttributes(
     val repeat: Int? = null,
+    val clipMask: Int? = null,
 )
 
 private data class XCompositeGlyphParseResult(

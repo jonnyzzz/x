@@ -2301,9 +2301,10 @@ internal class X11State(
     }
 
     @Synchronized
-    fun updatePicture(id: Int, valueMask: Int, repeat: Int? = null) {
+    fun updatePicture(id: Int, valueMask: Int, repeat: Int? = null, clearClip: Boolean = false) {
         pictures[id]?.valueMask = valueMask
         repeat?.let { pictures[id]?.repeat = it }
+        if (clearClip) pictures[id]?.clipRectangles = null
     }
 
     @Synchronized
