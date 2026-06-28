@@ -6868,6 +6868,160 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER OpBlendHSLSaturation keeps destination hue and luminosity with source saturation`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 4, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 4, height = 1, red = 0x2000, green = 0xc000, blue = 0x8000, alpha = 0xffff, operation = XRender.OpSrc))
+
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xe000, green = 0x2000, blue = 0x2000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, operation = XRender.OpBlendHSLSaturation, destinationX = 0, destinationY = 0, width = 1, height = 1))
+
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 1, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 1, height = 1, alphas = byteArrayOf(0x80.toByte())))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, mask = MaskPictureId, operation = XRender.OpBlendHSLSaturation, destinationX = 1, destinationY = 0, width = 1, height = 1))
+
+                out.write(renderFillRectangles(PixmapPictureId, x = 2, y = 0, width = 1, height = 1, red = 0xe000, green = 0x2000, blue = 0x2000, alpha = 0xffff, operation = XRender.OpBlendHSLSaturation))
+
+                out.write(createPixmapRequest(ComponentMaskPixmapId, depth = 32, width = 1, height = 1))
+                out.write(renderCreatePicture(ComponentMaskPictureId, ComponentMaskPixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(ComponentMaskPictureId, x = 0, y = 0, width = 1, height = 1, red = 0x8000, green = 0x8000, blue = 0x8000, alpha = 0xffff))
+                out.write(renderChangePictureComponentAlpha(ComponentMaskPictureId, componentAlpha = true))
+                out.write(renderComposite(SolidPictureId, PixmapPictureId, mask = ComponentMaskPictureId, operation = XRender.OpBlendHSLSaturation, destinationX = 3, destinationY = 0, width = 1, height = 1))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff0b_cb7e.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff16_c67f.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff0b_cb7e.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff16_c67f.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER OpBlendHSLSaturation solid composite returns destination result image`() {
+        val state = X11State(width = 16, height = 16)
+        state.putPixmap(XPixmap(PixmapId, width = 1, height = 1, depth = 32))
+        state.putPicture(XPicture(PixmapPictureId, drawableId = PixmapId, format = XRender.Argb32Format))
+        state.putPixmap(XPixmap(ComponentMaskPixmapId, width = 1, height = 1, depth = 32))
+        state.putPicture(
+            XPicture(
+                id = ComponentMaskPictureId,
+                drawableId = ComponentMaskPixmapId,
+                format = XRender.Argb32Format,
+                componentAlpha = true,
+            ),
+        )
+        state.putPicture(
+            XPicture(
+                id = SolidPictureId,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                solidPixel = XRender.argb32Pixel(red = 0xe000, green = 0x2000, blue = 0x2000, alpha = 0xffff),
+            ),
+        )
+        state.putImage(
+            drawableId = PixmapId,
+            x = 0,
+            y = 0,
+            image = XImagePixels(1, 1, intArrayOf(XRender.argb32Pixel(red = 0x2000, green = 0xc000, blue = 0x8000, alpha = 0xffff))),
+        )
+
+        val image = state.composite(
+            operation = XRender.OpBlendHSLSaturation,
+            source = state.picture(SolidPictureId)!!,
+            mask = null,
+            destination = state.picture(PixmapPictureId)!!,
+            sourceX = 0,
+            sourceY = 0,
+            maskX = 0,
+            maskY = 0,
+            destinationX = 0,
+            destinationY = 0,
+            width = 1,
+            height = 1,
+        )!!
+
+        assertEquals(0xff0b_cb7e.toInt(), image.pixels.single())
+        assertEquals(0xff0b_cb7e.toInt(), state.getImage(PixmapId, x = 0, y = 0, width = 1, height = 1)!!.pixels.single())
+
+        state.putImage(
+            drawableId = PixmapId,
+            x = 0,
+            y = 0,
+            image = XImagePixels(1, 1, intArrayOf(XRender.argb32Pixel(red = 0x2000, green = 0xc000, blue = 0x8000, alpha = 0xffff))),
+        )
+        state.putImage(
+            drawableId = ComponentMaskPixmapId,
+            x = 0,
+            y = 0,
+            image = XImagePixels(1, 1, intArrayOf(XRender.argb32Pixel(red = 0x8000, green = 0x8000, blue = 0x8000, alpha = 0xffff))),
+        )
+
+        val componentAlphaImage = state.composite(
+            operation = XRender.OpBlendHSLSaturation,
+            source = state.picture(SolidPictureId)!!,
+            mask = state.picture(ComponentMaskPictureId)!!,
+            destination = state.picture(PixmapPictureId)!!,
+            sourceX = 0,
+            sourceY = 0,
+            maskX = 0,
+            maskY = 0,
+            destinationX = 0,
+            destinationY = 0,
+            width = 1,
+            height = 1,
+        )!!
+
+        assertEquals(0xff16_c67f.toInt(), componentAlphaImage.pixels.single())
+        assertEquals(0xff16_c67f.toInt(), state.getImage(PixmapId, x = 0, y = 0, width = 1, height = 1)!!.pixels.single())
+
+        state.putPicture(
+            XPicture(
+                id = SolidPictureId,
+                drawableId = null,
+                format = XRender.Argb32Format,
+                solidPixel = XRender.argb32Pixel(red = 0x8000, green = 0x8000, blue = 0x8000, alpha = 0xffff),
+            ),
+        )
+        state.putImage(
+            drawableId = PixmapId,
+            x = 0,
+            y = 0,
+            image = XImagePixels(1, 1, intArrayOf(XRender.argb32Pixel(red = 0x2000, green = 0xc000, blue = 0x8000, alpha = 0xffff))),
+        )
+
+        val graySaturationImage = state.composite(
+            operation = XRender.OpBlendHSLSaturation,
+            source = state.picture(SolidPictureId)!!,
+            mask = null,
+            destination = state.picture(PixmapPictureId)!!,
+            sourceX = 0,
+            sourceY = 0,
+            maskX = 0,
+            maskY = 0,
+            destinationX = 0,
+            destinationY = 0,
+            width = 1,
+            height = 1,
+        )!!
+
+        assertEquals(0xff89_8989.toInt(), graySaturationImage.pixels.single())
+        assertEquals(0xff89_8989.toInt(), state.getImage(PixmapId, x = 0, y = 0, width = 1, height = 1)!!.pixels.single())
+    }
+
+    @Test
     fun `RENDER composite honors source picture clip rectangles`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
