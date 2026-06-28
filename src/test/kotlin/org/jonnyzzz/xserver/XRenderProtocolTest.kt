@@ -289,6 +289,73 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES CreateRegionFromWindow validates resources and recovers stream`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingWindow = WindowId + 1
+                val inputOnly = WindowId + 2
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createInputOnlyWindowRequest(inputOnly))
+                out.write(xfixesCreateRegionFromWindowRaw(ByteArray(8).also { put32le(it, 0, RegionId) }))
+                out.write(xfixesCreateRegionFromWindow(0, WindowId, XFixes.ShapeBounding))
+                out.write(xfixesCreateRegionFromWindow(RegionId, missingWindow, XFixes.ShapeBounding))
+                out.write(xfixesCreateRegionFromWindow(RegionId, WindowId, 3))
+                out.write(xfixesCreateRegionFromWindow(RegionId, inputOnly, XFixes.ShapeClip))
+                out.write(xfixesCreateRegion(RegionBId, emptyList()))
+                out.write(xfixesCreateRegionFromWindow(RegionBId, WindowId, XFixes.ShapeBounding))
+                out.write(xfixesCreateRegionFromWindow(RegionId, WindowId, XFixes.ShapeBounding))
+                out.write(xfixesFetchRegion(RegionId))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 4, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertExtensionError(socket.getInputStream(), error = 3, opcode = XFixes.MajorOpcode, badValue = missingWindow, sequence = 5, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertExtensionError(socket.getInputStream(), error = 2, opcode = XFixes.MajorOpcode, badValue = 3, sequence = 6, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = inputOnly, sequence = 7, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = RegionBId, sequence = 9, minorOpcode = XFixes.CreateRegionFromWindow)
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 100, 80), listOf(XRectangleCommand(0, 0, 100, 80)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES CreateRegionFromWindow snapshots window shapes`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(xfixesCreateRegion(RegionBId, listOf(XRectangleCommand(1, 0, 2, 1))))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 1, yOffset = 2, region = RegionBId))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeInput, xOffset = 3, yOffset = 4, region = RegionBId))
+                out.write(xfixesCreateRegionFromWindow(RegionId, WindowId, XFixes.ShapeClip))
+                out.write(xfixesCreateRegionFromWindow(RegionResultId, WindowId, XFixes.ShapeInput))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeClip, xOffset = 0, yOffset = 0, region = 0))
+                out.write(xfixesSetWindowShapeRegion(WindowId, XFixes.ShapeInput, xOffset = 0, yOffset = 0, region = 0))
+                out.write(xfixesFetchRegion(RegionId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesCreateRegionFromWindow(RegionExtentsId, WindowId, XFixes.ShapeBounding))
+                out.write(xfixesFetchRegion(RegionExtentsId))
+                out.flush()
+
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 2, 2, 1), listOf(XRectangleCommand(2, 2, 2, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(4, 4, 2, 1), listOf(XRectangleCommand(4, 4, 2, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 100, 80), listOf(XRectangleCommand(0, 0, 100, 80)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES InvertRegion validates framing and resources`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12188,6 +12255,17 @@ class XRenderProtocolTest {
 
     private fun xfixesCreateRegionFromBitmapRaw(body: ByteArray): ByteArray =
         request(XFixes.MajorOpcode, XFixes.CreateRegionFromBitmap, body)
+
+    private fun xfixesCreateRegionFromWindow(region: Int, window: Int, kind: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, region)
+        put32le(body, 4, window)
+        body[8] = kind.toByte()
+        return xfixesCreateRegionFromWindowRaw(body)
+    }
+
+    private fun xfixesCreateRegionFromWindowRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.CreateRegionFromWindow, body)
 
     private fun xfixesCreateRegionFromGc(region: Int, gc: Int): ByteArray {
         val body = ByteArray(8)

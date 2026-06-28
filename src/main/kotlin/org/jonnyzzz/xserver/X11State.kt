@@ -2612,6 +2612,18 @@ internal class X11State(
     }
 
     @Synchronized
+    fun windowShapeRegion(windowId: Int, kind: Int): List<XRectangleCommand> {
+        val window = windows[windowId] ?: return emptyList()
+        val shape = when (kind) {
+            XFixes.ShapeBounding -> window.boundingShape
+            XFixes.ShapeClip -> window.clipShape
+            XFixes.ShapeInput -> window.inputShape
+            else -> null
+        }
+        return (shape ?: listOf(XRectangleCommand(0, 0, window.width, window.height))).map { it.copy() }
+    }
+
+    @Synchronized
     fun putGlyphSet(glyphSet: XGlyphSet) {
         glyphSets[glyphSet.id] = glyphSet
     }

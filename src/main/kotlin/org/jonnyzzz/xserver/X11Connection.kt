@@ -496,6 +496,7 @@ internal class X11Connection(
             XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
             XFixes.CreateRegion -> xfixesCreateRegion(body, majorOpcode)
             XFixes.CreateRegionFromBitmap -> xfixesCreateRegionFromBitmap(body, majorOpcode)
+            XFixes.CreateRegionFromWindow -> xfixesCreateRegionFromWindow(body, majorOpcode)
             XFixes.CreateRegionFromGC -> xfixesCreateRegionFromGc(body, majorOpcode)
             XFixes.CreateRegionFromPicture -> xfixesCreateRegionFromPicture(body, majorOpcode)
             XFixes.DestroyRegion -> xfixesDestroyRegion(body, majorOpcode)
@@ -624,6 +625,26 @@ internal class X11Connection(
             ?: return writeError(error = 4, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = bitmapId)
         if (bitmap.depth != 1) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = bitmapId)
         state.putXFixesRegion(XFixesRegion(region, bitmapMaskRectangles(bitmap.framebuffer.snapshot())))
+        own(region)
+    }
+
+    private fun xfixesCreateRegionFromWindow(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        if (region == 0 || state.hasResource(region)) {
+            return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = region)
+        }
+        val window = byteOrder.u32(body, 4)
+        val targetWindow = state.window(window)
+            ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = window)
+        val kind = body[8].toInt() and 0xff
+        if (kind !in XFixes.ShapeBounding..XFixes.ShapeInput) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = kind)
+        }
+        if (kind == XFixes.ShapeClip && targetWindow.windowClass == XWindowClass.InputOnly) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = window)
+        }
+        state.putXFixesRegion(XFixesRegion(region, normalizedRegion(state.windowShapeRegion(window, kind))))
         own(region)
     }
 
