@@ -1147,6 +1147,7 @@ internal class X11Connection(
         val valueMask = byteOrder.u32(body, 12)
         if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 16, minorOpcode = 4)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 16)
+        if (!validateRenderPictureAttributes(attributes, minorOpcode = 4)) return
         state.putPicture(
             XPicture(
                 id = id,
@@ -1159,12 +1160,12 @@ internal class X11Connection(
                 alphaYOrigin = attributes.alphaYOrigin ?: 0,
                 clipXOrigin = attributes.clipXOrigin ?: 0,
                 clipYOrigin = attributes.clipYOrigin ?: 0,
-                graphicsExposure = attributes.graphicsExposure ?: false,
+                graphicsExposure = attributes.graphicsExposure?.toXBool() ?: false,
                 subwindowMode = attributes.subwindowMode ?: 0,
                 polyEdge = attributes.polyEdge ?: 0,
                 polyMode = attributes.polyMode ?: 0,
                 dither = attributes.dither ?: 0,
-                componentAlpha = attributes.componentAlpha ?: false,
+                componentAlpha = attributes.componentAlpha?.toXBool() ?: false,
             ),
         )
         own(id)
@@ -1179,6 +1180,7 @@ internal class X11Connection(
         val valueMask = byteOrder.u32(body, 4)
         if (!validateRenderPictureValueLength(valueMask, body, valuesOffset = 8, minorOpcode = 5)) return
         val attributes = renderPictureAttributes(valueMask, body, valuesOffset = 8)
+        if (!validateRenderPictureAttributes(attributes, minorOpcode = 5)) return
         state.updatePicture(
             picture,
             valueMask,
@@ -1188,13 +1190,13 @@ internal class X11Connection(
             alphaYOrigin = attributes.alphaYOrigin,
             clipXOrigin = attributes.clipXOrigin,
             clipYOrigin = attributes.clipYOrigin,
-            graphicsExposure = attributes.graphicsExposure,
+            graphicsExposure = attributes.graphicsExposure?.toXBool(),
             subwindowMode = attributes.subwindowMode,
             polyEdge = attributes.polyEdge,
             polyMode = attributes.polyMode,
             dither = attributes.dither,
             clearClip = attributes.clipMask == 0,
-            componentAlpha = attributes.componentAlpha,
+            componentAlpha = attributes.componentAlpha?.toXBool(),
         )
     }
 
@@ -1210,6 +1212,33 @@ internal class X11Connection(
         return true
     }
 
+    private fun validateRenderPictureAttributes(attributes: XRenderPictureAttributes, minorOpcode: Int): Boolean {
+        fun badValue(value: Int): Boolean {
+            writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = value)
+            return false
+        }
+
+        attributes.repeat?.let { if (!XRender.isValidRepeat(it)) return badValue(it) }
+        attributes.alphaMap?.let {
+            if (it != 0 && state.picture(it) == null) {
+                writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it)
+                return false
+            }
+        }
+        attributes.clipMask?.let {
+            if (it != 0 && state.pixmap(it) == null) {
+                writeError(error = 4, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it)
+                return false
+            }
+        }
+        attributes.graphicsExposure?.let { if (!XRender.isValidBoolValue(it)) return badValue(it) }
+        attributes.subwindowMode?.let { if (!XRender.isValidSubwindowMode(it)) return badValue(it) }
+        attributes.polyEdge?.let { if (!XRender.isValidPolyEdge(it)) return badValue(it) }
+        attributes.polyMode?.let { if (!XRender.isValidPolyMode(it)) return badValue(it) }
+        attributes.componentAlpha?.let { if (!XRender.isValidBoolValue(it)) return badValue(it) }
+        return true
+    }
+
     private fun renderPictureAttributes(valueMask: Int, body: ByteArray, valuesOffset: Int): XRenderPictureAttributes {
         var offset = valuesOffset
         var repeat: Int? = null
@@ -1219,12 +1248,12 @@ internal class X11Connection(
         var clipXOrigin: Int? = null
         var clipYOrigin: Int? = null
         var clipMask: Int? = null
-        var graphicsExposure: Boolean? = null
+        var graphicsExposure: Int? = null
         var subwindowMode: Int? = null
         var polyEdge: Int? = null
         var polyMode: Int? = null
         var dither: Int? = null
-        var componentAlpha: Boolean? = null
+        var componentAlpha: Int? = null
         for (bit in 0..12) {
             val mask = 1 shl bit
             if ((valueMask and mask) == 0) continue
@@ -1237,12 +1266,12 @@ internal class X11Connection(
             if (mask == XRender.CPClipXOrigin) clipXOrigin = value.toShort().toInt()
             if (mask == XRender.CPClipYOrigin) clipYOrigin = value.toShort().toInt()
             if (mask == XRender.CPClipMask) clipMask = value
-            if (mask == XRender.CPGraphicsExposure) graphicsExposure = value != 0
+            if (mask == XRender.CPGraphicsExposure) graphicsExposure = value
             if (mask == XRender.CPSubwindowMode) subwindowMode = value
             if (mask == XRender.CPPolyEdge) polyEdge = value
             if (mask == XRender.CPPolyMode) polyMode = value
             if (mask == XRender.CPDither) dither = value
-            if (mask == XRender.CPComponentAlpha) componentAlpha = value != 0
+            if (mask == XRender.CPComponentAlpha) componentAlpha = value
             offset += 4
         }
         return XRenderPictureAttributes(
@@ -1261,6 +1290,8 @@ internal class X11Connection(
             componentAlpha = componentAlpha,
         )
     }
+
+    private fun Int.toXBool(): Boolean = this != 0
 
     private fun renderSetPictureClipRectangles(body: ByteArray) {
         if (body.size < 8 || (body.size - 8) % 8 != 0) {
@@ -8207,12 +8238,12 @@ private data class XRenderPictureAttributes(
     val clipXOrigin: Int? = null,
     val clipYOrigin: Int? = null,
     val clipMask: Int? = null,
-    val graphicsExposure: Boolean? = null,
+    val graphicsExposure: Int? = null,
     val subwindowMode: Int? = null,
     val polyEdge: Int? = null,
     val polyMode: Int? = null,
     val dither: Int? = null,
-    val componentAlpha: Boolean? = null,
+    val componentAlpha: Int? = null,
 )
 
 private data class XCompositeGlyphParseResult(

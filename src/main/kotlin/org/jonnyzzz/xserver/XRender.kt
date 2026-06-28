@@ -49,6 +49,12 @@ internal object XRender {
     const val RepeatNormal = 1
     const val RepeatPad = 2
     const val RepeatReflect = 3
+    const val SubwindowModeClipByChildren = 0
+    const val SubwindowModeIncludeInferiors = 1
+    const val PolyEdgeSharp = 0
+    const val PolyEdgeSmooth = 1
+    const val PolyModePrecise = 0
+    const val PolyModeImprecise = 1
     const val LegacyTransformFilterNearest = 0
     const val FilterNearest = "nearest"
 
@@ -102,6 +108,21 @@ internal object XRender {
             operation in OpDisjointClear..OpDisjointMaximum ||
             operation in OpConjointClear..OpConjointMaximum ||
             operation in OpBlendMultiply..OpBlendMaximum
+
+    fun isValidRepeat(repeat: Int): Boolean =
+        repeat in RepeatNone..RepeatReflect
+
+    fun isValidBoolValue(value: Int): Boolean =
+        value == 0 || value == 1
+
+    fun isValidSubwindowMode(subwindowMode: Int): Boolean =
+        subwindowMode == SubwindowModeClipByChildren || subwindowMode == SubwindowModeIncludeInferiors
+
+    fun isValidPolyEdge(polyEdge: Int): Boolean =
+        polyEdge == PolyEdgeSharp || polyEdge == PolyEdgeSmooth
+
+    fun isValidPolyMode(polyMode: Int): Boolean =
+        polyMode == PolyModePrecise || polyMode == PolyModeImprecise
 
     fun formatDepth(format: Int): Int? =
         when (format) {

@@ -1063,7 +1063,7 @@ class XRenderProtocolTest {
                     renderChangePictureAttributes(
                         PictureId,
                         XRender.CPClipXOrigin to -8,
-                        XRender.CPPolyMode to 2,
+                        XRender.CPPolyMode to XRender.PolyModeImprecise,
                     ),
                 )
                 out.flush()
@@ -1078,7 +1078,7 @@ class XRenderProtocolTest {
                 assertContains(json, """"graphicsExposure":true""")
                 assertContains(json, """"subwindowMode":1""")
                 assertContains(json, """"polyEdge":1""")
-                assertContains(json, """"polyMode":2""")
+                assertContains(json, """"polyMode":1""")
                 assertContains(json, """"dither":"0x12345678"""")
 
                 val text = httpGet(server.localPort, "/text.txt")
@@ -1088,7 +1088,7 @@ class XRenderProtocolTest {
                 assertContains(text, "graphicsExposure=true")
                 assertContains(text, "subwindowMode=1")
                 assertContains(text, "polyEdge=1")
-                assertContains(text, "polyMode=2")
+                assertContains(text, "polyMode=1")
                 assertContains(text, "dither=0x12345678")
             }
             server.close()

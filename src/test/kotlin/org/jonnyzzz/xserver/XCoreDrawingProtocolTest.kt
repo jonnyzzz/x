@@ -1067,6 +1067,61 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `Render picture requests validate picture attribute values before mutating state`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val picture = PixmapId + 0x330
+                val missingPicture = picture + 1
+                val missingPixmap = PixmapId + 0x331
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePictureRequest(picture, WindowId, XRender.Rgb24Format, XRender.CPComponentAlpha, 2))
+                out.write(renderCreatePictureRequest(picture))
+                out.write(renderChangePictureRequest(picture, XRender.CPRepeat, 99))
+                out.write(renderChangePictureRequest(picture, XRender.CPGraphicsExposure, 2))
+                out.write(renderChangePictureRequest(picture, XRender.CPComponentAlpha, 2))
+                out.write(renderChangePictureRequest(picture, XRender.CPSubwindowMode, 2))
+                out.write(renderChangePictureRequest(picture, XRender.CPPolyEdge, 2))
+                out.write(renderChangePictureRequest(picture, XRender.CPPolyMode, 2))
+                out.write(renderChangePictureRequest(picture, XRender.CPAlphaMap, missingPicture))
+                out.write(renderChangePictureRequest(picture, XRender.CPClipMask, missingPixmap))
+                out.write(renderChangePictureRequest(picture, XRender.CPRepeat, XRender.RepeatPad))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 2, sequence = 2)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 99, sequence = 4)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 2, sequence = 5)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 2, sequence = 6)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 2, sequence = 7)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 2, sequence = 8)
+                assertError(socket.getInputStream(), error = 2, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = 2, sequence = 9)
+                assertError(socket.getInputStream(), error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = missingPicture, sequence = 10)
+                assertError(socket.getInputStream(), error = 4, opcode = XRender.MajorOpcode, minorOpcode = 5, badValue = missingPixmap, sequence = 11)
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(13, u16le(pointer, 2))
+                val json = httpGet(server.localPort, "/state.json")
+                assertContains(
+                    json,
+                    """"id":"0x${picture.toString(16)}","drawable":"0x${WindowId.toString(16)}","kind":"window","format":${XRender.Rgb24Format},"repeat":"pad"""",
+                )
+                assertContains(json, """"alphaMap":"none"""")
+                assertContains(json, """"graphicsExposure":false""")
+                assertContains(json, """"subwindowMode":0""")
+                assertContains(json, """"polyEdge":0""")
+                assertContains(json, """"polyMode":0""")
+                assertContains(json, """"componentAlpha":false""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `Render SetPictureClipRectangles validates request framing and picture resources`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
