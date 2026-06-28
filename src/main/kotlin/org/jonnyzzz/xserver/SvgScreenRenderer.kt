@@ -172,7 +172,7 @@ internal object SvgScreenRenderer {
             snapshot.renderPictures.forEachIndexed { index, picture ->
                 if (index > 0) append(',')
                 append('{')
-                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","clipRectangles":${picture.clipRectangles},"transform":[""")
+                append(""""id":"${picture.idHex}","drawable":"${picture.drawableIdHex}","kind":"${escapeJson(picture.drawableKind)}","format":${picture.format},"repeat":"${picture.repeatName}","clipRectangles":${picture.clipRectangles},"componentAlpha":${picture.componentAlpha},"transform":[""")
                 picture.transformHex.forEachIndexed { transformIndex, value ->
                     if (transformIndex > 0) append(',')
                     append('"').append(value).append('"')

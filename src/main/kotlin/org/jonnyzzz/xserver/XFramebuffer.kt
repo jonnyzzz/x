@@ -535,6 +535,7 @@ internal class XFramebuffer(
         maskX: Int = 0,
         maskY: Int = 0,
         maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+        maskPixelAt: ((x: Int, y: Int) -> Int)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -551,8 +552,15 @@ internal class XFramebuffer(
                 generated[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
-                val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
-                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
+                val mx = maskX + dx - destinationX
+                val my = maskY + dy - destinationY
+                val maskPixel = maskPixelAt?.invoke(mx, my)
+                pixels[index] = if (maskPixel != null) {
+                    renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel)
+                } else {
+                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my)
+                    renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
+                }
                 painted = true
             }
         }
@@ -573,6 +581,7 @@ internal class XFramebuffer(
         maskX: Int = 0,
         maskY: Int = 0,
         maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+        maskPixelAt: ((x: Int, y: Int) -> Int)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -589,8 +598,15 @@ internal class XFramebuffer(
                 generated[row * bounds.width + column] = sourcePixel
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * this.width + dx
-                val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
-                pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
+                val mx = maskX + dx - destinationX
+                val my = maskY + dy - destinationY
+                val maskPixel = maskPixelAt?.invoke(mx, my)
+                pixels[index] = if (maskPixel != null) {
+                    renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel)
+                } else {
+                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my)
+                    renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
+                }
                 painted = true
             }
         }
@@ -1415,6 +1431,76 @@ internal class XFramebuffer(
             XRender.OpAdd -> add(source, destination, maskAlpha)
             else -> over(source, destination, maskAlpha)
         }
+
+    private fun renderPixelComponentMask(source: Int, destination: Int, operation: Int, mask: Int): Int =
+        when (operation) {
+            XRender.OpClear -> clearWithComponentMask(destination, mask)
+            XRender.OpSrc -> withComponentMask(source, mask)
+            XRender.OpOver -> overComponentMask(source, destination, mask)
+            XRender.OpAdd -> addComponentMask(source, destination, mask)
+            else -> overComponentMask(source, destination, mask)
+        }
+
+    private fun clearWithComponentMask(destination: Int, mask: Int): Int {
+        fun channel(shift: Int): Int {
+            val inverse = 255 - ((mask ushr shift) and 0xff)
+            return (((destination ushr shift) and 0xff) * inverse + 127) / 255
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun withComponentMask(source: Int, mask: Int): Int {
+        val maskAlpha = (mask ushr 24) and 0xff
+        val alpha = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        fun channel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceChannel = (source ushr shift) and 0xff
+            return if (maskAlpha == 0) {
+                sourceChannel
+            } else {
+                ((sourceChannel * maskChannel + maskAlpha / 2) / maskAlpha).coerceAtMost(255)
+            }
+        }
+        return (alpha shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun overComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        fun colorChannel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceAlphaChannel = (sourceAlpha * maskChannel + 127) / 255
+            val inverse = 255 - sourceAlphaChannel
+            val sourceChannel = (source ushr shift) and 0xff
+            val destinationChannel = (destination ushr shift) and 0xff
+            return (sourceChannel * sourceAlphaChannel + destinationChannel * inverse + 127) / 255
+        }
+        fun alphaChannel(): Int {
+            val maskAlpha = (mask ushr 24) and 0xff
+            val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
+            val inverse = 255 - sourceAlphaMasked
+            val destinationAlpha = (destination ushr 24) and 0xff
+            return sourceAlphaMasked + (destinationAlpha * inverse + 127) / 255
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
+    private fun addComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        fun colorChannel(shift: Int): Int {
+            val maskChannel = (mask ushr shift) and 0xff
+            val sourceAlphaChannel = (sourceAlpha * maskChannel + 127) / 255
+            val sourceChannel = (source ushr shift) and 0xff
+            val destinationChannel = (destination ushr shift) and 0xff
+            return (destinationChannel + (sourceChannel * sourceAlphaChannel + 127) / 255).coerceAtMost(255)
+        }
+        fun alphaChannel(): Int {
+            val maskAlpha = (mask ushr 24) and 0xff
+            val sourceAlphaMasked = (sourceAlpha * maskAlpha + 127) / 255
+            val destinationAlpha = (destination ushr 24) and 0xff
+            return (destinationAlpha + sourceAlphaMasked).coerceAtMost(255)
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
 
     private fun clearWithMask(destination: Int, maskAlpha: Int): Int {
         if (maskAlpha >= 255) return 0
