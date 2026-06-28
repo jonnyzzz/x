@@ -2213,6 +2213,67 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER QueryPictIndexValues and QueryDithers return empty modeled tables and validate errors`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missingDrawable = WindowId + 0x5a00
+                val missingFormat = XRender.Argb32Format + 0x5a00
+                out.write(createWindowRequest(WindowId))
+                out.write(renderQueryPictIndexValues(missingFormat))
+                out.write(renderQueryPictIndexValues(XRender.Argb32Format))
+                out.write(renderQueryDithers(WindowId))
+                out.write(renderQueryDithers(missingDrawable))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = XRender.PictFormatError, badValue = missingFormat, sequence = 2, minorOpcode = 2)
+                assertError(socket.getInputStream(), error = 8, badValue = XRender.Argb32Format, sequence = 3, minorOpcode = 2)
+                val dithers = readReply(socket.getInputStream())
+                assertEquals(0, u32le(dithers, 4))
+                assertEquals(4, u16le(dithers, 2))
+                assertEquals(0, u32le(dithers, 8))
+                assertEquals(32, dithers.size)
+                assertError(socket.getInputStream(), error = 9, badValue = missingDrawable, sequence = 5, minorOpcode = 3)
+
+                waitUntil {
+                    httpGet(server.localPort, "/text.txt").contains("QueryDithers")
+                }
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text, "QueryPictIndexValues")
+                assertContains(text, "format=0x${XRender.Argb32Format.toString(16)}")
+                assertContains(text, "drawable=0x${WindowId.toString(16)}")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER QueryPictIndexValues and QueryDithers report Length errors for malformed request sizes`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XRender.MajorOpcode, 2, ByteArray(0)))
+                out.write(request(XRender.MajorOpcode, 3, ByteArray(8)))
+                out.write(renderQueryDithers(X11Ids.RootWindow))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = 2)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 2, minorOpcode = 3)
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(3, u16le(recovered, 2))
+                assertEquals(0, u32le(recovered, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER QueryFilters advertises required filters and aliases`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12415,6 +12476,18 @@ class XRenderProtocolTest {
 
     private fun xfixesSetPictureClipRegionRaw(body: ByteArray): ByteArray =
         request(XFixes.MajorOpcode, XFixes.SetPictureClipRegion, body)
+
+    private fun renderQueryPictIndexValues(format: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, format)
+        return request(XRender.MajorOpcode, 2, body)
+    }
+
+    private fun renderQueryDithers(drawable: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, drawable)
+        return request(XRender.MajorOpcode, 3, body)
+    }
 
     private fun renderQueryFilters(drawable: Int): ByteArray {
         val body = ByteArray(4)
