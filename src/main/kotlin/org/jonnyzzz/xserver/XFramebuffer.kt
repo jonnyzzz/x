@@ -1624,6 +1624,7 @@ internal class XFramebuffer(
         when (operation) {
             XRender.OpClear -> clearWithMask(destination, maskAlpha)
             XRender.OpSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
+            XRender.OpDst -> destination
             XRender.OpOver -> over(source, destination, maskAlpha)
             XRender.OpIn -> inOperator(source, destination, maskAlpha)
             XRender.OpInReverse -> inReverseOperator(source, destination, maskAlpha)
@@ -1641,6 +1642,7 @@ internal class XFramebuffer(
         when (operation) {
             XRender.OpClear -> clearWithComponentMask(destination, mask)
             XRender.OpSrc -> withComponentMask(source, mask)
+            XRender.OpDst -> destination
             XRender.OpOver -> overComponentMask(source, destination, mask)
             XRender.OpIn -> inComponentMask(source, destination, mask)
             XRender.OpInReverse -> inReverseComponentMask(source, destination, mask)
@@ -2111,7 +2113,8 @@ internal class XFramebuffer(
     }
 
     private fun Int.returnsDestinationResultImage(): Boolean =
-        this == XRender.OpInReverse ||
+        this == XRender.OpDst ||
+            this == XRender.OpInReverse ||
             this == XRender.OpOutReverse ||
             this == XRender.OpAtop ||
             this == XRender.OpAtopReverse ||

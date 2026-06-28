@@ -2106,16 +2106,18 @@ internal class X11Connection(
         )
         val rectangles = rectangles(body, 16)
         val targetPixel = if (operation == XRender.OpClear) 0 else pixel
-        state.renderFillRectangles(operation, destination, targetPixel, rectangles)
-        state.draw(
-            XDrawingCommand(
-                drawableId = destinationDrawableId,
-                kind = XDrawingKind.FillRectangle,
-                foreground = targetPixel,
-                rectangles = rectangles,
-                framebufferBacked = true,
-            ),
-        )
+        val painted = state.renderFillRectangles(operation, destination, targetPixel, rectangles)
+        if (painted) {
+            state.draw(
+                XDrawingCommand(
+                    drawableId = destinationDrawableId,
+                    kind = XDrawingKind.FillRectangle,
+                    foreground = targetPixel,
+                    rectangles = rectangles,
+                    framebufferBacked = true,
+                ),
+            )
+        }
     }
 
     private fun renderCreateCursor(body: ByteArray) {

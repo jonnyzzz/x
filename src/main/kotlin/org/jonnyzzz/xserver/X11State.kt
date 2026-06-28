@@ -2592,6 +2592,9 @@ internal class X11State(
     ): XImagePixels? {
         val destinationDrawableId = destination.drawableId ?: return null
         val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        if (operation == XRender.OpDst) {
+            return destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
+        }
         val destinationClipMask = destination.clipMaskPredicate()
         val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
         val maskPixelAt = mask?.takeIf { it.componentAlpha }?.componentMaskSampler()
@@ -3901,6 +3904,7 @@ internal class X11State(
         var painted = false
         for (rectangle in rectangles) {
             painted = when (operation) {
+                XRender.OpDst -> false
                 XRender.OpClear -> framebuffer.fill(
                     rectangle.x,
                     rectangle.y,

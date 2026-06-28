@@ -20,6 +20,7 @@ internal object XRender {
 
     const val OpClear = 0
     const val OpSrc = 1
+    const val OpDst = 2
     const val OpOver = 3
     const val OpIn = 5
     const val OpInReverse = 6
