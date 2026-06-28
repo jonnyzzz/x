@@ -951,6 +951,27 @@ internal class XFramebuffer(
         }
     }
 
+    fun blendSolidConjointXor(
+        pixel: Int,
+        destinationX: Int,
+        destinationY: Int,
+        width: Int,
+        height: Int,
+        clipRectangles: List<XRectangleCommand>? = null,
+        clipMask: XClipMask? = null,
+        mask: XFramebuffer? = null,
+        maskX: Int = 0,
+        maskY: Int = 0,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+    ): Boolean {
+        val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
+            val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
+            conjointXorOperator(pixel, pixels[y * this.width + x], maskAlpha)
+        }
+    }
+
     fun blendSolidAtopReverse(
         pixel: Int,
         destinationX: Int,
@@ -2006,6 +2027,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseOperator(source, destination, maskAlpha)
             XRender.OpDisjointAtopReverse -> disjointAtopReverseOperator(source, destination, maskAlpha)
             XRender.OpDisjointXor -> disjointXorOperator(source, destination, maskAlpha)
+            XRender.OpConjointXor -> conjointXorOperator(source, destination, maskAlpha)
             XRender.OpXor -> xorOperator(source, destination, maskAlpha)
             XRender.OpAdd -> add(source, destination, maskAlpha)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturate(source, destination, maskAlpha)
@@ -2041,6 +2063,7 @@ internal class XFramebuffer(
             XRender.OpAtopReverse -> atopReverseComponentMask(source, destination, mask)
             XRender.OpDisjointAtopReverse -> disjointAtopReverseComponentMask(source, destination, mask)
             XRender.OpDisjointXor -> disjointXorComponentMask(source, destination, mask)
+            XRender.OpConjointXor -> conjointXorComponentMask(source, destination, mask)
             XRender.OpXor -> xorComponentMask(source, destination, mask)
             XRender.OpAdd -> addComponentMask(source, destination, mask)
             XRender.OpSaturate, XRender.OpDisjointOverReverse -> saturateComponentMask(source, destination, mask)
@@ -2570,6 +2593,30 @@ internal class XFramebuffer(
         return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
     }
 
+    private fun conjointXorComponentMask(source: Int, destination: Int, mask: Int): Int {
+        val sourceAlpha = (source ushr 24) and 0xff
+        val destinationAlpha = (destination ushr 24) and 0xff
+        fun sourceAlphaFor(maskChannel: Int): Int = (sourceAlpha * maskChannel + 127) / 255
+        fun colorChannel(shift: Int): Int {
+            val sourceAlphaChannel = sourceAlphaFor((mask ushr shift) and 0xff)
+            val sourceContributionAlpha = conjointOutContributionAlpha(sourceAlphaChannel, destinationAlpha)
+            val destinationContributionAlpha = conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaChannel)
+            val sourceChannel = (source ushr shift) and 0xff
+            val destinationChannel = (destination ushr shift) and 0xff
+            val sourceContribution = (sourceChannel * sourceContributionAlpha + 127) / 255
+            val destinationContribution = (destinationChannel * destinationContributionAlpha + 127) / 255
+            return (sourceContribution + destinationContribution).coerceAtMost(255)
+        }
+        fun alphaChannel(): Int {
+            val sourceAlphaMasked = sourceAlphaFor((mask ushr 24) and 0xff)
+            return (
+                conjointOutContributionAlpha(sourceAlphaMasked, destinationAlpha) +
+                    conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaMasked)
+                ).coerceAtMost(255)
+        }
+        return (alphaChannel() shl 24) or (colorChannel(16) shl 16) or (colorChannel(8) shl 8) or colorChannel(0)
+    }
+
     private fun atopReverseComponentMask(source: Int, destination: Int, mask: Int): Int {
         val sourceAlpha = (source ushr 24) and 0xff
         val destinationAlpha = (destination ushr 24) and 0xff
@@ -3067,6 +3114,22 @@ internal class XFramebuffer(
                 val sourceContribution = (((source ushr shift) and 0xff) * sourceContributionAlpha + 127) / 255
                 val destinationContribution = (((destination ushr shift) and 0xff) * destinationContributionAlpha + 127) / 255
                 (sourceContribution + destinationContribution).coerceAtMost(255)
+        }
+        return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
+    }
+
+    private fun conjointXorOperator(source: Int, destination: Int, maskAlpha: Int): Int {
+        val destinationAlpha = (destination ushr 24) and 0xff
+        val sourceAlphaMasked = (((source ushr 24) and 0xff) * maskAlpha + 127) / 255
+        val sourceContributionAlpha = conjointOutContributionAlpha(sourceAlphaMasked, destinationAlpha)
+        val destinationContributionAlpha = conjointOutReverseContributionAlpha(destinationAlpha, sourceAlphaMasked)
+        fun channel(shift: Int): Int =
+            if (shift == 24) {
+                (sourceContributionAlpha + destinationContributionAlpha).coerceAtMost(255)
+            } else {
+                val sourceContribution = (((source ushr shift) and 0xff) * sourceContributionAlpha + 127) / 255
+                val destinationContribution = (((destination ushr shift) and 0xff) * destinationContributionAlpha + 127) / 255
+                (sourceContribution + destinationContribution).coerceAtMost(255)
             }
         return (channel(24) shl 24) or (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
     }
@@ -3185,6 +3248,7 @@ internal class XFramebuffer(
             this == XRender.OpAtopReverse ||
             this == XRender.OpDisjointAtopReverse ||
             this == XRender.OpDisjointXor ||
+            this == XRender.OpConjointXor ||
             this == XRender.OpXor ||
             this == XRender.OpSaturate ||
             this == XRender.OpDisjointOverReverse
