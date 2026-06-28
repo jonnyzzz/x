@@ -1228,6 +1228,14 @@ internal class X11Connection(
                 writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it)
                 return false
             }
+            if (it != 0) {
+                val alphaPicture = state.picture(it) ?: return@let
+                val drawableId = alphaPicture.drawableId
+                if (drawableId == null || state.pixmap(drawableId) == null) {
+                    writeError(error = 8, opcode = XRender.MajorOpcode, minorOpcode = minorOpcode, badValue = it)
+                    return false
+                }
+            }
         }
         attributes.clipMask?.let {
             if (it != 0 && state.pixmap(it) == null) {

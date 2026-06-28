@@ -426,11 +426,12 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
     ): Boolean {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
-        return compositeBounds(bounds, clipRectangles, clipMask) { x, y ->
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
             over(pixel, pixels[y * this.width + x], maskAlpha)
         }
     }
@@ -446,11 +447,12 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
     ): Boolean {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
-        return compositeBounds(bounds, clipRectangles, clipMask) { x, y ->
+        return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
             val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + x - destinationX, maskY + y - destinationY)
+                ?: return@compositeBoundsOptional null
             add(pixel, pixels[y * this.width + x], maskAlpha)
         }
     }
@@ -492,7 +494,7 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
     ): XImagePixels? {
         val bounds = clippedCopyBounds(
             sourceWidth = source.width,
@@ -521,6 +523,7 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles, clipMask)) continue
                 val index = dy * this.width + dx
                 val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, maskX + dx - destinationX, maskY + dy - destinationY)
+                    ?: continue
                 pixels[index] = renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 painted = true
             }
@@ -542,8 +545,8 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
-        maskPixelAt: ((x: Int, y: Int) -> Int)? = null,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+        maskPixelAt: ((x: Int, y: Int) -> Int?)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -562,11 +565,11 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val mx = maskX + dx - destinationX
                 val my = maskY + dy - destinationY
-                val maskPixel = maskPixelAt?.invoke(mx, my)
-                pixels[index] = if (maskPixel != null) {
+                pixels[index] = if (maskPixelAt != null) {
+                    val maskPixel = maskPixelAt.invoke(mx, my) ?: continue
                     renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel)
                 } else {
-                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my)
+                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my) ?: continue
                     renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 }
                 painted = true
@@ -589,8 +592,8 @@ internal class XFramebuffer(
         mask: XFramebuffer? = null,
         maskX: Int = 0,
         maskY: Int = 0,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)? = null,
-        maskPixelAt: ((x: Int, y: Int) -> Int)? = null,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)? = null,
+        maskPixelAt: ((x: Int, y: Int) -> Int?)? = null,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): XImagePixels? {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return null
@@ -609,11 +612,11 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val mx = maskX + dx - destinationX
                 val my = maskY + dy - destinationY
-                val maskPixel = maskPixelAt?.invoke(mx, my)
-                pixels[index] = if (maskPixel != null) {
+                pixels[index] = if (maskPixelAt != null) {
+                    val maskPixel = maskPixelAt.invoke(mx, my) ?: continue
                     renderPixelComponentMask(sourcePixel, pixels[index], operation, maskPixel)
                 } else {
-                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my)
+                    val maskAlpha = sampledMaskAlpha(mask, maskAlphaAt, mx, my) ?: continue
                     renderPixel(sourcePixel, pixels[index], operation, maskAlpha)
                 }
                 painted = true
@@ -1075,25 +1078,6 @@ internal class XFramebuffer(
         invalidate()
     }
 
-    private fun compositeBounds(
-        bounds: CopyBounds,
-        clipRectangles: List<XRectangleCommand>?,
-        clipMask: XClipMask?,
-        compose: (x: Int, y: Int) -> Int,
-    ): Boolean {
-        var painted = false
-        for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
-            val offset = row * this.width
-            for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
-                if (!insideClip(column, row, clipRectangles, clipMask)) continue
-                pixels[offset + column] = compose(column, row)
-                painted = true
-            }
-        }
-        if (painted) markPainted()
-        return painted
-    }
-
     private fun compositeBoundsOptional(
         bounds: CopyBounds,
         clipRectangles: List<XRectangleCommand>?,
@@ -1551,11 +1535,13 @@ internal class XFramebuffer(
 
     private fun sampledMaskAlpha(
         mask: XFramebuffer?,
-        maskAlphaAt: ((x: Int, y: Int) -> Int)?,
+        maskAlphaAt: ((x: Int, y: Int) -> Int?)?,
         x: Int,
         y: Int,
-    ): Int =
-        maskAlphaAt?.invoke(x, y) ?: mask?.alphaAt(x, y) ?: 255
+    ): Int? {
+        if (maskAlphaAt != null) return maskAlphaAt(x, y)
+        return mask?.alphaAt(x, y) ?: 255
+    }
 
     private fun edge(x1: Double, y1: Double, x2: Double, y2: Double, x: Double, y: Double): Double =
         (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
