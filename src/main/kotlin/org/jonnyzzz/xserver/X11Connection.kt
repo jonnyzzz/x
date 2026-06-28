@@ -495,6 +495,8 @@ internal class X11Connection(
             XFixes.SelectCursorInput -> xfixesSelectCursorInput(body, majorOpcode)
             XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
             XFixes.CreateRegion -> xfixesCreateRegion(body, majorOpcode)
+            XFixes.CreateRegionFromGC -> xfixesCreateRegionFromGc(body, majorOpcode)
+            XFixes.CreateRegionFromPicture -> xfixesCreateRegionFromPicture(body, majorOpcode)
             XFixes.DestroyRegion -> xfixesDestroyRegion(body, majorOpcode)
             XFixes.SetRegion -> xfixesSetRegion(body, majorOpcode)
             XFixes.CopyRegion -> xfixesCopyRegion(body, majorOpcode)
@@ -606,6 +608,39 @@ internal class X11Connection(
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = region)
         }
         state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles(body, 4))))
+        own(region)
+    }
+
+    private fun xfixesCreateRegionFromGc(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        if (region == 0 || state.hasResource(region)) {
+            return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = region)
+        }
+        val gc = byteOrder.u32(body, 4)
+        if (!state.hasGc(gc)) return writeError(error = 13, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = gc)
+        val rectangles = state.gc(gc).effectiveClipRectangles()
+            ?: return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = gc)
+        state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles)))
+        own(region)
+    }
+
+    private fun xfixesCreateRegionFromPicture(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        if (region == 0 || state.hasResource(region)) {
+            return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = region)
+        }
+        val pictureId = byteOrder.u32(body, 4)
+        val picture = state.picture(pictureId)
+            ?: return writeError(error = XRender.PictureError, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = pictureId)
+        val clipRectangles = picture.clipRectangles
+        val rectangles = when {
+            clipRectangles != null -> clipRectangles
+            picture.clipMask != 0 -> picture.clipMaskImage?.let { imageMaskRectangles(it, picture.clipXOrigin, picture.clipYOrigin) } ?: emptyList()
+            else -> return writeError(error = 8, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = pictureId)
+        }
+        state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles)))
         own(region)
     }
 
@@ -901,6 +936,28 @@ internal class X11Connection(
         val maxX = normalized.maxOf { it.x + it.width }
         val maxY = normalized.maxOf { it.y + it.height }
         return XRectangleCommand(minX, minY, maxX - minX, maxY - minY)
+    }
+
+    private fun imageMaskRectangles(image: XImagePixels, originX: Int, originY: Int): List<XRectangleCommand> {
+        val rectangles = mutableListOf<XRectangleCommand>()
+        for (y in 0 until image.height) {
+            var runStart: Int? = null
+            for (x in 0 until image.width) {
+                val alpha = (image.pixels[y * image.width + x] ushr 24) and 0xff
+                if (alpha != 0) {
+                    if (runStart == null) runStart = x
+                } else {
+                    runStart?.let { start ->
+                        rectangles += XRectangleCommand(originX + start, originY + y, x - start, 1)
+                    }
+                    runStart = null
+                }
+            }
+            runStart?.let { start ->
+                rectangles += XRectangleCommand(originX + start, originY + y, image.width - start, 1)
+            }
+        }
+        return normalizedRegion(rectangles)
     }
 
     private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {

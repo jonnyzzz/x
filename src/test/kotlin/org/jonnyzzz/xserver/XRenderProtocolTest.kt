@@ -280,6 +280,133 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES CreateRegionFromGC and Picture validate resources`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingGc = PutImageGcId + 1
+                val missingPicture = PixmapPictureId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 1, height = 1))
+                out.write(createGcRequest(PutImageGcId, WindowId))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(xfixesCreateRegionFromGcRaw(ByteArray(4).also { put32le(it, 0, RegionBId) }))
+                out.write(xfixesCreateRegionFromGc(0, PutImageGcId))
+                out.write(xfixesCreateRegionFromGc(RegionBId, PutImageGcId))
+                out.write(xfixesCreateRegion(RegionId, emptyList()))
+                out.write(xfixesCreateRegionFromGc(RegionId, PutImageGcId))
+                out.write(xfixesCreateRegionFromGc(RegionBId, missingGc))
+                out.write(xfixesCreateRegionFromPictureRaw(ByteArray(4).also { put32le(it, 0, RegionResultId) }))
+                out.write(xfixesCreateRegionFromPicture(0, PixmapPictureId))
+                out.write(xfixesCreateRegionFromPicture(RegionResultId, PixmapPictureId))
+                out.write(xfixesCreateRegionFromPicture(RegionResultId, missingPicture))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 5, minorOpcode = XFixes.CreateRegionFromGC)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 6, minorOpcode = XFixes.CreateRegionFromGC)
+                assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = PutImageGcId, sequence = 7, minorOpcode = XFixes.CreateRegionFromGC)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = RegionId, sequence = 9, minorOpcode = XFixes.CreateRegionFromGC)
+                assertExtensionError(socket.getInputStream(), error = 13, opcode = XFixes.MajorOpcode, badValue = missingGc, sequence = 10, minorOpcode = XFixes.CreateRegionFromGC)
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 11, minorOpcode = XFixes.CreateRegionFromPicture)
+                assertExtensionError(socket.getInputStream(), error = 14, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 12, minorOpcode = XFixes.CreateRegionFromPicture)
+                assertExtensionError(socket.getInputStream(), error = 8, opcode = XFixes.MajorOpcode, badValue = PixmapPictureId, sequence = 13, minorOpcode = XFixes.CreateRegionFromPicture)
+                assertExtensionError(socket.getInputStream(), error = XRender.PictureError, opcode = XFixes.MajorOpcode, badValue = missingPicture, sequence = 14, minorOpcode = XFixes.CreateRegionFromPicture)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES CreateRegionFromGC and Picture snapshot clip rectangles`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 4, height = 4))
+                out.write(createGcRequest(PutImageGcId, WindowId))
+                out.write(setClipRectangles(PutImageGcId, originX = 2, originY = 3, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesCreateRegionFromGc(RegionId, PutImageGcId))
+                out.write(setClipRectangles(PutImageGcId, originX = 0, originY = 0, rectangles = listOf(XRectangleCommand(3, 3, 1, 1))))
+                out.write(xfixesFetchRegion(RegionId))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderSetPictureClipRectangles(PixmapPictureId, originX = 1, originY = 2, rectangles = listOf(XRectangleCommand(1, 0, 2, 1))))
+                out.write(xfixesCreateRegionFromPicture(RegionBId, PixmapPictureId))
+                out.write(renderSetPictureClipRectangles(PixmapPictureId, originX = 0, originY = 0, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesFetchRegion(RegionBId))
+                out.flush()
+
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 3, 1, 1), listOf(XRectangleCommand(2, 3, 1, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 2, 2, 1), listOf(XRectangleCommand(2, 2, 2, 1)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES CreateRegionFromPicture snapshots clip mask pixels`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 4, height = 4))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 3, height = 2))
+                out.write(
+                    putImage8Request(
+                        MaskPixmapId,
+                        width = 3,
+                        height = 2,
+                        alphas = byteArrayOf(
+                            0xff.toByte(),
+                            0xff.toByte(),
+                            0x00,
+                            0x00,
+                            0xff.toByte(),
+                            0xff.toByte(),
+                        ),
+                    ),
+                )
+                out.write(
+                    renderCreatePictureWithAttributes(
+                        PixmapPictureId,
+                        PixmapId,
+                        XRender.Rgb24Format,
+                        XRender.CPClipXOrigin to 1,
+                        XRender.CPClipYOrigin to 2,
+                        XRender.CPClipMask to MaskPixmapId,
+                    ),
+                )
+                out.write(xfixesCreateRegionFromPicture(RegionId, PixmapPictureId))
+                out.write(putImage8OnlyRequest(MaskPixmapId, width = 3, height = 2, alphas = ByteArray(6)))
+                out.write(renderChangePictureClipMaskNone(PixmapPictureId))
+                out.write(xfixesFetchRegion(RegionId))
+                out.flush()
+
+                assertRegionReply(
+                    socket.getInputStream(),
+                    XRectangleCommand(1, 2, 3, 2),
+                    listOf(
+                        XRectangleCommand(1, 2, 2, 1),
+                        XRectangleCommand(2, 3, 2, 1),
+                    ),
+                )
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES region operations update and fetch rectangle sets`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11730,6 +11857,26 @@ class XRenderProtocolTest {
     private fun xfixesCreateRegionRaw(body: ByteArray): ByteArray =
         request(XFixes.MajorOpcode, XFixes.CreateRegion, body)
 
+    private fun xfixesCreateRegionFromGc(region: Int, gc: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, region)
+        put32le(body, 4, gc)
+        return xfixesCreateRegionFromGcRaw(body)
+    }
+
+    private fun xfixesCreateRegionFromGcRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.CreateRegionFromGC, body)
+
+    private fun xfixesCreateRegionFromPicture(region: Int, picture: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, region)
+        put32le(body, 4, picture)
+        return xfixesCreateRegionFromPictureRaw(body)
+    }
+
+    private fun xfixesCreateRegionFromPictureRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.CreateRegionFromPicture, body)
+
     private fun xfixesDestroyRegion(region: Int): ByteArray {
         val body = ByteArray(4)
         put32le(body, 0, region)
@@ -12467,6 +12614,21 @@ class XRenderProtocolTest {
         put32le(body, 0, id)
         put32le(body, 4, drawable)
         return request(55, 0, body)
+    }
+
+    private fun setClipRectangles(gc: Int, originX: Int, originY: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, gc)
+        put16le(body, 4, originX)
+        put16le(body, 6, originY)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 8 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(59, 0, body)
     }
 
     private fun polyFillRectangle(drawable: Int, gc: Int, rectangles: List<XRectangleCommand>): ByteArray {

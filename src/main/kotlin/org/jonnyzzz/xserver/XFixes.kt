@@ -14,6 +14,10 @@ internal object XFixes {
     const val SelectCursorInput = 3
     const val GetCursorImage = 4
     const val CreateRegion = 5
+    const val CreateRegionFromBitmap = 6
+    const val CreateRegionFromWindow = 7
+    const val CreateRegionFromGC = 8
+    const val CreateRegionFromPicture = 9
     const val DestroyRegion = 10
     const val SetRegion = 11
     const val CopyRegion = 12
@@ -54,6 +58,10 @@ internal object XFixes {
             SelectCursorInput -> "SelectCursorInput"
             GetCursorImage -> "GetCursorImage"
             CreateRegion -> "CreateRegion"
+            CreateRegionFromBitmap -> "CreateRegionFromBitmap"
+            CreateRegionFromWindow -> "CreateRegionFromWindow"
+            CreateRegionFromGC -> "CreateRegionFromGC"
+            CreateRegionFromPicture -> "CreateRegionFromPicture"
             DestroyRegion -> "DestroyRegion"
             SetRegion -> "SetRegion"
             CopyRegion -> "CopyRegion"
