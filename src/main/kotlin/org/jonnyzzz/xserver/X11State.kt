@@ -2719,7 +2719,7 @@ internal class X11State(
                     }
                     XImagePixels(width, height, IntArray(width * height))
                 }
-                XRender.OpSrc, XRender.OpDisjointSrc -> {
+                XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> {
                     if (maskFramebuffer == null && maskAlphaAt == null) {
                         destinationFramebuffer.fill(
                             destinationX,
@@ -4059,7 +4059,7 @@ internal class X11State(
                     clipRectangles = destination.clipRectangles,
                     clipMask = destinationClipMask,
                 )
-                XRender.OpSrc, XRender.OpDisjointSrc -> framebuffer.fill(
+                XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> framebuffer.fill(
                     rectangle.x,
                     rectangle.y,
                     rectangle.width,
