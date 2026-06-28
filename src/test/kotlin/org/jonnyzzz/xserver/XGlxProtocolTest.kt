@@ -1491,7 +1491,7 @@ class XGlxProtocolTest {
     }
 
     @Test
-    fun `GLX DestroyPixmap accepts legacy oversized request and recovers stream`() {
+    fun `GLX DestroyPixmap validates fixed request length and recovers stream`() {
         withServer { socket ->
             socket.soTimeout = 2_000
             val pixmap = 0x0020_0700
@@ -1500,18 +1500,21 @@ class XGlxProtocolTest {
             writeRequest(socket, 53, 24, u32(pixmap) + u32(X11Ids.RootWindow) + u16(8) + u16(8))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.CreatePixmap, createFbConfigPixmapBody(pixmap, glxPixmap))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPixmap, u32(glxPixmap) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPixmap, u32(glxPixmap))
             writeRequest(socket, XGlx.MajorOpcode, XGlx.DestroyPixmap, u32(missingGlxPixmap))
             writeRequest(socket, 38, 0, u32(X11Ids.RootWindow))
 
+            assertGlxError(socket.getInputStream(), error = 16, badValue = 0, minorOpcode = XGlx.DestroyPixmap, sequence = 3)
             val missingError = socket.getInputStream().readExactly(32)
             assertEquals(0, missingError[0].toInt())
             assertEquals(XGlx.BadPixmap, missingError[1].toInt() and 0xff)
+            assertEquals(5, u16le(missingError, 2))
             assertEquals(missingGlxPixmap, u32le(missingError, 4))
             assertEquals(XGlx.DestroyPixmap, u16le(missingError, 8))
             assertEquals(XGlx.MajorOpcode, missingError[10].toInt() and 0xff)
 
             val pointer = readReply(socket.getInputStream())
-            assertEquals(5, u16le(pointer, 2))
+            assertEquals(6, u16le(pointer, 2))
             val json = httpGet(socket, "/state.json")
             assertTrue(json.contains(""""glxPixmaps":[]"""), json)
         }

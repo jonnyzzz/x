@@ -2585,7 +2585,7 @@ internal class X11Connection(
     }
 
     private fun glxDestroyFbConfigPixmap(body: ByteArray) {
-        if (body.size < 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyPixmap, badValue = 0)
+        if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyPixmap, badValue = 0)
         val glxPixmap = byteOrder.u32(body, 0)
         if (!state.hasGlxPixmap(glxPixmap)) return writeError(error = XGlx.BadPixmap, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.DestroyPixmap, badValue = glxPixmap)
         state.removeGlxPixmap(glxPixmap)
