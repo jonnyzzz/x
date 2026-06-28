@@ -232,6 +232,128 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES SetRegion validates region before rectangle alignment`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingRegion = RegionId + 1
+                val out = socket.getOutputStream()
+                out.write(xfixesSetRegionRaw(ByteArray(8).also { put32le(it, 0, missingRegion) }))
+                out.write(xfixesCreateRegion(RegionId, emptyList()))
+                out.write(xfixesSetRegionRaw(ByteArray(8).also { put32le(it, 0, RegionId) }))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingRegion, sequence = 1, minorOpcode = XFixes.SetRegion)
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XFixes.SetRegion)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES region operations update and fetch rectangle sets`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(0, 0, 2, 1))))
+                out.write(xfixesCreateRegion(RegionBId, listOf(XRectangleCommand(1, 0, 2, 1))))
+                out.write(xfixesCreateRegion(RegionResultId, emptyList()))
+                out.write(xfixesCreateRegion(RegionExtentsId, emptyList()))
+                out.write(
+                    xfixesCreateRegion(
+                        VerticalRegionId,
+                        listOf(
+                            XRectangleCommand(0, 0, 1, 1),
+                            XRectangleCommand(0, 1, 1, 1),
+                        ),
+                    ),
+                )
+                out.write(
+                    xfixesCreateRegion(
+                        OverlapRegionId,
+                        listOf(
+                            XRectangleCommand(0, 0, 2, 1),
+                            XRectangleCommand(1, 0, 2, 1),
+                            XRectangleCommand(4, 0, 0, 1),
+                        ),
+                    ),
+                )
+                out.write(xfixesFetchRegion(VerticalRegionId))
+                out.write(xfixesFetchRegion(OverlapRegionId))
+                out.write(xfixesRegionExtents(RegionExtentsId, RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesCopyRegion(RegionId, RegionResultId))
+                out.write(xfixesTranslateRegion(RegionResultId, dx = 1, dy = 1))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesUnionRegion(RegionId, RegionBId, RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesRegionExtents(RegionResultId, RegionExtentsId))
+                out.write(xfixesFetchRegion(RegionExtentsId))
+                out.write(xfixesIntersectRegion(RegionId, RegionBId, RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesSubtractRegion(RegionId, RegionBId, RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesSetRegion(RegionResultId, listOf(XRectangleCommand(2, 0, 1, 1))))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.flush()
+
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 1, 2), listOf(XRectangleCommand(0, 0, 1, 2)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 0, 0), emptyList())
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(1, 1, 2, 1), listOf(XRectangleCommand(1, 1, 2, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(1, 0, 1, 1), listOf(XRectangleCommand(1, 0, 1, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 1, 1), listOf(XRectangleCommand(0, 0, 1, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 0, 1, 1), listOf(XRectangleCommand(2, 0, 1, 1)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `XFIXES SetGCClipRegion applies region clips to core drawing`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createGcRequest(PutImageGcId, WindowId))
+                out.write(xfixesCreateRegion(RegionId, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetGcClipRegion(PutImageGcId, RegionId, originX = 1, originY = 0))
+                out.write(xfixesSetRegion(RegionId, listOf(XRectangleCommand(3, 0, 1, 1))))
+                out.write(polyFillRectangle(WindowId, PutImageGcId, listOf(XRectangleCommand(0, 0, 5, 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.write(xfixesSetGcClipRegion(PutImageGcId, region = 0, originX = 0, originY = 0))
+                out.write(polyFillRectangle(WindowId, PutImageGcId, listOf(XRectangleCommand(4, 0, 1, 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 5, height = 1))
+                out.flush()
+
+                val clipped = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 0, y = 0))
+                assertEquals(0xff00_0000.toInt(), pixelAt(clipped, imageWidth = 5, x = 1, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 2, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 3, y = 0))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(clipped, imageWidth = 5, x = 4, y = 0))
+
+                val cleared = readReply(socket.getInputStream())
+                assertEquals(0xff00_0000.toInt(), pixelAt(cleared, imageWidth = 5, x = 4, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER CreatePicture rejects duplicate resource id without replacing existing picture`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11582,6 +11704,76 @@ class XRenderProtocolTest {
     private fun xfixesDestroyRegionRaw(body: ByteArray): ByteArray =
         request(XFixes.MajorOpcode, XFixes.DestroyRegion, body)
 
+    private fun xfixesSetRegion(region: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(4 + rectangles.size * 8)
+        put32le(body, 0, region)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 4 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return xfixesSetRegionRaw(body)
+    }
+
+    private fun xfixesSetRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.SetRegion, body)
+
+    private fun xfixesCopyRegion(source: Int, destination: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        return request(XFixes.MajorOpcode, XFixes.CopyRegion, body)
+    }
+
+    private fun xfixesUnionRegion(source1: Int, source2: Int, destination: Int): ByteArray =
+        xfixesCombineRegion(XFixes.UnionRegion, source1, source2, destination)
+
+    private fun xfixesIntersectRegion(source1: Int, source2: Int, destination: Int): ByteArray =
+        xfixesCombineRegion(XFixes.IntersectRegion, source1, source2, destination)
+
+    private fun xfixesSubtractRegion(source1: Int, source2: Int, destination: Int): ByteArray =
+        xfixesCombineRegion(XFixes.SubtractRegion, source1, source2, destination)
+
+    private fun xfixesCombineRegion(minorOpcode: Int, source1: Int, source2: Int, destination: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, source1)
+        put32le(body, 4, source2)
+        put32le(body, 8, destination)
+        return request(XFixes.MajorOpcode, minorOpcode, body)
+    }
+
+    private fun xfixesTranslateRegion(region: Int, dx: Int, dy: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, region)
+        put16le(body, 4, dx)
+        put16le(body, 6, dy)
+        return request(XFixes.MajorOpcode, XFixes.TranslateRegion, body)
+    }
+
+    private fun xfixesRegionExtents(source: Int, destination: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, source)
+        put32le(body, 4, destination)
+        return request(XFixes.MajorOpcode, XFixes.RegionExtents, body)
+    }
+
+    private fun xfixesFetchRegion(region: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, region)
+        return request(XFixes.MajorOpcode, XFixes.FetchRegion, body)
+    }
+
+    private fun xfixesSetGcClipRegion(gc: Int, region: Int, originX: Int, originY: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, gc)
+        put32le(body, 4, region)
+        put16le(body, 8, originX)
+        put16le(body, 10, originY)
+        return request(XFixes.MajorOpcode, XFixes.SetGCClipRegion, body)
+    }
+
     private fun xfixesSetPictureClipRegion(
         picture: Int,
         region: Int,
@@ -12228,6 +12420,20 @@ class XRenderProtocolTest {
         return request(55, 0, body)
     }
 
+    private fun polyFillRectangle(drawable: Int, gc: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(8 + rectangles.size * 8)
+        put32le(body, 0, drawable)
+        put32le(body, 4, gc)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 8 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(70, 0, body)
+    }
+
     private fun request(opcode: Int, minorOpcode: Int, body: ByteArray): ByteArray {
         val bytes = ByteArray(4 + body.size)
         bytes[0] = opcode.toByte()
@@ -12241,6 +12447,22 @@ class XRenderProtocolTest {
         val header = input.readExactly(32)
         val payloadUnits = u32le(header, 4)
         return header + input.readExactly(payloadUnits * 4)
+    }
+
+    private fun assertRegionReply(input: InputStream, extents: XRectangleCommand, rectangles: List<XRectangleCommand>) {
+        val reply = readReply(input)
+        assertEquals(rectangles.size * 2, u32le(reply, 4))
+        assertEquals(extents.x, i16le(reply, 8))
+        assertEquals(extents.y, i16le(reply, 10))
+        assertEquals(extents.width, u16le(reply, 12))
+        assertEquals(extents.height, u16le(reply, 14))
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 32 + index * 8
+            assertEquals(rectangle.x, i16le(reply, offset))
+            assertEquals(rectangle.y, i16le(reply, offset + 2))
+            assertEquals(rectangle.width, u16le(reply, offset + 4))
+            assertEquals(rectangle.height, u16le(reply, offset + 6))
+        }
     }
 
     private fun assertError(input: InputStream, error: Int, badValue: Int, sequence: Int, minorOpcode: Int) {
@@ -12332,6 +12554,9 @@ class XRenderProtocolTest {
     private fun u16le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
 
+    private fun i16le(bytes: ByteArray, offset: Int): Int =
+        u16le(bytes, offset).toShort().toInt()
+
     private fun u32le(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or
             ((bytes[offset + 1].toInt() and 0xff) shl 8) or
@@ -12355,6 +12580,11 @@ class XRenderProtocolTest {
         const val RegionId = 0x0020_5001
         const val EmptyRegionId = 0x0020_5002
         const val SourceClipRegionId = 0x0020_5003
+        const val RegionBId = 0x0020_5004
+        const val RegionResultId = 0x0020_5005
+        const val RegionExtentsId = 0x0020_5006
+        const val OverlapRegionId = 0x0020_5007
+        const val VerticalRegionId = 0x0020_5008
         const val GlyphSetId = 0x0020_3001
         const val GlyphId = 0x0000_0041
         const val PutImageGcId = 0x0020_4001

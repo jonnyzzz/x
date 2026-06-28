@@ -2581,6 +2581,11 @@ internal class X11State(
     fun xfixesRegion(id: Int): XFixesRegion? = xfixesRegions[id]
 
     @Synchronized
+    fun updateXFixesRegion(id: Int, rectangles: List<XRectangleCommand>) {
+        xfixesRegions[id] = XFixesRegion(id, rectangles)
+    }
+
+    @Synchronized
     fun removeXFixesRegion(id: Int) {
         xfixesRegions.remove(id)
         discardRetainedResourceIds(setOf(id))

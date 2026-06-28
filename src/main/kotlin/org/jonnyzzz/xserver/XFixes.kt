@@ -15,6 +15,15 @@ internal object XFixes {
     const val GetCursorImage = 4
     const val CreateRegion = 5
     const val DestroyRegion = 10
+    const val SetRegion = 11
+    const val CopyRegion = 12
+    const val UnionRegion = 13
+    const val IntersectRegion = 14
+    const val SubtractRegion = 15
+    const val TranslateRegion = 17
+    const val RegionExtents = 18
+    const val FetchRegion = 19
+    const val SetGCClipRegion = 20
     const val SetPictureClipRegion = 22
 
     const val SaveSetNearest = 0
@@ -45,6 +54,15 @@ internal object XFixes {
             GetCursorImage -> "GetCursorImage"
             CreateRegion -> "CreateRegion"
             DestroyRegion -> "DestroyRegion"
+            SetRegion -> "SetRegion"
+            CopyRegion -> "CopyRegion"
+            UnionRegion -> "UnionRegion"
+            IntersectRegion -> "IntersectRegion"
+            SubtractRegion -> "SubtractRegion"
+            TranslateRegion -> "TranslateRegion"
+            RegionExtents -> "RegionExtents"
+            FetchRegion -> "FetchRegion"
+            SetGCClipRegion -> "SetGCClipRegion"
             SetPictureClipRegion -> "SetPictureClipRegion"
             else -> "Unknown"
         }

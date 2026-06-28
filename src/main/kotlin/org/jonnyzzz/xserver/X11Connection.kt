@@ -496,6 +496,15 @@ internal class X11Connection(
             XFixes.GetCursorImage -> xfixesGetCursorImage(body, majorOpcode)
             XFixes.CreateRegion -> xfixesCreateRegion(body, majorOpcode)
             XFixes.DestroyRegion -> xfixesDestroyRegion(body, majorOpcode)
+            XFixes.SetRegion -> xfixesSetRegion(body, majorOpcode)
+            XFixes.CopyRegion -> xfixesCopyRegion(body, majorOpcode)
+            XFixes.UnionRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.UnionRegion)
+            XFixes.IntersectRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.IntersectRegion)
+            XFixes.SubtractRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.SubtractRegion)
+            XFixes.TranslateRegion -> xfixesTranslateRegion(body, majorOpcode)
+            XFixes.RegionExtents -> xfixesRegionExtents(body, majorOpcode)
+            XFixes.FetchRegion -> xfixesFetchRegion(body, majorOpcode)
+            XFixes.SetGCClipRegion -> xfixesSetGcClipRegion(body, majorOpcode)
             XFixes.SetPictureClipRegion -> xfixesSetPictureClipRegion(body, majorOpcode)
             else -> xfixesBadImplementation(majorOpcode, minorOpcode)
         }
@@ -595,7 +604,7 @@ internal class X11Connection(
         if (region == 0 || state.hasResource(region)) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = region)
         }
-        state.putXFixesRegion(XFixesRegion(region, rectangles(body, 4)))
+        state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles(body, 4))))
         own(region)
     }
 
@@ -607,6 +616,123 @@ internal class X11Connection(
         }
         state.removeXFixesRegion(region)
         ownedResources.remove(region)
+    }
+
+    private fun xfixesSetRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 4) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetRegion, badValue = 0)
+        }
+        val region = byteOrder.u32(body, 0)
+        if (state.xfixesRegion(region) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.SetRegion, badValue = region)
+        }
+        if ((body.size - 4) % 8 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetRegion, badValue = 0)
+        }
+        state.updateXFixesRegion(region, normalizedRegion(rectangles(body, 4)))
+    }
+
+    private fun xfixesCopyRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CopyRegion, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        val destination = byteOrder.u32(body, 4)
+        val sourceRectangles = state.xfixesRegion(source)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.CopyRegion, badValue = source)
+        if (state.xfixesRegion(destination) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.CopyRegion, badValue = destination)
+        }
+        state.updateXFixesRegion(destination, normalizedRegion(sourceRectangles))
+    }
+
+    private fun xfixesCombineRegion(body: ByteArray, majorOpcode: Int, minorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val source1 = byteOrder.u32(body, 0)
+        val source2 = byteOrder.u32(body, 4)
+        val destination = byteOrder.u32(body, 8)
+        val first = state.xfixesRegion(source1)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = source1)
+        val second = state.xfixesRegion(source2)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = source2)
+        if (state.xfixesRegion(destination) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = destination)
+        }
+        val combined = when (minorOpcode) {
+            XFixes.UnionRegion -> combineRegions(first, second) { inFirst, inSecond -> inFirst || inSecond }
+            XFixes.IntersectRegion -> combineRegions(first, second) { inFirst, inSecond -> inFirst && inSecond }
+            XFixes.SubtractRegion -> combineRegions(first, second) { inFirst, inSecond -> inFirst && !inSecond }
+            else -> emptyList()
+        }
+        state.updateXFixesRegion(destination, combined)
+    }
+
+    private fun xfixesTranslateRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.TranslateRegion, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        val rectangles = state.xfixesRegion(region)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.TranslateRegion, badValue = region)
+        val dx = byteOrder.i16(body, 4)
+        val dy = byteOrder.i16(body, 6)
+        state.updateXFixesRegion(
+            region,
+            rectangles.map { rectangle ->
+                rectangle.copy(x = rectangle.x + dx, y = rectangle.y + dy)
+            },
+        )
+    }
+
+    private fun xfixesRegionExtents(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.RegionExtents, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        val destination = byteOrder.u32(body, 4)
+        val sourceRectangles = state.xfixesRegion(source)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.RegionExtents, badValue = source)
+        if (state.xfixesRegion(destination) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.RegionExtents, badValue = destination)
+        }
+        val extents = regionExtents(sourceRectangles)
+        state.updateXFixesRegion(destination, extents?.let { listOf(it) } ?: emptyList())
+    }
+
+    private fun xfixesFetchRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.FetchRegion, badValue = 0)
+        val region = byteOrder.u32(body, 0)
+        val rectangles = state.xfixesRegion(region)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.FetchRegion, badValue = region)
+        val reply = reply(extra = 0, payloadUnits = rectangles.size * 2)
+        val extents = regionExtents(rectangles)
+        if (extents != null) {
+            byteOrder.put16(reply, 8, extents.x)
+            byteOrder.put16(reply, 10, extents.y)
+            byteOrder.put16(reply, 12, extents.width)
+            byteOrder.put16(reply, 14, extents.height)
+        }
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 32 + index * 8
+            byteOrder.put16(reply, offset, rectangle.x)
+            byteOrder.put16(reply, offset + 2, rectangle.y)
+            byteOrder.put16(reply, offset + 4, rectangle.width)
+            byteOrder.put16(reply, offset + 6, rectangle.height)
+        }
+        write(reply)
+    }
+
+    private fun xfixesSetGcClipRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.SetGCClipRegion, badValue = 0)
+        val gc = byteOrder.u32(body, 0)
+        if (!state.hasGc(gc)) return writeError(error = 13, opcode = majorOpcode, minorOpcode = XFixes.SetGCClipRegion, badValue = gc)
+        val region = byteOrder.u32(body, 4)
+        val rectangles = if (region == 0) {
+            null
+        } else {
+            state.xfixesRegion(region)?.rectangles
+                ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.SetGCClipRegion, badValue = region)
+        }
+        state.updateGcClip(
+            id = gc,
+            clipXOrigin = byteOrder.i16(body, 8),
+            clipYOrigin = byteOrder.i16(body, 10),
+            clipRectangles = rectangles?.toList(),
+        )
     }
 
     private fun xfixesSetPictureClipRegion(body: ByteArray, majorOpcode: Int) {
@@ -637,6 +763,124 @@ internal class X11Connection(
                 )
             },
         )
+    }
+
+    private fun normalizedRegion(rectangles: List<XRectangleCommand>): List<XRectangleCommand> =
+        canonicalRegion(rectangles) { inside -> inside }
+
+    private fun combineRegions(
+        first: List<XRectangleCommand>,
+        second: List<XRectangleCommand>,
+        predicate: (Boolean, Boolean) -> Boolean,
+    ): List<XRectangleCommand> {
+        val normalizedFirst = normalizedRegion(first)
+        val normalizedSecond = normalizedRegion(second)
+        val allRectangles = normalizedFirst + normalizedSecond
+        val xs = allRectangles.flatMap { listOf(it.x, it.x + it.width) }.distinct().sorted()
+        val ys = allRectangles.flatMap { listOf(it.y, it.y + it.height) }.distinct().sorted()
+        if (xs.size < 2 || ys.size < 2) return emptyList()
+        val cells = mutableListOf<XRectangleCommand>()
+        for (yIndex in 0 until ys.lastIndex) {
+            val y = ys[yIndex]
+            val height = ys[yIndex + 1] - y
+            if (height <= 0) continue
+            for (xIndex in 0 until xs.lastIndex) {
+                val x = xs[xIndex]
+                val width = xs[xIndex + 1] - x
+                if (width <= 0) continue
+                if (predicate(pointInsideRegion(normalizedFirst, x, y), pointInsideRegion(normalizedSecond, x, y))) {
+                    cells += XRectangleCommand(x, y, width, height)
+                }
+            }
+        }
+        return mergeRegionRows(cells)
+    }
+
+    private fun pointInsideRegion(rectangles: List<XRectangleCommand>, x: Int, y: Int): Boolean =
+        rectangles.any { rectangle ->
+            x >= rectangle.x &&
+                y >= rectangle.y &&
+                x < rectangle.x + rectangle.width &&
+                y < rectangle.y + rectangle.height
+        }
+
+    private fun canonicalRegion(
+        rectangles: List<XRectangleCommand>,
+        predicate: (Boolean) -> Boolean,
+    ): List<XRectangleCommand> {
+        val nonEmpty = rectangles.filter { it.width > 0 && it.height > 0 }
+        val xs = nonEmpty.flatMap { listOf(it.x, it.x + it.width) }.distinct().sorted()
+        val ys = nonEmpty.flatMap { listOf(it.y, it.y + it.height) }.distinct().sorted()
+        if (xs.size < 2 || ys.size < 2) return emptyList()
+        val cells = mutableListOf<XRectangleCommand>()
+        for (yIndex in 0 until ys.lastIndex) {
+            val y = ys[yIndex]
+            val height = ys[yIndex + 1] - y
+            if (height <= 0) continue
+            for (xIndex in 0 until xs.lastIndex) {
+                val x = xs[xIndex]
+                val width = xs[xIndex + 1] - x
+                if (width <= 0) continue
+                if (predicate(pointInsideRegion(nonEmpty, x, y))) {
+                    cells += XRectangleCommand(x, y, width, height)
+                }
+            }
+        }
+        return mergeRegionRows(cells)
+    }
+
+    private fun mergeRegionRows(rectangles: List<XRectangleCommand>): List<XRectangleCommand> {
+        val horizontalRows = mutableListOf<List<XRectangleCommand>>()
+        rectangles
+            .sortedWith(compareBy<XRectangleCommand> { it.y }.thenBy { it.height }.thenBy { it.x }.thenBy { it.width })
+            .fold(mutableListOf<XRectangleCommand>()) { row, rectangle ->
+                val previous = row.lastOrNull()
+                if (previous != null && (previous.y != rectangle.y || previous.height != rectangle.height)) {
+                    horizontalRows += row.toList()
+                    row.clear()
+                }
+                if (previous != null && previous.y == rectangle.y && previous.height == rectangle.height && previous.x + previous.width == rectangle.x) {
+                    row[row.lastIndex] = previous.copy(width = previous.width + rectangle.width)
+                } else {
+                    row += rectangle
+                }
+                row
+            }
+            .also { row ->
+                if (row.isNotEmpty()) horizontalRows += row.toList()
+            }
+
+        val mergedRows = mutableListOf<MutableList<XRectangleCommand>>()
+        horizontalRows.forEach { row ->
+            val previous = mergedRows.lastOrNull()
+            if (previous != null && canMergeRegionRows(previous, row)) {
+                row.forEachIndexed { index, rectangle ->
+                    val previousRectangle = previous[index]
+                    previous[index] = previousRectangle.copy(height = previousRectangle.height + rectangle.height)
+                }
+            } else {
+                mergedRows += row.toMutableList()
+            }
+        }
+        return mergedRows.flatten()
+    }
+
+    private fun canMergeRegionRows(previous: List<XRectangleCommand>, next: List<XRectangleCommand>): Boolean =
+        previous.size == next.size &&
+            previous.zip(next).all { (first, second) ->
+                first.y + first.height == second.y &&
+                    first.x == second.x &&
+                    first.width == second.width
+            }
+
+    private fun regionExtents(rectangles: List<XRectangleCommand>): XRectangleCommand? {
+        val normalized = normalizedRegion(rectangles)
+        if (normalized.isEmpty()) return null
+        val minX = normalized.minOf { it.x }
+        val minY = normalized.minOf { it.y }
+        val maxX = normalized.maxOf { it.x + it.width }
+        val maxY = normalized.maxOf { it.y + it.height }
+        return XRectangleCommand(minX, minY, maxX - minX, maxY - minY)
     }
 
     private fun xfixesBadImplementation(majorOpcode: Int, minorOpcode: Int) {
