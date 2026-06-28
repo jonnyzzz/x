@@ -1643,7 +1643,7 @@ internal class XFramebuffer(
 
     private fun renderPixel(source: Int, destination: Int, operation: Int, maskAlpha: Int): Int =
         when (operation) {
-            XRender.OpClear -> clearWithMask(destination, maskAlpha)
+            XRender.OpClear, XRender.OpDisjointClear -> clearWithMask(destination, maskAlpha)
             XRender.OpSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
             XRender.OpDst -> destination
             XRender.OpOver -> over(source, destination, maskAlpha)
@@ -1662,7 +1662,7 @@ internal class XFramebuffer(
 
     private fun renderPixelComponentMask(source: Int, destination: Int, operation: Int, mask: Int): Int =
         when (operation) {
-            XRender.OpClear -> clearWithComponentMask(destination, mask)
+            XRender.OpClear, XRender.OpDisjointClear -> clearWithComponentMask(destination, mask)
             XRender.OpSrc -> withComponentMask(source, mask)
             XRender.OpDst -> destination
             XRender.OpOver -> overComponentMask(source, destination, mask)
