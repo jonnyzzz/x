@@ -1052,9 +1052,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD ListComponents accepts and ignores trailing pattern data`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            val trailingPatterns = ByteArray(12)
-            put16le(trailingPatterns, 0, 4)
-            "base".encodeToByteArray().copyInto(trailingPatterns, 2)
+            val trailingPatterns = xkbComponentSpecs("base", "evdev", "complete", "pc", "us", "pc105")
             out.write(listComponentsRequest(maxNames = 1, trailingPatterns = trailingPatterns))
             out.flush()
 
@@ -1063,6 +1061,23 @@ class XXkbProtocolTest {
             assertEquals(0, reply[1].toInt() and 0xff)
             assertEquals(1, u16le(reply, 2))
             assertEquals(0, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 20))
+            assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD ListComponents validates component pattern lengths and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(listComponentsRequest(maxNames = 1, trailingPatterns = byteArrayOf(5, 'b'.code.toByte(), 0, 0)))
+            out.write(listComponentsRequest(maxNames = 1, trailingPatterns = xkbComponentSpecs("base")))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.ListComponents)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
             assertEquals(0, u16le(reply, 8))
             assertEquals(0, u16le(reply, 20))
             assertEquals(32, reply.size)
@@ -1112,9 +1127,7 @@ class XXkbProtocolTest {
     fun `XKEYBOARD GetKbdByName accepts and ignores trailing component names`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
-            val trailingNames = ByteArray(16)
-            put16le(trailingNames, 0, 4)
-            "base".encodeToByteArray().copyInto(trailingNames, 2)
+            val trailingNames = xkbComponentSpecs("base", "evdev", "complete", "pc", "us", "pc105")
             out.write(getKbdByNameRequest(need = 0, want = 0, load = false, trailingNames = trailingNames))
             out.flush()
 
@@ -1128,6 +1141,24 @@ class XXkbProtocolTest {
             assertEquals(0, u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(32, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetKbdByName validates component name lengths and recovers stream`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getKbdByNameRequest(need = 0, want = 0, load = false, trailingNames = byteArrayOf(5, 'b'.code.toByte(), 0, 0)))
+            out.write(getKbdByNameRequest(need = 0, want = 0, load = false, trailingNames = xkbComponentSpecs("base")))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetKbdByName)
+            val reply = readReply(socket.getInputStream())
+            assertEquals(2, u16le(reply, 2))
+            assertEquals(XKeyboard.MinKeycode, reply[8].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, reply[9].toInt() and 0xff)
+            assertEquals(0, u16le(reply, 12))
+            assertEquals(0, u16le(reply, 14))
         }
     }
 
@@ -1813,6 +1844,20 @@ class XXkbProtocolTest {
         body[6] = if (load) 1 else 0
         trailingNames.copyInto(body, 8)
         return request(XXkb.MajorOpcode, XXkb.GetKbdByName, body)
+    }
+
+    private fun xkbComponentSpecs(vararg names: String): ByteArray {
+        val specs = names.toList() + List(6 - names.size) { "" }
+        val size = (specs.sumOf { 1 + it.encodeToByteArray().size } + 3) and -4
+        val bytes = ByteArray(size)
+        var offset = 0
+        specs.forEach { name ->
+            val nameBytes = name.encodeToByteArray()
+            bytes[offset++] = nameBytes.size.toByte()
+            nameBytes.copyInto(bytes, offset)
+            offset += nameBytes.size
+        }
+        return bytes
     }
 
     private fun getDeviceInfoRequest(

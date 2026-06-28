@@ -981,16 +981,31 @@ internal class X11Connection(
 
     private fun xkbListComponents(body: ByteArray, majorOpcode: Int) {
         if (body.size < 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
+        if (!validateXkbComponentSpecs(body, 4)) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.ListComponents, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         write(reply)
     }
 
     private fun xkbGetKbdByName(body: ByteArray, majorOpcode: Int) {
         if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetKbdByName, badValue = 0)
+        if (!validateXkbComponentSpecs(body, 8)) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetKbdByName, badValue = 0)
         val reply = reply(extra = 0, payloadUnits = 0)
         reply[8] = XKeyboard.MinKeycode.toByte()
         reply[9] = XKeyboard.MaxKeycode.toByte()
         write(reply)
+    }
+
+    private fun validateXkbComponentSpecs(body: ByteArray, startOffset: Int): Boolean {
+        if (body.size == startOffset) return true
+        var offset = startOffset
+        repeat(6) {
+            if (offset >= body.size) return false
+            val length = body[offset].toInt() and 0xff
+            offset += 1
+            if (offset > body.size - length) return false
+            offset += length
+        }
+        return paddedLength(offset) == body.size
     }
 
     private fun xkbGetDeviceInfo(body: ByteArray, majorOpcode: Int) {
