@@ -65,6 +65,7 @@ internal object XRender {
     const val OpBlendDarken = 0x33
     const val OpBlendLighten = 0x34
     const val OpBlendColorDodge = 0x35
+    const val OpBlendColorBurn = 0x36
     const val OpBlendMaximum = 0x3e
 
     const val CPRepeat = 1 shl 0
