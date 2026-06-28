@@ -1813,7 +1813,7 @@ internal class XFramebuffer(
         when (operation) {
             XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> clearWithMask(destination, maskAlpha)
             XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> if (maskAlpha >= 255) source else withMask(source, maskAlpha)
-            XRender.OpDst, XRender.OpDisjointDst -> destination
+            XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> destination
             XRender.OpOver -> over(source, destination, maskAlpha)
             XRender.OpDisjointOver -> disjointOverOperator(source, destination, maskAlpha)
             XRender.OpOverReverse -> overReverseOperator(source, destination, maskAlpha)
@@ -1840,7 +1840,7 @@ internal class XFramebuffer(
         when (operation) {
             XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> clearWithComponentMask(destination, mask)
             XRender.OpSrc, XRender.OpDisjointSrc, XRender.OpConjointSrc -> withComponentMask(source, mask)
-            XRender.OpDst, XRender.OpDisjointDst -> destination
+            XRender.OpDst, XRender.OpDisjointDst, XRender.OpConjointDst -> destination
             XRender.OpOver -> overComponentMask(source, destination, mask)
             XRender.OpDisjointOver -> disjointOverComponentMask(source, destination, mask)
             XRender.OpOverReverse -> overReverseComponentMask(source, destination, mask)
@@ -2682,6 +2682,7 @@ internal class XFramebuffer(
     private fun Int.returnsDestinationResultImage(): Boolean =
         this == XRender.OpDst ||
             this == XRender.OpDisjointDst ||
+            this == XRender.OpConjointDst ||
             this == XRender.OpDisjointOver ||
             this == XRender.OpOverReverse ||
             this == XRender.OpInReverse ||

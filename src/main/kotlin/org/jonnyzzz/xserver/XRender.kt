@@ -48,6 +48,7 @@ internal object XRender {
     const val OpDisjointMaximum = 0x1b
     const val OpConjointClear = 0x20
     const val OpConjointSrc = 0x21
+    const val OpConjointDst = 0x22
     const val OpConjointMaximum = 0x2b
     const val OpBlendMultiply = 0x30
     const val OpBlendMaximum = 0x3e
