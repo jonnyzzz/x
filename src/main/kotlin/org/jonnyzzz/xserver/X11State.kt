@@ -2799,6 +2799,22 @@ internal class X11State(
                     )
                     destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
                 }
+                XRender.OpBlendOverlay -> {
+                    destinationFramebuffer.blendSolidOverlay(
+                        pixel = solid,
+                        destinationX = destinationX,
+                        destinationY = destinationY,
+                        width = width,
+                        height = height,
+                        clipRectangles = destination.clipRectangles,
+                        clipMask = destinationClipMask,
+                        mask = maskFramebuffer,
+                        maskX = maskX,
+                        maskY = maskY,
+                        maskAlphaAt = maskAlphaAt,
+                    )
+                    destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
+                }
                 XRender.OpSaturate, XRender.OpDisjointOverReverse -> {
                     destinationFramebuffer.blendSolidSaturate(
                         pixel = solid,
@@ -4273,6 +4289,15 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendScreen -> framebuffer.blendSolidScreen(
+                    pixel = pixel,
+                    destinationX = rectangle.x,
+                    destinationY = rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                    clipRectangles = destination.clipRectangles,
+                    clipMask = destinationClipMask,
+                )
+                XRender.OpBlendOverlay -> framebuffer.blendSolidOverlay(
                     pixel = pixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
