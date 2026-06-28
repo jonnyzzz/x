@@ -501,6 +501,7 @@ internal class X11Connection(
             XFixes.UnionRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.UnionRegion)
             XFixes.IntersectRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.IntersectRegion)
             XFixes.SubtractRegion -> xfixesCombineRegion(body, majorOpcode, XFixes.SubtractRegion)
+            XFixes.InvertRegion -> xfixesInvertRegion(body, majorOpcode)
             XFixes.TranslateRegion -> xfixesTranslateRegion(body, majorOpcode)
             XFixes.RegionExtents -> xfixesRegionExtents(body, majorOpcode)
             XFixes.FetchRegion -> xfixesFetchRegion(body, majorOpcode)
@@ -663,6 +664,25 @@ internal class X11Connection(
             else -> emptyList()
         }
         state.updateXFixesRegion(destination, combined)
+    }
+
+    private fun xfixesInvertRegion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 16) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.InvertRegion, badValue = 0)
+        val source = byteOrder.u32(body, 0)
+        val sourceRectangles = state.xfixesRegion(source)?.rectangles
+            ?: return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.InvertRegion, badValue = source)
+        val destination = byteOrder.u32(body, 12)
+        if (state.xfixesRegion(destination) == null) {
+            return writeError(error = XFixes.BadRegion, opcode = majorOpcode, minorOpcode = XFixes.InvertRegion, badValue = destination)
+        }
+        val bounds = XRectangleCommand(
+            x = byteOrder.i16(body, 4),
+            y = byteOrder.i16(body, 6),
+            width = byteOrder.u16(body, 8),
+            height = byteOrder.u16(body, 10),
+        )
+        val inverted = combineRegions(listOf(bounds), sourceRectangles) { inBounds, inSource -> inBounds && !inSource }
+        state.updateXFixesRegion(destination, inverted)
     }
 
     private fun xfixesTranslateRegion(body: ByteArray, majorOpcode: Int) {

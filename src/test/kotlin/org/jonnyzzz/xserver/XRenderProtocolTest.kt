@@ -254,6 +254,32 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `XFIXES InvertRegion validates framing and resources`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val missingRegion = RegionId + 1
+                val missingDestination = RegionId + 2
+                val out = socket.getOutputStream()
+                out.write(xfixesInvertRegionRaw(ByteArray(12).also { put32le(it, 0, missingRegion) }))
+                out.write(xfixesCreateRegion(RegionResultId, emptyList()))
+                out.write(xfixesInvertRegion(missingRegion, x = 0, y = 0, width = 1, height = 1, destination = RegionResultId))
+                out.write(xfixesCreateRegion(RegionId, emptyList()))
+                out.write(xfixesInvertRegion(RegionId, x = 0, y = 0, width = 1, height = 1, destination = missingDestination))
+                out.flush()
+
+                assertExtensionError(socket.getInputStream(), error = 16, opcode = XFixes.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XFixes.InvertRegion)
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingRegion, sequence = 3, minorOpcode = XFixes.InvertRegion)
+                assertExtensionError(socket.getInputStream(), error = XFixes.BadRegion, opcode = XFixes.MajorOpcode, badValue = missingDestination, sequence = 5, minorOpcode = XFixes.InvertRegion)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES region operations update and fetch rectangle sets`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -286,6 +312,10 @@ class XRenderProtocolTest {
                 )
                 out.write(xfixesFetchRegion(VerticalRegionId))
                 out.write(xfixesFetchRegion(OverlapRegionId))
+                out.write(xfixesInvertRegion(RegionExtentsId, x = 0, y = 0, width = 2, height = 1, destination = RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesInvertRegion(RegionId, x = 0, y = 0, width = 2, height = 1, destination = RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
                 out.write(xfixesRegionExtents(RegionExtentsId, RegionResultId))
                 out.write(xfixesFetchRegion(RegionResultId))
                 out.write(xfixesCopyRegion(RegionId, RegionResultId))
@@ -299,18 +329,23 @@ class XRenderProtocolTest {
                 out.write(xfixesFetchRegion(RegionResultId))
                 out.write(xfixesSubtractRegion(RegionId, RegionBId, RegionResultId))
                 out.write(xfixesFetchRegion(RegionResultId))
+                out.write(xfixesInvertRegion(RegionId, x = 0, y = 0, width = 3, height = 1, destination = RegionResultId))
+                out.write(xfixesFetchRegion(RegionResultId))
                 out.write(xfixesSetRegion(RegionResultId, listOf(XRectangleCommand(2, 0, 1, 1))))
                 out.write(xfixesFetchRegion(RegionResultId))
                 out.flush()
 
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 1, 2), listOf(XRectangleCommand(0, 0, 1, 2)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 2, 1), listOf(XRectangleCommand(0, 0, 2, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 0, 0), emptyList())
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 0, 0), emptyList())
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(1, 1, 2, 1), listOf(XRectangleCommand(1, 1, 2, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 3, 1), listOf(XRectangleCommand(0, 0, 3, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(1, 0, 1, 1), listOf(XRectangleCommand(1, 0, 1, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(0, 0, 1, 1), listOf(XRectangleCommand(0, 0, 1, 1)))
+                assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 0, 1, 1), listOf(XRectangleCommand(2, 0, 1, 1)))
                 assertRegionReply(socket.getInputStream(), XRectangleCommand(2, 0, 1, 1), listOf(XRectangleCommand(2, 0, 1, 1)))
             }
             server.close()
@@ -11743,6 +11778,20 @@ class XRenderProtocolTest {
         put32le(body, 8, destination)
         return request(XFixes.MajorOpcode, minorOpcode, body)
     }
+
+    private fun xfixesInvertRegion(source: Int, x: Int, y: Int, width: Int, height: Int, destination: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, source)
+        put16le(body, 4, x)
+        put16le(body, 6, y)
+        put16le(body, 8, width)
+        put16le(body, 10, height)
+        put32le(body, 12, destination)
+        return xfixesInvertRegionRaw(body)
+    }
+
+    private fun xfixesInvertRegionRaw(body: ByteArray): ByteArray =
+        request(XFixes.MajorOpcode, XFixes.InvertRegion, body)
 
     private fun xfixesTranslateRegion(region: Int, dx: Int, dy: Int): ByteArray {
         val body = ByteArray(8)

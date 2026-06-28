@@ -20,6 +20,7 @@ internal object XFixes {
     const val UnionRegion = 13
     const val IntersectRegion = 14
     const val SubtractRegion = 15
+    const val InvertRegion = 16
     const val TranslateRegion = 17
     const val RegionExtents = 18
     const val FetchRegion = 19
@@ -59,6 +60,7 @@ internal object XFixes {
             UnionRegion -> "UnionRegion"
             IntersectRegion -> "IntersectRegion"
             SubtractRegion -> "SubtractRegion"
+            InvertRegion -> "InvertRegion"
             TranslateRegion -> "TranslateRegion"
             RegionExtents -> "RegionExtents"
             FetchRegion -> "FetchRegion"
