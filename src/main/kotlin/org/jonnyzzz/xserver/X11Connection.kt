@@ -172,6 +172,10 @@ internal class X11Connection(
                 xtest(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "XC-MISC") {
+                xcmisc(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -433,7 +437,7 @@ internal class X11Connection(
     private fun shmAttach(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = 0)
         val shmseg = byteOrder.u32(body, 0)
-        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = shmseg)
+        if (!resourceIdAvailable(shmseg, majorOpcode, XShm.Attach)) return
         val readOnly = body[8].toInt() and 0xff
         if (readOnly !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = readOnly)
         writeError(error = 10, opcode = majorOpcode, minorOpcode = XShm.Attach, badValue = byteOrder.u32(body, 4))
@@ -463,7 +467,7 @@ internal class X11Connection(
     private fun shmCreatePixmap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = 0)
         val pixmapId = byteOrder.u32(body, 0)
-        if (state.hasResource(pixmapId)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.CreatePixmap, badValue = pixmapId)
+        if (!resourceIdAvailable(pixmapId, majorOpcode, XShm.CreatePixmap)) return
         val drawableId = byteOrder.u32(body, 4)
         val window = state.window(drawableId)
         if (window?.windowClass == XWindowClass.InputOnly) {
@@ -484,7 +488,7 @@ internal class X11Connection(
     private fun shmAttachFd(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = 0)
         val shmseg = byteOrder.u32(body, 0)
-        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = shmseg)
+        if (!resourceIdAvailable(shmseg, majorOpcode, XShm.AttachFd)) return
         val readOnly = body[4].toInt() and 0xff
         if (readOnly !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = readOnly)
         writeError(error = 10, opcode = majorOpcode, minorOpcode = XShm.AttachFd, badValue = shmseg)
@@ -493,7 +497,7 @@ internal class X11Connection(
     private fun shmCreateSegment(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = 0)
         val shmseg = byteOrder.u32(body, 0)
-        if (state.hasResource(shmseg)) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = shmseg)
+        if (!resourceIdAvailable(shmseg, majorOpcode, XShm.CreateSegment)) return
         val size = byteOrder.u32(body, 4)
         if (size == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XShm.CreateSegment, badValue = size)
         val readOnly = body[8].toInt() and 0xff
@@ -626,9 +630,10 @@ internal class X11Connection(
             return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = 0)
         }
         val region = byteOrder.u32(body, 0)
-        if (region == 0 || state.hasResource(region)) {
+        if (region == 0) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegion, badValue = region)
         }
+        if (!resourceIdAvailable(region, majorOpcode, XFixes.CreateRegion)) return
         state.putXFixesRegion(XFixesRegion(region, normalizedRegion(rectangles(body, 4))))
         own(region)
     }
@@ -636,9 +641,10 @@ internal class X11Connection(
     private fun xfixesCreateRegionFromBitmap(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = 0)
         val region = byteOrder.u32(body, 0)
-        if (region == 0 || state.hasResource(region)) {
+        if (region == 0) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = region)
         }
+        if (!resourceIdAvailable(region, majorOpcode, XFixes.CreateRegionFromBitmap)) return
         val bitmapId = byteOrder.u32(body, 4)
         val bitmap = state.pixmap(bitmapId)
             ?: return writeError(error = 4, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromBitmap, badValue = bitmapId)
@@ -650,9 +656,10 @@ internal class X11Connection(
     private fun xfixesCreateRegionFromWindow(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = 0)
         val region = byteOrder.u32(body, 0)
-        if (region == 0 || state.hasResource(region)) {
+        if (region == 0) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = region)
         }
+        if (!resourceIdAvailable(region, majorOpcode, XFixes.CreateRegionFromWindow)) return
         val window = byteOrder.u32(body, 4)
         val targetWindow = state.window(window)
             ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromWindow, badValue = window)
@@ -670,9 +677,10 @@ internal class X11Connection(
     private fun xfixesCreateRegionFromGc(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = 0)
         val region = byteOrder.u32(body, 0)
-        if (region == 0 || state.hasResource(region)) {
+        if (region == 0) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = region)
         }
+        if (!resourceIdAvailable(region, majorOpcode, XFixes.CreateRegionFromGC)) return
         val gc = byteOrder.u32(body, 4)
         if (!state.hasGc(gc)) return writeError(error = 13, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromGC, badValue = gc)
         val rectangles = state.gc(gc).effectiveClipRectangles()
@@ -684,9 +692,10 @@ internal class X11Connection(
     private fun xfixesCreateRegionFromPicture(body: ByteArray, majorOpcode: Int) {
         if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = 0)
         val region = byteOrder.u32(body, 0)
-        if (region == 0 || state.hasResource(region)) {
+        if (region == 0) {
             return writeError(error = 14, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = region)
         }
+        if (!resourceIdAvailable(region, majorOpcode, XFixes.CreateRegionFromPicture)) return
         val pictureId = byteOrder.u32(body, 4)
         val picture = state.picture(pictureId)
             ?: return writeError(error = XRender.PictureError, opcode = majorOpcode, minorOpcode = XFixes.CreateRegionFromPicture, badValue = pictureId)
@@ -1982,7 +1991,7 @@ internal class X11Connection(
     private fun renderCreatePicture(body: ByteArray) {
         if (body.size < 16) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 4)) return
         val drawable = byteOrder.u32(body, 4)
         val drawableState = state.drawable(drawable) ?: return writeError(error = 9, opcode = XRender.MajorOpcode, minorOpcode = 4, badValue = drawable)
         val format = byteOrder.u32(body, 8)
@@ -2592,7 +2601,7 @@ internal class X11Connection(
     private fun renderCreateGlyphSet(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 17)) return
         val format = byteOrder.u32(body, 4)
         if (format !in XRender.PictFormats) {
             return writeError(error = XRender.PictFormatError, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = format)
@@ -2604,7 +2613,7 @@ internal class X11Connection(
     private fun renderReferenceGlyphSet(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 18)) return
         val existingId = byteOrder.u32(body, 4)
         if (!state.hasGlyphSet(existingId)) {
             return writeError(error = XRender.GlyphSetError, opcode = XRender.MajorOpcode, minorOpcode = 18, badValue = existingId)
@@ -2871,7 +2880,7 @@ internal class X11Connection(
     private fun renderCreateCursor(body: ByteArray) {
         if (body.size != 12) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 27)) return
         val source = byteOrder.u32(body, 4)
         if (state.picture(source) == null) {
             return writeError(error = XRender.PictureError, opcode = XRender.MajorOpcode, minorOpcode = 27, badValue = source)
@@ -2983,7 +2992,7 @@ internal class X11Connection(
             return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = 0)
         }
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 31)) return
         if ((body.size - 4) % 8 != 0) {
             return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 31, badValue = 0)
         }
@@ -3029,7 +3038,7 @@ internal class X11Connection(
     private fun renderCreateSolidFill(body: ByteArray) {
         if (body.size != 12) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 33, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 33, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 33)) return
         state.putPicture(
             XPicture(
                 id = id,
@@ -3049,7 +3058,7 @@ internal class X11Connection(
     private fun renderCreateLinearGradient(body: ByteArray) {
         if (body.size < 24) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 34, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 34, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 34)) return
         val stopsCount = byteOrder.u32(body, 20)
         if (stopsCount < 0) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 34, badValue = 0)
         val colorOffset = 24L + stopsCount.toLong() * 4L
@@ -3091,7 +3100,7 @@ internal class X11Connection(
     private fun renderCreateRadialGradient(body: ByteArray) {
         if (body.size < 32) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 35, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 35, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 35)) return
         val stops = renderGradientStopsExact(body, countOffset = 28, stopsOffset = 32, minorOpcode = 35) ?: return
         val gradient = XRadialGradient(
             inner = XFixedCircle(
@@ -3119,7 +3128,7 @@ internal class X11Connection(
     private fun renderCreateConicalGradient(body: ByteArray) {
         if (body.size < 20) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 36, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = XRender.MajorOpcode, minorOpcode = 36, badValue = id)
+        if (!resourceIdAvailable(id, XRender.MajorOpcode, 36)) return
         val stops = renderGradientStopsExact(body, countOffset = 16, stopsOffset = 20, minorOpcode = 36) ?: return
         val gradient = XConicalGradient(
             center = XFixedPoint(byteOrder.u32(body, 4), byteOrder.u32(body, 8)),
@@ -3264,7 +3273,7 @@ internal class X11Connection(
         val context = byteOrder.u32(body, 0)
         val visual = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
-        if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = context)
+        if (!resourceIdAvailable(context, XGlx.MajorOpcode, 3, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = screen)
         if (visual != X11Ids.RootVisual) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = 3, badValue = visual)
         state.putGlxContext(
@@ -3285,7 +3294,7 @@ internal class X11Connection(
         val fbConfig = byteOrder.u32(body, 4)
         val screen = byteOrder.u32(body, 8)
         val renderType = byteOrder.u32(body, 12)
-        if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = context)
+        if (!resourceIdAvailable(context, XGlx.MajorOpcode, XGlx.CreateNewContext, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = screen)
         if (fbConfig != XGlx.RootFbConfigId) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateNewContext, badValue = fbConfig)
@@ -3317,7 +3326,7 @@ internal class X11Connection(
         if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
             return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = 0)
         }
-        if (state.hasResource(context)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = context)
+        if (!resourceIdAvailable(context, XGlx.MajorOpcode, XGlx.CreateContextAttribsARB, error = 11)) return
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = screen)
         if (fbConfig != XGlx.RootFbConfigId) {
             return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateContextAttribsARB, badValue = fbConfig)
@@ -3394,7 +3403,7 @@ internal class X11Connection(
         screen: Int,
         attributes: List<Pair<Int, Int>> = emptyList(),
     ) {
-        if (state.hasResource(glxPixmap)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = glxPixmap)
+        if (!resourceIdAvailable(glxPixmap, XGlx.MajorOpcode, minorOpcode, error = 11)) return
         if (state.drawable(pixmap) == null) return writeError(error = 9, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = pixmap)
         val backingPixmap = state.pixmap(pixmap) ?: return writeError(error = 4, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = pixmap)
         state.putGlxPixmap(
@@ -3456,7 +3465,7 @@ internal class X11Connection(
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = screen)
         if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = fbConfig)
         if (state.window(window) == null) return writeError(error = 3, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = window)
-        if (state.hasResource(glxWindow) || state.hasGlxWindowForWindow(window)) {
+        if (!state.resourceIdAvailableFor(this, glxWindow) || state.hasGlxWindowForWindow(window)) {
             return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreateWindow, badValue = glxWindow)
         }
         state.putGlxWindow(
@@ -3494,7 +3503,7 @@ internal class X11Connection(
         val attributes = glxAttributePairs(body, 16, attribCount.toInt())
         if (screen != 0) return writeError(error = 2, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = screen)
         if (fbConfig != XGlx.RootFbConfigId) return writeError(error = XGlx.BadFBConfig, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = fbConfig)
-        if (state.hasResource(pbuffer)) return writeError(error = 11, opcode = XGlx.MajorOpcode, minorOpcode = XGlx.CreatePbuffer, badValue = pbuffer)
+        if (!resourceIdAvailable(pbuffer, XGlx.MajorOpcode, XGlx.CreatePbuffer, error = 11)) return
         val width = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferWidth }?.second ?: 0
         val height = attributes.lastOrNull { (attribute, _) -> attribute == XGlx.PbufferHeight }?.second ?: 0
         state.putGlxPbuffer(
@@ -3901,7 +3910,7 @@ internal class X11Connection(
         if ((mask and WindowAttributeValueMask.inv()) != 0) {
             return writeError(error = 2, opcode = 1, badValue = mask)
         }
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 1, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 1)) return
         val parentWindow = state.window(parent) ?: return writeError(error = 3, opcode = 1, badValue = parent)
         if (width == 0) return writeError(error = 2, opcode = 1, badValue = width)
         if (height == 0) return writeError(error = 2, opcode = 1, badValue = height)
@@ -4942,7 +4951,7 @@ internal class X11Connection(
         val nameLength = byteOrder.u16(body, 4)
         if (body.size != 8 + paddedLength(nameLength)) return writeError(error = 16, opcode = 45, badValue = 0)
         val id = byteOrder.u32(body, 0)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 45, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 45)) return
         state.putFont(id)
         own(id)
     }
@@ -5101,7 +5110,7 @@ internal class X11Connection(
         if (body.size != 12) return writeError(error = 16, opcode = 53, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 53, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 53)) return
         val drawable = coreDrawable(opcode = 53, drawableId = drawableId) ?: return
         val width = byteOrder.u16(body, 8)
         val height = byteOrder.u16(body, 10)
@@ -5124,7 +5133,7 @@ internal class X11Connection(
         if (body.size < 12) return writeError(error = 16, opcode = 55, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val drawableId = byteOrder.u32(body, 4)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 55, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 55)) return
         val drawable = coreDrawable(opcode = 55, drawableId = drawableId) ?: return
         val mask = byteOrder.u32(body, 8)
         if (!validateGcValueLength(mask, body, 12, opcode = 55)) return
@@ -5819,7 +5828,7 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val windowId = byteOrder.u32(body, 4)
         val visual = byteOrder.u32(body, 8)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 78, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 78)) return
         if (state.window(windowId) == null) return writeError(error = 3, opcode = 78, badValue = windowId)
         if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = 78, badValue = visual)
         if (alloc == 1) return writeError(error = 8, opcode = 78, badValue = alloc)
@@ -5831,7 +5840,7 @@ internal class X11Connection(
         if (body.size != 8) return writeError(error = 16, opcode = 80, badValue = 0)
         val id = byteOrder.u32(body, 0)
         val source = byteOrder.u32(body, 4)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 80, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 80)) return
         if (!state.hasColormap(source)) return writeError(error = 12, opcode = 80, badValue = source)
         state.putColormap(id)
         own(id)
@@ -6171,7 +6180,7 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val source = byteOrder.u32(body, 4)
         val mask = byteOrder.u32(body, 8)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 93, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 93)) return
         val sourcePixmap = state.pixmap(source) ?: return writeError(error = 4, opcode = 93, badValue = source)
         val maskPixmap = mask.takeIf { it != 0 }?.let {
             state.pixmap(it) ?: return writeError(error = 4, opcode = 93, badValue = it)
@@ -6274,7 +6283,7 @@ internal class X11Connection(
         val id = byteOrder.u32(body, 0)
         val sourceFont = byteOrder.u32(body, 4)
         val maskFont = byteOrder.u32(body, 8)
-        if (state.hasResource(id)) return writeError(error = 14, opcode = 94, badValue = id)
+        if (!resourceIdAvailable(id, opcode = 94)) return
         if (!state.hasFont(sourceFont)) return writeError(error = 7, opcode = 94, badValue = sourceFont)
         if (maskFont != 0 && !state.hasFont(maskFont)) return writeError(error = 7, opcode = 94, badValue = maskFont)
         state.putCursor(
@@ -6366,6 +6375,7 @@ internal class X11Connection(
             XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
             XXinerama.MajorOpcode -> "XINERAMA.${XXinerama.operationName(minorOpcode)}"
             XXTest.MajorOpcode -> "XTEST.${XXTest.operationName(minorOpcode)}"
+            XXCMisc.MajorOpcode -> "XC-MISC.${XXCMisc.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6680,6 +6690,46 @@ internal class X11Connection(
         val impervious = body[0].toInt() and 0xff
         if (impervious !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.GrabControl, badValue = impervious)
         state.setServerGrabImpervious(this, impervious != 0)
+    }
+
+    private fun xcmisc(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXCMisc.GetVersion -> xcmiscGetVersion(body, majorOpcode)
+            XXCMisc.GetXIDRange -> xcmiscGetXidRange(body, majorOpcode)
+            XXCMisc.GetXIDList -> xcmiscGetXidList(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "XC-MISC.${XXCMisc.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun xcmiscGetVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXCMisc.GetVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XXCMisc.MajorVersion)
+        byteOrder.put16(reply, 10, XXCMisc.MinorVersion)
+        write(reply)
+    }
+
+    private fun xcmiscGetXidRange(body: ByteArray, majorOpcode: Int) {
+        if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXCMisc.GetXIDRange, badValue = 0)
+        val range = state.allocateClientResourceIdRange(this)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, range.startId)
+        byteOrder.put32(reply, 12, range.count)
+        write(reply)
+    }
+
+    private fun xcmiscGetXidList(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXCMisc.GetXIDList, badValue = 0)
+        val requestedCount = Integer.toUnsignedLong(byteOrder.u32(body, 0))
+        val ids = state.allocateClientResourceIds(this, requestedCount)
+        val reply = reply(extra = 0, payloadUnits = ids.size)
+        byteOrder.put32(reply, 8, ids.size)
+        var offset = 32
+        for (id in ids) {
+            byteOrder.put32(reply, offset, id)
+            offset += 4
+        }
+        write(reply)
     }
 
     private fun xtestFakeInputDelayIfValid(body: ByteArray): Long {
@@ -8700,6 +8750,12 @@ internal class X11Connection(
         state.markResourceOwner(id, this)
     }
 
+    private fun resourceIdAvailable(id: Int, opcode: Int, minorOpcode: Int = 0, error: Int = 14): Boolean {
+        if (state.resourceIdAvailableFor(this, id)) return true
+        writeError(error = error, opcode = opcode, minorOpcode = minorOpcode, badValue = id)
+        return false
+    }
+
     override fun isKilled(): Boolean = killed
 
     override fun killClient() {
@@ -8721,6 +8777,7 @@ internal class X11Connection(
             resources = ownedResources.toSet()
         }
         state.releaseServerGrab(this)
+        state.releaseClientResourceReservations(this)
         val resourceRemoval = when (mode) {
             XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
             else -> {

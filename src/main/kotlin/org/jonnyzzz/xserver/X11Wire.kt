@@ -76,8 +76,6 @@ internal enum class ByteOrder {
 
 internal object SetupReply {
     private const val ReleaseNumber = 1
-    private const val ResourceIdBase = 0x0020_0000
-    private const val ResourceIdMask = 0x001f_ffff
     private const val MotionBufferSize = 256
     private const val RootWindowId = X11Ids.RootWindow
     private const val DefaultColormapId = X11Ids.DefaultColormap
@@ -110,8 +108,8 @@ internal object SetupReply {
         byteOrder.put16(reply, 4, clientMinor)
         byteOrder.put16(reply, 6, additionalLength / 4)
         byteOrder.put32(reply, 8, ReleaseNumber)
-        byteOrder.put32(reply, 12, ResourceIdBase)
-        byteOrder.put32(reply, 16, ResourceIdMask)
+        byteOrder.put32(reply, 12, X11Ids.ResourceIdBase)
+        byteOrder.put32(reply, 16, X11Ids.ResourceIdMask)
         byteOrder.put32(reply, 20, MotionBufferSize)
         byteOrder.put16(reply, 24, vendor.size)
         byteOrder.put16(reply, 26, 0xffff)
@@ -190,6 +188,8 @@ internal object SetupReply {
 }
 
 internal object X11Ids {
+    const val ResourceIdBase = 0x0020_0000
+    const val ResourceIdMask = 0x001f_ffff
     const val RootWindow = 0x0000_0026
     const val DefaultColormap = 0x0000_0027
     const val RootVisual = 0x0000_0028

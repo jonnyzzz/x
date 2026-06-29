@@ -31,6 +31,11 @@ internal data class XCursorIdentity(
     val generation: Long,
 )
 
+internal data class XClientResourceIdRange(
+    val startId: Int,
+    val count: Int,
+)
+
 internal class X11State(
     val width: Int,
     val height: Int,
@@ -113,6 +118,8 @@ internal class X11State(
     private val serverGrabImperviousClients = mutableSetOf<XEventSink>()
     private var accessControlEnabled = false
     private val accessHosts = linkedSetOf<XAccessHost>()
+    private var nextClientResourceOffset = 0
+    private val clientResourceReservations = linkedMapOf<Int, XEventSink>()
 
     val extensions = listOf(
         XExtension(
@@ -170,6 +177,12 @@ internal class X11State(
             majorOpcode = XXTest.MajorOpcode,
             firstEvent = XXTest.FirstEvent,
             firstError = XXTest.FirstError,
+        ),
+        XExtension(
+            name = "XC-MISC",
+            majorOpcode = XXCMisc.MajorOpcode,
+            firstEvent = XXCMisc.FirstEvent,
+            firstError = XXCMisc.FirstError,
         ),
     )
 
@@ -356,6 +369,9 @@ internal class X11State(
 
     @Synchronized
     fun markResourceOwner(resourceId: Int, owner: XEventSink) {
+        if (clientResourceReservations[resourceId] == owner) {
+            clientResourceReservations.remove(resourceId)
+        }
         resourceOwners[resourceId] = owner
     }
 
@@ -5628,6 +5644,56 @@ internal class X11State(
             glxPixmaps.containsKey(id) ||
             glxWindows.containsKey(id) ||
             glxPbuffers.containsKey(id)
+
+    @Synchronized
+    fun allocateClientResourceIdRange(owner: XEventSink, maxCount: Int = XXCMisc.MaxIdsPerReply): XClientResourceIdRange {
+        val first = allocateNextClientResourceId(owner) ?: return XClientResourceIdRange(startId = 0, count = 0)
+        var count = 1
+        while (count < maxCount) {
+            val candidate = clientResourceIdForOffset(nextClientResourceOffset)
+            if (candidate != first + count || clientResourceReservations.containsKey(candidate) || hasResource(candidate)) break
+            clientResourceReservations[candidate] = owner
+            nextClientResourceOffset = (nextClientResourceOffset + 1) and X11Ids.ResourceIdMask
+            count++
+        }
+        return XClientResourceIdRange(startId = first, count = count)
+    }
+
+    @Synchronized
+    fun allocateClientResourceIds(owner: XEventSink, requestedCount: Long, maxCount: Int = XXCMisc.MaxIdsPerReply): IntArray {
+        if (requestedCount <= 0L || maxCount <= 0) return IntArray(0)
+        val ids = IntArray(minOf(requestedCount, maxCount.toLong()).toInt())
+        var count = 0
+        while (count < ids.size) {
+            ids[count] = allocateNextClientResourceId(owner) ?: break
+            count++
+        }
+        return ids.copyOf(count)
+    }
+
+    @Synchronized
+    fun resourceIdAvailableFor(owner: XEventSink, id: Int): Boolean =
+        !hasResource(id) && clientResourceReservations[id].let { it == null || it == owner }
+
+    @Synchronized
+    fun releaseClientResourceReservations(owner: XEventSink) {
+        clientResourceReservations.entries.removeIf { it.value == owner }
+    }
+
+    private fun allocateNextClientResourceId(owner: XEventSink): Int? {
+        repeat(X11Ids.ResourceIdMask + 1) {
+            val id = clientResourceIdForOffset(nextClientResourceOffset)
+            nextClientResourceOffset = (nextClientResourceOffset + 1) and X11Ids.ResourceIdMask
+            if (!clientResourceReservations.containsKey(id) && !hasResource(id)) {
+                clientResourceReservations[id] = owner
+                return id
+            }
+        }
+        return null
+    }
+
+    private fun clientResourceIdForOffset(offset: Int): Int =
+        X11Ids.ResourceIdBase or (offset and X11Ids.ResourceIdMask)
 
     @Synchronized
     fun updateGc(
