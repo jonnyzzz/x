@@ -218,6 +218,12 @@ internal class X11State(
             firstEvent = XSync.FirstEvent,
             firstError = XSync.FirstError,
         ),
+        XExtension(
+            name = "RANDR",
+            majorOpcode = XRandr.MajorOpcode,
+            firstEvent = XRandr.FirstEvent,
+            firstError = XRandr.FirstError,
+        ),
     )
 
     init {

@@ -216,6 +216,10 @@ internal class X11Connection(
                 sync(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "RANDR") {
+                randr(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -6509,6 +6513,7 @@ internal class X11Connection(
             XXMitMisc.MajorOpcode -> "MIT-SUNDRY-NONSTANDARD.${XXMitMisc.operationName(minorOpcode)}"
             XScreenSaver.MajorOpcode -> "MIT-SCREEN-SAVER.${XScreenSaver.operationName(minorOpcode)}"
             XSync.MajorOpcode -> "SYNC.${XSync.operationName(minorOpcode)}"
+            XRandr.MajorOpcode -> "RANDR.${XRandr.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6645,6 +6650,243 @@ internal class X11Connection(
         }
         write(reply)
     }
+
+    private fun randr(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XRandr.QueryVersion -> randrQueryVersion(body, majorOpcode)
+            XRandr.GetScreenInfo -> randrGetScreenInfo(body, majorOpcode)
+            XRandr.SelectInput -> randrSelectInput(body, majorOpcode)
+            XRandr.GetScreenSizeRange -> randrGetScreenSizeRange(body, majorOpcode)
+            XRandr.GetScreenResources -> randrGetScreenResources(body, majorOpcode, XRandr.GetScreenResources)
+            XRandr.GetScreenResourcesCurrent -> randrGetScreenResources(body, majorOpcode, XRandr.GetScreenResourcesCurrent)
+            XRandr.GetOutputInfo -> randrGetOutputInfo(body, majorOpcode)
+            XRandr.ListOutputProperties -> randrListOutputProperties(body, majorOpcode)
+            XRandr.GetCrtcInfo -> randrGetCrtcInfo(body, majorOpcode)
+            XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
+            XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
+            XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
+            XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
+            XRandr.GetMonitors -> randrGetMonitors(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "RANDR.${XRandr.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun randrQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.QueryVersion, badValue = 0)
+        val clientMajor = byteOrder.u32(body, 0)
+        val clientMinor = byteOrder.u32(body, 4)
+        val (major, minor) =
+            when {
+                clientMajor < XRandr.MajorVersion -> clientMajor to clientMinor
+                clientMajor > XRandr.MajorVersion -> XRandr.MajorVersion to XRandr.MinorVersion
+                else -> XRandr.MajorVersion to minOf(clientMinor, XRandr.MinorVersion)
+            }
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, major)
+        byteOrder.put32(reply, 12, minor)
+        write(reply)
+    }
+
+    private fun randrGetScreenInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetScreenInfo, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetScreenInfo, badValue = window)
+        val reply = reply(extra = XRandr.Rotate0, payloadUnits = 3)
+        byteOrder.put32(reply, 8, X11Ids.RootWindow)
+        byteOrder.put32(reply, 12, state.syncServerTime())
+        byteOrder.put32(reply, 16, 1)
+        byteOrder.put16(reply, 20, 1)
+        byteOrder.put16(reply, 22, 0)
+        byteOrder.put16(reply, 24, XRandr.Rotate0)
+        byteOrder.put16(reply, 26, XRandr.RefreshRate)
+        byteOrder.put16(reply, 28, 2)
+        byteOrder.put16(reply, 32, state.width)
+        byteOrder.put16(reply, 34, state.height)
+        byteOrder.put16(reply, 36, state.widthMillimeters)
+        byteOrder.put16(reply, 38, state.heightMillimeters)
+        byteOrder.put16(reply, 40, 1)
+        byteOrder.put16(reply, 42, XRandr.RefreshRate)
+        write(reply)
+    }
+
+    private fun randrSelectInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SelectInput, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val enable = byteOrder.u16(body, 4)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.SelectInput, badValue = window)
+        if ((enable and XRandr.EventMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SelectInput, badValue = enable)
+        }
+    }
+
+    private fun randrGetScreenSizeRange(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetScreenSizeRange, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetScreenSizeRange, badValue = window)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, state.width)
+        byteOrder.put16(reply, 10, state.height)
+        byteOrder.put16(reply, 12, state.width)
+        byteOrder.put16(reply, 14, state.height)
+        write(reply)
+    }
+
+    private fun randrGetScreenResources(body: ByteArray, majorOpcode: Int, minorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = minorOpcode, badValue = window)
+        val modeName = randrModeName()
+        val payloadSize = 4 + 4 + 32 + paddedLength(modeName.size)
+        val reply = reply(extra = 0, payloadUnits = payloadSize / 4)
+        byteOrder.put32(reply, 8, state.syncServerTime())
+        byteOrder.put32(reply, 12, 1)
+        byteOrder.put16(reply, 16, 1)
+        byteOrder.put16(reply, 18, 1)
+        byteOrder.put16(reply, 20, 1)
+        byteOrder.put16(reply, 22, modeName.size)
+        byteOrder.put32(reply, 32, XRandr.CrtcId)
+        byteOrder.put32(reply, 36, XRandr.OutputId)
+        putRandrModeInfo(reply, 40, modeName.size)
+        modeName.copyInto(reply, 72)
+        write(reply)
+    }
+
+    private fun randrGetOutputInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetOutputInfo, badValue = 0)
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.GetOutputInfo, badValue = output)
+        }
+        val outputName = XRandr.OutputName.encodeToByteArray()
+        val payloadSize = 4 + 4 + 0 + paddedLength(outputName.size)
+        val reply = reply(extra = XRandr.Success, payloadUnits = (4 + payloadSize) / 4)
+        byteOrder.put32(reply, 8, state.syncServerTime())
+        byteOrder.put32(reply, 12, XRandr.CrtcId)
+        byteOrder.put32(reply, 16, state.widthMillimeters)
+        byteOrder.put32(reply, 20, state.heightMillimeters)
+        reply[24] = XRandr.Connected.toByte()
+        reply[25] = XRandr.SubPixelUnknown.toByte()
+        byteOrder.put16(reply, 26, 1)
+        byteOrder.put16(reply, 28, 1)
+        byteOrder.put16(reply, 30, 1)
+        byteOrder.put16(reply, 32, 0)
+        byteOrder.put16(reply, 34, outputName.size)
+        byteOrder.put32(reply, 36, XRandr.CrtcId)
+        byteOrder.put32(reply, 40, XRandr.ModeId)
+        outputName.copyInto(reply, 44)
+        write(reply)
+    }
+
+    private fun randrListOutputProperties(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ListOutputProperties, badValue = 0)
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.ListOutputProperties, badValue = output)
+        }
+        write(reply(extra = 0, payloadUnits = 0))
+    }
+
+    private fun randrGetCrtcInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcInfo, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcInfo, badValue = crtc)
+        }
+        val reply = reply(extra = XRandr.Success, payloadUnits = 2)
+        byteOrder.put32(reply, 8, state.syncServerTime())
+        byteOrder.put16(reply, 12, 0)
+        byteOrder.put16(reply, 14, 0)
+        byteOrder.put16(reply, 16, state.width)
+        byteOrder.put16(reply, 18, state.height)
+        byteOrder.put32(reply, 20, XRandr.ModeId)
+        byteOrder.put16(reply, 24, XRandr.Rotate0)
+        byteOrder.put16(reply, 26, XRandr.Rotate0)
+        byteOrder.put16(reply, 28, 1)
+        byteOrder.put16(reply, 30, 1)
+        byteOrder.put32(reply, 32, XRandr.OutputId)
+        byteOrder.put32(reply, 36, XRandr.OutputId)
+        write(reply)
+    }
+
+    private fun randrGetCrtcGammaSize(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGammaSize, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGammaSize, badValue = crtc)
+        }
+        write(reply(extra = XRandr.Success, payloadUnits = 0))
+    }
+
+    private fun randrGetCrtcGamma(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGamma, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcGamma, badValue = crtc)
+        }
+        write(reply(extra = XRandr.Success, payloadUnits = 0))
+    }
+
+    private fun randrGetOutputPrimary(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetOutputPrimary, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetOutputPrimary, badValue = window)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, XRandr.OutputId)
+        write(reply)
+    }
+
+    private fun randrGetProviders(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetProviders, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetProviders, badValue = window)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put32(reply, 8, state.syncServerTime())
+        byteOrder.put16(reply, 12, 0)
+        write(reply)
+    }
+
+    private fun randrGetMonitors(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetMonitors, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val getActive = body[4].toInt() and 0xff
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetMonitors, badValue = window)
+        if (getActive !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetMonitors, badValue = getActive)
+        val reply = reply(extra = XRandr.Success, payloadUnits = 7)
+        byteOrder.put32(reply, 8, state.syncServerTime())
+        byteOrder.put32(reply, 12, 1)
+        byteOrder.put32(reply, 16, 1)
+        byteOrder.put32(reply, 32, 0)
+        reply[36] = 1
+        reply[37] = 1
+        byteOrder.put16(reply, 38, 1)
+        byteOrder.put16(reply, 40, 0)
+        byteOrder.put16(reply, 42, 0)
+        byteOrder.put16(reply, 44, state.width)
+        byteOrder.put16(reply, 46, state.height)
+        byteOrder.put32(reply, 48, state.widthMillimeters)
+        byteOrder.put32(reply, 52, state.heightMillimeters)
+        byteOrder.put32(reply, 56, XRandr.OutputId)
+        write(reply)
+    }
+
+    private fun putRandrModeInfo(bytes: ByteArray, offset: Int, nameLength: Int) {
+        byteOrder.put32(bytes, offset, XRandr.ModeId)
+        byteOrder.put16(bytes, offset + 4, state.width)
+        byteOrder.put16(bytes, offset + 6, state.height)
+        byteOrder.put32(bytes, offset + 8, state.width * state.height * XRandr.RefreshRate)
+        byteOrder.put16(bytes, offset + 12, state.width)
+        byteOrder.put16(bytes, offset + 14, state.width)
+        byteOrder.put16(bytes, offset + 16, state.width)
+        byteOrder.put16(bytes, offset + 18, 0)
+        byteOrder.put16(bytes, offset + 20, state.height)
+        byteOrder.put16(bytes, offset + 22, state.height)
+        byteOrder.put16(bytes, offset + 24, state.height)
+        byteOrder.put16(bytes, offset + 26, nameLength)
+        byteOrder.put32(bytes, offset + 28, 0)
+    }
+
+    private fun randrModeName(): ByteArray =
+        "${state.width}x${state.height}".encodeToByteArray()
 
     private fun xinerama(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
         when (minorOpcode) {
