@@ -70,6 +70,7 @@ internal class X11State(
     private var pointerY: Int = 0
     private var pointerState: Int = 0
     private var keyboardModifierState: Int = 0
+    private val pressedKeycodes = mutableSetOf<Int>()
     private val pressedLogicalButtons = mutableSetOf<Int>()
     private var inputTime: Int = 1
     private var cursorSerial: Int = 1
@@ -800,8 +801,29 @@ internal class X11State(
     fun modifierMapping(): List<Int> = modifierMapping.toList()
 
     @Synchronized
-    fun setModifierMapping(mapping: List<Int>) {
+    fun setModifierMappingIfIdle(mapping: List<Int>): Boolean {
+        val currentKeycodesPerModifier = modifierMapping.size / 8
+        val updatedKeycodesPerModifier = mapping.size / 8
+        val alteredDownKey = (0 until 8).any { modifier ->
+            // Modifier membership ignores zero slots and order; the stored layout still follows the request on success.
+            val current = modifierKeycodes(modifierMapping, currentKeycodesPerModifier, modifier)
+            val updated = modifierKeycodes(mapping, updatedKeycodesPerModifier, modifier)
+            current != updated && (current + updated).any { it in pressedKeycodes }
+        }
+        if (alteredDownKey) return false
         modifierMapping = mapping.toList()
+        return true
+    }
+
+    private fun modifierKeycodes(mapping: List<Int>, keycodesPerModifier: Int, modifier: Int): Set<Int> {
+        if (keycodesPerModifier == 0) return emptySet()
+        val start = modifier * keycodesPerModifier
+        return mapping
+            .asSequence()
+            .drop(start)
+            .take(keycodesPerModifier)
+            .filter { it != 0 }
+            .toSet()
     }
 
     @Synchronized
@@ -1653,6 +1675,11 @@ internal class X11State(
             val modifierState = modifiers and KeyModifierMask
             val state = pointerState or modifierState
             keyboardModifierState = modifierState
+            if (pressed) {
+                pressedKeycodes += keycode
+            } else {
+                pressedKeycodes -= keycode
+            }
             val time = inputTime++
             val normalSelection = firstKeyEventSelection(selectionPath, mask)
 
@@ -2250,6 +2277,10 @@ internal class X11State(
                 mask = pointerMask(),
                 logicalButtonsDown = pressedLogicalButtons.sorted(),
                 windowId = windowAt(pointerX, pointerY)?.id ?: 0,
+            ),
+            keyboardState = XKeyboardStateSnapshot(
+                modifierMask = keyboardModifierState,
+                keycodesDown = pressedKeycodes.sorted(),
             ),
             fontPath = fontPath.toList(),
             keyboardMapping = keyboardMapping.snapshot(),
@@ -7124,6 +7155,7 @@ internal data class XScreenSnapshot(
     val heightMillimeters: Int,
     val focusWindowId: Int,
     val pointer: XPointerStateSnapshot,
+    val keyboardState: XKeyboardStateSnapshot,
     val fontPath: List<String>,
     val keyboardMapping: XKeyboardMappingSnapshot,
     val keyboardControl: XKeyboardControlSnapshot,
@@ -7161,6 +7193,11 @@ internal data class XKeycodeMappingSnapshot(
 ) {
     val keysymHexes: List<String> get() = keysyms.map { "0x${it.toUInt().toString(16)}" }
 }
+
+internal data class XKeyboardStateSnapshot(
+    val modifierMask: Int,
+    val keycodesDown: List<Int>,
+)
 
 internal data class XKeyboardControlSnapshot(
     val keyClickPercent: Int,

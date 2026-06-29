@@ -11965,6 +11965,99 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SetModifierMapping reports busy while affected modifier keys are down`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val initial = intArrayOf(50, 66, 37, 64, 77, 0, 133, 92)
+                val changed = intArrayOf(51, 66, 37, 64, 77, 0, 133, 92)
+                val expanded = intArrayOf(50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+                out.write(setModifierMappingRequest(1, *initial))
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 1, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 1, request = 0)
+
+                server.input.keyDown(51)
+                assertContains(httpGet(server.localPort, "/state.json"), """"keycodesDown":[51]""")
+                out.write(setModifierMappingRequest(1, *changed))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 2, status = 1)
+                assertModifierMapping(readReply(input), sequence = 3, keycodesPerModifier = 1, *initial)
+
+                server.input.keyUp(51)
+                server.input.keyDown(50)
+                assertContains(httpGet(server.localPort, "/state.json"), """"keycodesDown":[50]""")
+                out.write(setModifierMappingRequest(2, *expanded))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 4, status = 1)
+                assertModifierMapping(readReply(input), sequence = 5, keycodesPerModifier = 1, *initial)
+
+                out.write(setModifierMappingRequest(1, *changed))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 6, status = 1)
+                assertModifierMapping(readReply(input), sequence = 7, keycodesPerModifier = 1, *initial)
+
+                server.input.keyUp(50)
+                assertContains(httpGet(server.localPort, "/state.json"), """"keycodesDown":[]""")
+                out.write(setModifierMappingRequest(1, *changed))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 8, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 8, request = 0)
+                assertModifierMapping(readReply(input), sequence = 9, keycodesPerModifier = 1, *changed)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SetModifierMapping allows unchanged and unaffected modifiers while keys are down`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val initial = intArrayOf(50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+                val reorderedShift = intArrayOf(62, 50, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+                val changedControlOnly = intArrayOf(62, 50, 66, 0, 38, 105, 64, 108, 77, 0, 0, 0, 133, 134, 92, 0)
+                out.write(setModifierMappingRequest(2, *initial))
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 1, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 1, request = 0)
+
+                server.input.keyDown(50)
+                out.write(setModifierMappingRequest(2, *reorderedShift))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 2, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 2, request = 0)
+                assertModifierMapping(readReply(input), sequence = 3, keycodesPerModifier = 2, *reorderedShift)
+
+                out.write(setModifierMappingRequest(2, *changedControlOnly))
+                out.write(getModifierMappingRequest())
+                out.flush()
+                assertMappingStatus(readReply(input), sequence = 4, status = 0)
+                assertMappingNotify(input.readExactly(32), sequence = 4, request = 0)
+                assertModifierMapping(readReply(input), sequence = 5, keycodesPerModifier = 2, *changedControlOnly)
+
+                server.input.keyUp(50)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangePointerControl updates selected fields and validates booleans and values`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

@@ -6801,12 +6801,14 @@ internal class X11Connection(
         val keycodes = body.take(keycodeCount).map { it.toInt() and 0xff }
         val invalidKeycode = keycodes.firstOrNull { it != 0 && it !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode }
         if (invalidKeycode != null) return writeError(error = 2, opcode = 118, badValue = invalidKeycode)
-        state.setModifierMapping(keycodes)
-        val reply = reply(extra = 0, payloadUnits = 0)
+        val success = state.setModifierMappingIfIdle(keycodes)
+        val reply = reply(extra = if (success) 0 else 1, payloadUnits = 0)
         write(reply)
-        val event = XMappingNotifyEvent(request = 0)
-        for (sink in state.mappingNotifySinks()) {
-            runCatching { sink.sendMappingNotifyEvent(event) }
+        if (success) {
+            val event = XMappingNotifyEvent(request = 0)
+            for (sink in state.mappingNotifySinks()) {
+                runCatching { sink.sendMappingNotifyEvent(event) }
+            }
         }
     }
 
