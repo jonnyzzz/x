@@ -52,4 +52,4 @@ Current drawing behavior accepts many core drawing and text opcodes as no-ops so
 
 - JBR/AWT/Swing smoke in Docker with required X client libraries and fonts.
 - IntelliJ startup smoke once extension probing and basic rendering are sufficient.
-- Add extensions only when the matrix proves they are needed.
+- Add or deepen extensions only when IntelliJ IDEA, VSCode, or the existing smoke matrix proves they are needed. See `workflow/extension-scope.md`.

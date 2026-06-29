@@ -61,3 +61,7 @@ Compare:
 - protocol trace,
 - hierarchy snapshot,
 - deterministic pixel checks.
+
+## Extension Gate
+
+Use `workflow/extension-scope.md` when choosing extension work. A new extension, or a new request inside an advertised extension, needs trace evidence from IntelliJ IDEA, VSCode, or a matrix client that supports those targets. Keep broad Xvfb parity out of scope until the essential target clients run and render correctly.
