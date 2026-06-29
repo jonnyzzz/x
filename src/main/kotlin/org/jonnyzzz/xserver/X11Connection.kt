@@ -6837,6 +6837,8 @@ internal class X11Connection(
             XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
             XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
             XRandr.SetCrtcGamma -> randrSetCrtcGamma(body, majorOpcode)
+            XRandr.SetCrtcTransform -> randrSetCrtcTransform(body, majorOpcode)
+            XRandr.GetCrtcTransform -> randrGetCrtcTransform(body, majorOpcode)
             XRandr.SetOutputPrimary -> randrSetOutputPrimary(body, majorOpcode)
             XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
             XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
@@ -7209,6 +7211,7 @@ internal class X11Connection(
         if (outputs.size != 1 || x != 0 || y != 0) {
             return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = 0)
         }
+        state.applyRandrPendingCrtcTransform()
         writeRandrSetCrtcConfigReply(XRandr.Success, timestamp = state.markRandrCrtcConfigSet())
     }
 
@@ -7251,6 +7254,67 @@ internal class X11Connection(
             return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = crtc)
         }
         if (size != XRandr.GammaRampSize) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcGamma, badValue = size)
+    }
+
+    private fun randrSetCrtcTransform(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 44) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcTransform, badValue = 0)
+        val filterLength = byteOrder.u16(body, 40)
+        val filterOffset = 44
+        val valuesOffset = filterOffset + paddedLength(filterLength)
+        if (valuesOffset > body.size || (body.size - valuesOffset) % 4 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcTransform, badValue = 0)
+        }
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcTransform, badValue = crtc)
+        }
+        val transform = (0 until 9).map { index -> byteOrder.u32(body, 4 + index * 4) }
+        if (transform != IdentityTransform) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcTransform, badValue = 0)
+        }
+        val filter = body.copyOfRange(filterOffset, filterOffset + filterLength)
+        val values = (valuesOffset until body.size step 4).map { offset -> byteOrder.u32(body, offset) }
+        state.setRandrPendingCrtcTransform(XRandrCrtcTransform(transform = transform, filter = filter, values = values))
+    }
+
+    private fun randrGetCrtcTransform(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcTransform, badValue = 0)
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.GetCrtcTransform, badValue = crtc)
+        }
+        val (pending, current) = state.randrCrtcTransforms()
+        val payloadSize = 64 +
+            paddedLength(pending.filter.size) +
+            pending.values.size * 4 +
+            paddedLength(current.filter.size) +
+            current.values.size * 4
+        val reply = reply(extra = XRandr.Success, payloadUnits = payloadSize / 4)
+        putRandrCrtcTransform(reply, 8, pending.transform)
+        reply[44] = 1
+        putRandrCrtcTransform(reply, 48, current.transform)
+        byteOrder.put16(reply, 88, pending.filter.size)
+        byteOrder.put16(reply, 90, pending.values.size)
+        byteOrder.put16(reply, 92, current.filter.size)
+        byteOrder.put16(reply, 94, current.values.size)
+        var offset = 96
+        offset = putRandrCrtcTransformData(reply, offset, pending)
+        putRandrCrtcTransformData(reply, offset, current)
+        write(reply)
+    }
+
+    private fun putRandrCrtcTransform(reply: ByteArray, offset: Int, transform: List<Int>) {
+        transform.forEachIndexed { index, value -> byteOrder.put32(reply, offset + index * 4, value) }
+    }
+
+    private fun putRandrCrtcTransformData(reply: ByteArray, offset: Int, transform: XRandrCrtcTransform): Int {
+        transform.filter.copyInto(reply, offset)
+        var next = offset + paddedLength(transform.filter.size)
+        transform.values.forEach { value ->
+            byteOrder.put32(reply, next, value)
+            next += 4
+        }
+        return next
     }
 
     private fun randrGetOutputPrimary(body: ByteArray, majorOpcode: Int) {

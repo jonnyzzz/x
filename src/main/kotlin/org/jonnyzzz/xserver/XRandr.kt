@@ -32,6 +32,8 @@ internal object XRandr {
     const val GetCrtcGamma = 23
     const val SetCrtcGamma = 24
     const val GetScreenResourcesCurrent = 25
+    const val SetCrtcTransform = 26
+    const val GetCrtcTransform = 27
     const val SetOutputPrimary = 30
     const val GetOutputPrimary = 31
     const val GetProviders = 32
@@ -98,6 +100,8 @@ internal object XRandr {
             GetCrtcGamma -> "GetCrtcGamma"
             SetCrtcGamma -> "SetCrtcGamma"
             GetScreenResourcesCurrent -> "GetScreenResourcesCurrent"
+            SetCrtcTransform -> "SetCrtcTransform"
+            GetCrtcTransform -> "GetCrtcTransform"
             SetOutputPrimary -> "SetOutputPrimary"
             GetOutputPrimary -> "GetOutputPrimary"
             GetProviders -> "GetProviders"

@@ -123,6 +123,8 @@ internal class X11State(
     private val randrOutputProperties = linkedMapOf<Int, XRandrOutputProperty>()
     private var randrPrimaryOutput = 0
     private var randrLastCrtcConfigTime = XRandr.ConfigTimestamp
+    private var randrPendingCrtcTransform = XRandrCrtcTransform.Identity
+    private var randrCurrentCrtcTransform = XRandrCrtcTransform.Identity
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -6508,6 +6510,20 @@ internal class X11State(
     }
 
     @Synchronized
+    fun setRandrPendingCrtcTransform(transform: XRandrCrtcTransform) {
+        randrPendingCrtcTransform = transform.snapshot()
+    }
+
+    @Synchronized
+    fun applyRandrPendingCrtcTransform() {
+        randrCurrentCrtcTransform = randrPendingCrtcTransform.snapshot()
+    }
+
+    @Synchronized
+    fun randrCrtcTransforms(): Pair<XRandrCrtcTransform, XRandrCrtcTransform> =
+        randrPendingCrtcTransform.snapshot() to randrCurrentCrtcTransform.snapshot()
+
+    @Synchronized
     fun setRandrScreenSize(widthMillimeters: Int, heightMillimeters: Int): XRandrScreenSizeChange {
         if (this.widthMillimeters == widthMillimeters && this.heightMillimeters == heightMillimeters) {
             return XRandrScreenSizeChange.Empty
@@ -7871,6 +7887,27 @@ internal val IdentityTransform: List<Int> = listOf(
     0,
     0x0001_0000,
 )
+
+internal class XRandrCrtcTransform(
+    val transform: List<Int>,
+    val filter: ByteArray,
+    val values: List<Int>,
+) {
+    fun snapshot(): XRandrCrtcTransform =
+        XRandrCrtcTransform(
+            transform = transform.toList(),
+            filter = filter.copyOf(),
+            values = values.toList(),
+        )
+
+    companion object {
+        val Identity = XRandrCrtcTransform(
+            transform = IdentityTransform,
+            filter = ByteArray(0),
+            values = emptyList(),
+        )
+    }
+}
 
 internal data class XGlyphSet(
     val id: Int,

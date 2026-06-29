@@ -331,6 +331,55 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR CRTC transform reports identity metadata and applies pending transform on config set`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XRandr.MajorOpcode, XRandr.GetCrtcTransform, ByteArray(0)))
+                out.write(u32Request(XRandr.GetCrtcTransform, 0x0102_0304))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetCrtcTransform, ByteArray(40)))
+                out.write(setCrtcTransformRequest(crtc = 0x0102_0304))
+                out.write(setCrtcTransformRequest(transform = IdentityTransform.toMutableList().also { it[0] = 0x0002_0000 }))
+                out.write(u32Request(XRandr.GetCrtcTransform, XRandr.CrtcId))
+                out.write(setCrtcTransformRequest(filter = "nearest", values = intArrayOf(0x0001_0000)))
+                out.write(u32Request(XRandr.GetCrtcTransform, XRandr.CrtcId))
+                out.write(setCrtcConfigRequest())
+                out.write(u32Request(XRandr.GetCrtcTransform, XRandr.CrtcId))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.GetCrtcTransform)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 2, minorOpcode = XRandr.GetCrtcTransform)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 3, minorOpcode = XRandr.SetCrtcTransform)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 4, minorOpcode = XRandr.SetCrtcTransform)
+                assertError(socket.getInputStream(), error = 8, badValue = 0, sequence = 5, minorOpcode = XRandr.SetCrtcTransform)
+
+                assertCrtcTransformReply(readReply(socket.getInputStream()), sequence = 6)
+                assertCrtcTransformReply(readReply(socket.getInputStream()), sequence = 8, pendingFilter = "nearest", pendingValues = intArrayOf(0x0001_0000))
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 9, status = XRandr.Success)
+                assertCrtcTransformReply(
+                    readReply(socket.getInputStream()),
+                    sequence = 10,
+                    pendingFilter = "nearest",
+                    pendingValues = intArrayOf(0x0001_0000),
+                    currentFilter = "nearest",
+                    currentValues = intArrayOf(0x0001_0000),
+                )
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(11, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR output properties store values and report property metadata`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -965,6 +1014,23 @@ class XRandrProtocolTest {
         return request(XRandr.MajorOpcode, XRandr.SetCrtcConfig, body)
     }
 
+    private fun setCrtcTransformRequest(
+        crtc: Int = XRandr.CrtcId,
+        transform: List<Int> = IdentityTransform,
+        filter: String = "",
+        values: IntArray = intArrayOf(),
+    ): ByteArray {
+        val filterBytes = filter.encodeToByteArray()
+        val body = ByteArray(44 + ((filterBytes.size + 3) and -4) + values.size * 4)
+        put32le(body, 0, crtc)
+        transform.forEachIndexed { index, value -> put32le(body, 4 + index * 4, value) }
+        put16le(body, 40, filterBytes.size)
+        filterBytes.copyInto(body, 44)
+        val valuesOffset = 44 + ((filterBytes.size + 3) and -4)
+        values.forEachIndexed { index, value -> put32le(body, valuesOffset + index * 4, value) }
+        return request(XRandr.MajorOpcode, XRandr.SetCrtcTransform, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -1221,6 +1287,51 @@ class XRandrProtocolTest {
         assertEquals(status, bytes[1].toInt() and 0xff)
         assertEquals(sequence, u16le(bytes, 2))
         assertEquals(0, u32le(bytes, 4))
+    }
+
+    private fun assertCrtcTransformReply(
+        bytes: ByteArray,
+        sequence: Int,
+        pendingFilter: String = "",
+        pendingValues: IntArray = intArrayOf(),
+        currentFilter: String = "",
+        currentValues: IntArray = intArrayOf(),
+    ) {
+        val pendingFilterBytes = pendingFilter.encodeToByteArray()
+        val currentFilterBytes = currentFilter.encodeToByteArray()
+        val expectedSize = 96 +
+            ((pendingFilterBytes.size + 3) and -4) +
+            pendingValues.size * 4 +
+            ((currentFilterBytes.size + 3) and -4) +
+            currentValues.size * 4
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.Success, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals((expectedSize - 32) / 4, u32le(bytes, 4))
+        assertTransform(bytes, 8, IdentityTransform)
+        assertEquals(1, bytes[44].toInt() and 0xff)
+        assertTransform(bytes, 48, IdentityTransform)
+        assertEquals(pendingFilterBytes.size, u16le(bytes, 88))
+        assertEquals(pendingValues.size, u16le(bytes, 90))
+        assertEquals(currentFilterBytes.size, u16le(bytes, 92))
+        assertEquals(currentValues.size, u16le(bytes, 94))
+        var offset = 96
+        assertEquals(pendingFilterBytes.toList(), bytes.copyOfRange(offset, offset + pendingFilterBytes.size).toList())
+        offset += (pendingFilterBytes.size + 3) and -4
+        pendingValues.forEach { value ->
+            assertEquals(value, u32le(bytes, offset))
+            offset += 4
+        }
+        assertEquals(currentFilterBytes.toList(), bytes.copyOfRange(offset, offset + currentFilterBytes.size).toList())
+        offset += (currentFilterBytes.size + 3) and -4
+        currentValues.forEach { value ->
+            assertEquals(value, u32le(bytes, offset))
+            offset += 4
+        }
+    }
+
+    private fun assertTransform(bytes: ByteArray, offset: Int, transform: List<Int>) {
+        transform.forEachIndexed { index, value -> assertEquals(value, u32le(bytes, offset + index * 4)) }
     }
 
     private fun assertMonitorReply(reply: ByteArray, sequence: Int, primary: Int) {
