@@ -958,9 +958,9 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 16, opcode = 99, badValue = 0, sequence = 1)
 
                 val reply = readReply(socket.getInputStream())
-                assertEquals(11, reply[1].toInt() and 0xff)
+                assertEquals(12, reply[1].toInt() and 0xff)
                 assertEquals(2, u16le(reply, 2))
-                assertEquals(26, u32le(reply, 4))
+                assertEquals(30, u32le(reply, 4))
                 var offset = 32
                 val names = mutableListOf<String>()
                 repeat(reply[1].toInt() and 0xff) {
@@ -968,7 +968,7 @@ class XCoreDrawingProtocolTest {
                     names += reply.copyOfRange(offset, offset + length).decodeToString()
                     offset += length
                 }
-                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD"), names)
+                assertEquals(listOf("GLX", "BIG-REQUESTS", "RENDER", "MIT-SHM", "XFIXES", "SHAPE", "XKEYBOARD", "XINERAMA", "XTEST", "XC-MISC", "MIT-SUNDRY-NONSTANDARD", "MIT-SCREEN-SAVER"), names)
             }
             server.close()
             serverThread.join(1_000)

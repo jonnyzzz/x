@@ -61,6 +61,7 @@ internal class X11State(
     private val xfixesSelectionInputs = linkedMapOf<XEventSink, LinkedHashMap<XXFixesSelectionInputKey, Int>>()
     private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val shapeInputs = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
+    private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
     private val eventSinks = linkedMapOf<XEventSink, MutableMap<Int, Int>>()
@@ -101,6 +102,8 @@ internal class X11State(
     private val unsupportedRequests = mutableListOf<XUnsupportedRequest>()
     private var nextUnsupportedRequestId: Int = 1
     private var screenSaver = XScreenSaverSettings()
+    private var screenSaverAttributes: XScreenSaverAttributes? = null
+    private val screenSaverSuspensions = linkedMapOf<XEventSink, Int>()
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
@@ -190,6 +193,13 @@ internal class X11State(
             firstEvent = XXMitMisc.FirstEvent,
             firstError = XXMitMisc.FirstError,
             aliases = setOf("MIT-MISC"),
+        ),
+        XExtension(
+            name = "MIT-SCREEN-SAVER",
+            majorOpcode = XScreenSaver.MajorOpcode,
+            firstEvent = XScreenSaver.FirstEvent,
+            firstError = XScreenSaver.FirstError,
+            aliases = setOf("SCREEN-SAVER"),
         ),
     )
 
@@ -1599,6 +1609,9 @@ internal class X11State(
         xfixesSelectionInputs.remove(sink)
         xfixesCursorInputs.remove(sink)
         shapeInputs.remove(sink)
+        screenSaverInputs.remove(sink)
+        if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
+        screenSaverSuspensions.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
         val xfixesCursorNotifyDispatches = releaseInputGrabs(sink)
@@ -2811,6 +2824,49 @@ internal class X11State(
     @Synchronized
     fun shapeInputSelected(sink: XEventSink, windowId: Int): Boolean =
         shapeInputs[sink]?.contains(windowId) == true
+
+    @Synchronized
+    fun selectScreenSaverInput(sink: XEventSink, eventMask: Int) {
+        if (eventMask == 0) {
+            screenSaverInputs.remove(sink)
+        } else {
+            screenSaverInputs[sink] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun screenSaverEventMask(sink: XEventSink): Int = screenSaverInputs[sink] ?: 0
+
+    @Synchronized
+    fun setScreenSaverAttributes(attributes: XScreenSaverAttributes): Boolean {
+        val currentOwner = screenSaverAttributes?.owner
+        if (currentOwner != null && currentOwner != attributes.owner) return false
+        screenSaverAttributes = attributes
+        return true
+    }
+
+    @Synchronized
+    fun unsetScreenSaverAttributes(sink: XEventSink) {
+        if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
+    }
+
+    @Synchronized
+    fun screenSaverAttributes(): XScreenSaverAttributes? = screenSaverAttributes
+
+    @Synchronized
+    fun suspendScreenSaver(sink: XEventSink, suspend: Boolean) {
+        val current = screenSaverSuspensions[sink] ?: 0
+        if (suspend) {
+            screenSaverSuspensions[sink] = current + 1
+        } else if (current <= 1) {
+            screenSaverSuspensions.remove(sink)
+        } else {
+            screenSaverSuspensions[sink] = current - 1
+        }
+    }
+
+    @Synchronized
+    fun screenSaverSuspensionCount(): Int = screenSaverSuspensions.values.sum()
 
     private fun defaultWindowShapeRegion(window: XWindow, kind: Int): List<XRectangleCommand> =
         when (kind) {
@@ -6690,6 +6746,21 @@ internal data class XScreenSaverSettings(
         const val DefaultAllowExposures = 0
     }
 }
+
+internal data class XScreenSaverAttributes(
+    val owner: XEventSink,
+    val drawableId: Int,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val borderWidth: Int,
+    val windowClass: Int,
+    val depth: Int,
+    val visual: Int,
+    val valueMask: Int,
+    val valueList: List<Int>,
+)
 
 internal data class XPointerControlSettings(
     val accelerationNumerator: Int = DefaultAccelerationNumerator,

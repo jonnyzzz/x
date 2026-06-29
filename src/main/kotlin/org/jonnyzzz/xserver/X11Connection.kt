@@ -180,6 +180,10 @@ internal class X11Connection(
                 mitmisc(minorOpcode, body, opcode)
                 return
             }
+            if (extension.name == "MIT-SCREEN-SAVER") {
+                screenSaver(minorOpcode, body, opcode)
+                return
+            }
         }
         when (opcode) {
             1 -> createWindow(minorOpcode, body)
@@ -6381,6 +6385,7 @@ internal class X11Connection(
             XXTest.MajorOpcode -> "XTEST.${XXTest.operationName(minorOpcode)}"
             XXCMisc.MajorOpcode -> "XC-MISC.${XXCMisc.operationName(minorOpcode)}"
             XXMitMisc.MajorOpcode -> "MIT-SUNDRY-NONSTANDARD.${XXMitMisc.operationName(minorOpcode)}"
+            XScreenSaver.MajorOpcode -> "MIT-SCREEN-SAVER.${XScreenSaver.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6754,6 +6759,232 @@ internal class X11Connection(
     private fun mitmiscGetBugMode(body: ByteArray, majorOpcode: Int) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXMitMisc.GetBugMode, badValue = 0)
         write(reply(extra = 0, payloadUnits = 0))
+    }
+
+    private fun screenSaver(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XScreenSaver.QueryVersion -> screenSaverQueryVersion(body, majorOpcode)
+            XScreenSaver.QueryInfo -> screenSaverQueryInfo(body, majorOpcode)
+            XScreenSaver.SelectInput -> screenSaverSelectInput(body, majorOpcode)
+            XScreenSaver.SetAttributes -> screenSaverSetAttributes(body, majorOpcode)
+            XScreenSaver.UnsetAttributes -> screenSaverUnsetAttributes(body, majorOpcode)
+            XScreenSaver.Suspend -> screenSaverSuspend(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "MIT-SCREEN-SAVER.${XScreenSaver.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun screenSaverQueryVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.QueryVersion, badValue = 0)
+        val reply = reply(extra = 0, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XScreenSaver.MajorVersion)
+        byteOrder.put16(reply, 10, XScreenSaver.MinorVersion)
+        write(reply)
+    }
+
+    private fun screenSaverQueryInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.QueryInfo, badValue = 0)
+        val drawable = byteOrder.u32(body, 0)
+        if (state.drawable(drawable) == null) {
+            return writeError(error = 9, opcode = majorOpcode, minorOpcode = XScreenSaver.QueryInfo, badValue = drawable)
+        }
+        val settings = state.screenSaver()
+        val reply = reply(
+            extra = if (settings.timeout <= 0) XScreenSaver.StateDisabled else XScreenSaver.StateOff,
+            payloadUnits = 0,
+        )
+        byteOrder.put32(reply, 8, XScreenSaver.SaverWindow)
+        byteOrder.put32(reply, 12, if (settings.timeout <= 0) 0 else settings.timeout * 1000)
+        byteOrder.put32(reply, 16, 0)
+        byteOrder.put32(reply, 20, state.screenSaverEventMask(this))
+        reply[24] = if (state.screenSaverAttributes() == null) {
+            XScreenSaver.KindInternal.toByte()
+        } else {
+            XScreenSaver.KindExternal.toByte()
+        }
+        write(reply)
+    }
+
+    private fun screenSaverSelectInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.SelectInput, badValue = 0)
+        val drawable = byteOrder.u32(body, 0)
+        val eventMask = byteOrder.u32(body, 4)
+        if (state.drawable(drawable) == null) {
+            return writeError(error = 9, opcode = majorOpcode, minorOpcode = XScreenSaver.SelectInput, badValue = drawable)
+        }
+        if ((eventMask and XScreenSaver.EventMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SelectInput, badValue = eventMask)
+        }
+        state.selectScreenSaverInput(this, eventMask)
+    }
+
+    private fun screenSaverSetAttributes(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = 0)
+        val drawableId = byteOrder.u32(body, 0)
+        val width = byteOrder.u16(body, 8)
+        val height = byteOrder.u16(body, 10)
+        val borderWidth = byteOrder.u16(body, 12)
+        val requestedClass = body[14].toInt() and 0xff
+        val requestedDepth = body[15].toInt() and 0xff
+        val requestedVisual = byteOrder.u32(body, 16)
+        val valueMask = byteOrder.u32(body, 20)
+        val expectedSize = 24 + valueMask.countOneBits() * 4
+        if (body.size != expectedSize) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = 0)
+        if ((valueMask and WindowAttributeValueMask.inv()) != 0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = valueMask)
+        }
+        if (state.drawable(drawableId) == null) {
+            return writeError(error = 9, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = drawableId)
+        }
+        if (width == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = width)
+        if (height == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = height)
+        if (requestedClass !in XWindowClass.CopyFromParent..XWindowClass.InputOnly) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedClass)
+        }
+        val parentWindow = state.window(X11Ids.RootWindow) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = X11Ids.RootWindow)
+        val windowClass = when (requestedClass) {
+            XWindowClass.CopyFromParent -> parentWindow.windowClass
+            else -> requestedClass
+        }
+        val depth = if (requestedDepth == 0 && windowClass != XWindowClass.InputOnly) parentWindow.depth else requestedDepth
+        val visual = if (requestedVisual == XWindowClass.CopyFromParent) parentWindow.visual else requestedVisual
+        when (windowClass) {
+            XWindowClass.InputOutput -> {
+                if (depth != X11Ids.RootDepth) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedDepth)
+                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
+            }
+            XWindowClass.InputOnly -> {
+                if (requestedDepth != 0) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedDepth)
+                if (visual != X11Ids.RootVisual) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = requestedVisual)
+                if (borderWidth != 0) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = borderWidth)
+                if ((valueMask and InputOnlyWindowAttributeValueMask.inv()) != 0) {
+                    return writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = valueMask)
+                }
+            }
+        }
+        val attributes = windowAttributeValues(body, maskOffset = 20, valuesOffset = 24)
+        if (!validateScreenSaverScalarAttributes(attributes, majorOpcode)) return
+        if (!validateScreenSaverBackgroundPixmap(attributes.backgroundPixmapId, depth, parentWindow.depth, majorOpcode)) return
+        if (!validateScreenSaverBorderPixmap(attributes.borderPixmapId, depth, parentWindow.depth, majorOpcode)) return
+        attributes.eventMask?.let {
+            if ((it and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+        }
+        attributes.doNotPropagateMask?.let {
+            if ((it and XEventMasks.ValidDeviceEventMask.inv()) != 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+        }
+        attributes.colormapId?.let {
+            if (it != 0 && !state.hasColormap(it)) return writeError(error = 12, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+        }
+        attributes.cursorId?.let {
+            if (it != 0 && !state.hasCursor(it)) return writeError(error = 6, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+        }
+        val values = (24 until body.size step 4).map { offset -> byteOrder.u32(body, offset) }
+        if (!state.setScreenSaverAttributes(
+                XScreenSaverAttributes(
+                    owner = this,
+                    drawableId = drawableId,
+                    x = byteOrder.i16(body, 4),
+                    y = byteOrder.i16(body, 6),
+                    width = width,
+                    height = height,
+                    borderWidth = borderWidth,
+                    windowClass = windowClass,
+                    depth = depth,
+                    visual = visual,
+                    valueMask = valueMask,
+                    valueList = values,
+                ),
+            )
+        ) {
+            return writeError(error = 10, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = 0)
+        }
+    }
+
+    private fun validateScreenSaverScalarAttributes(attributes: WindowAttributeValues, majorOpcode: Int): Boolean {
+        attributes.bitGravity?.let {
+            if (it !in XWindowGravity.Forget..XWindowGravity.Static) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+                return false
+            }
+        }
+        attributes.winGravity?.let {
+            if (it !in XWindowGravity.Unmap..XWindowGravity.Static) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+                return false
+            }
+        }
+        attributes.backingStore?.let {
+            if (it !in XBackingStore.NotUseful..XBackingStore.Always) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+                return false
+            }
+        }
+        attributes.overrideRedirectValue?.let {
+            if (it !in 0..1) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+                return false
+            }
+        }
+        attributes.saveUnderValue?.let {
+            if (it !in 0..1) {
+                writeError(error = 2, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = it)
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun validateScreenSaverBackgroundPixmap(backgroundPixmapId: Int?, windowDepth: Int, parentDepth: Int, majorOpcode: Int): Boolean {
+        if (backgroundPixmapId == null || backgroundPixmapId == XWindowBackground.None) return true
+        if (backgroundPixmapId == XWindowBackground.ParentRelative) {
+            if (windowDepth != parentDepth) {
+                writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = backgroundPixmapId)
+                return false
+            }
+            return true
+        }
+        val pixmap = state.pixmap(backgroundPixmapId) ?: run {
+            writeError(error = 4, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = backgroundPixmapId)
+            return false
+        }
+        if (pixmap.rootId != X11Ids.RootWindow || pixmap.depth != windowDepth) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = backgroundPixmapId)
+            return false
+        }
+        return true
+    }
+
+    private fun validateScreenSaverBorderPixmap(borderPixmapId: Int?, windowDepth: Int, parentDepth: Int, majorOpcode: Int): Boolean {
+        if (borderPixmapId == null) return true
+        if (borderPixmapId == XWindowBorder.CopyFromParent) {
+            if (windowDepth != parentDepth) {
+                writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = borderPixmapId)
+                return false
+            }
+            return true
+        }
+        val pixmap = state.pixmap(borderPixmapId) ?: run {
+            writeError(error = 4, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = borderPixmapId)
+            return false
+        }
+        if (pixmap.rootId != X11Ids.RootWindow || pixmap.depth != windowDepth) {
+            writeError(error = 8, opcode = majorOpcode, minorOpcode = XScreenSaver.SetAttributes, badValue = borderPixmapId)
+            return false
+        }
+        return true
+    }
+
+    private fun screenSaverUnsetAttributes(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.UnsetAttributes, badValue = 0)
+        val drawable = byteOrder.u32(body, 0)
+        if (state.drawable(drawable) == null) {
+            return writeError(error = 9, opcode = majorOpcode, minorOpcode = XScreenSaver.UnsetAttributes, badValue = drawable)
+        }
+        state.unsetScreenSaverAttributes(this)
+    }
+
+    private fun screenSaverSuspend(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XScreenSaver.Suspend, badValue = 0)
+        state.suspendScreenSaver(this, suspend = byteOrder.u32(body, 0) != 0)
     }
 
     private fun xtestFakeInputDelayIfValid(body: ByteArray): Long {
