@@ -178,6 +178,8 @@ internal interface XEventSink {
     fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
     fun sendXFixesCursorNotifyEvent(event: XXFixesCursorNotifyEvent)
     fun sendShapeNotifyEvent(event: XShapeNotifyEvent)
+    fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
+    fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
 }
 

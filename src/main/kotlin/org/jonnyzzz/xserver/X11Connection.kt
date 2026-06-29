@@ -119,11 +119,25 @@ internal class X11Connection(
     private fun drainPendingSyncWaits() {
         pendingSyncCounterAwait?.let { conditions ->
             pendingSyncCounterAwait = null
-            state.awaitSyncCounters(this, conditions)
+            sendSyncCounterNotifyEvents(state.awaitSyncCounters(this, conditions))
         }
         pendingSyncFenceAwait?.let { fenceIds ->
             pendingSyncFenceAwait = null
             state.awaitSyncFences(this, fenceIds)
+        }
+    }
+
+    private fun sendSyncCounterNotifyEvents(events: List<XSyncCounterNotifyEvent>) {
+        events.forEachIndexed { index, event ->
+            sendSyncCounterNotifyEvent(event.copy(count = events.lastIndex - index))
+        }
+    }
+
+    private fun sendSyncAlarmNotifyDispatches(dispatches: List<XSyncAlarmNotifyDispatch>) {
+        dispatches.forEach { dispatch ->
+            runCatching {
+                dispatch.sink.sendSyncAlarmNotifyEvent(dispatch.event)
+            }
         }
     }
 
@@ -7069,7 +7083,7 @@ internal class X11Connection(
         val current = state.syncCounter(counter)
             ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.SetCounter, badValue = counter)
         if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.SetCounter, badValue = counter)
-        state.setSyncCounterValue(counter, syncValue(body, 4))
+        sendSyncAlarmNotifyDispatches(state.setSyncCounterValue(counter, syncValue(body, 4)) ?: emptyList())
     }
 
     private fun syncChangeCounter(body: ByteArray, majorOpcode: Int) {
@@ -7078,12 +7092,12 @@ internal class X11Connection(
         val current = state.syncCounter(counter)
             ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
         if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
-        when (state.changeSyncCounterValue(counter, syncValue(body, 4))) {
+        when (val result = state.changeSyncCounterValue(counter, syncValue(body, 4))) {
             XSyncCounterChangeResult.Missing ->
                 return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
             XSyncCounterChangeResult.Overflow ->
                 return writeError(error = 2, opcode = majorOpcode, minorOpcode = XSync.ChangeCounter, badValue = counter)
-            XSyncCounterChangeResult.Changed -> Unit
+            is XSyncCounterChangeResult.Changed -> sendSyncAlarmNotifyDispatches(result.alarmNotifications)
         }
     }
 
@@ -7103,7 +7117,7 @@ internal class X11Connection(
         val current = state.syncCounter(counter)
             ?: return writeError(error = XSync.BadCounter, opcode = majorOpcode, minorOpcode = XSync.DestroyCounter, badValue = counter)
         if (current.system) return writeError(error = 10, opcode = majorOpcode, minorOpcode = XSync.DestroyCounter, badValue = counter)
-        state.removeSyncCounter(counter)
+        sendSyncAlarmNotifyDispatches(state.removeSyncCounter(counter) ?: emptyList())
         ownedResources.remove(counter)
     }
 
@@ -7115,7 +7129,9 @@ internal class X11Connection(
         for (offset in body.indices step 28) {
             conditions += parseSyncWaitCondition(body, offset, majorOpcode, XSync.Await) ?: return
         }
-        if (!state.syncCounterAwaitSatisfied(conditions)) {
+        if (state.syncCounterAwaitSatisfied(conditions)) {
+            sendSyncCounterNotifyEvents(state.syncCounterNotifyEvents(conditions))
+        } else {
             pendingSyncCounterAwait = conditions
         }
     }
@@ -7127,8 +7143,9 @@ internal class X11Connection(
         if (alarm == 0) return writeError(error = 14, opcode = majorOpcode, minorOpcode = XSync.CreateAlarm, badValue = alarm)
         if (!resourceIdAvailable(alarm, majorOpcode, XSync.CreateAlarm)) return
         val attributes = parseSyncAlarmAttributes(body, valueMask, valuesOffset = 8, majorOpcode, XSync.CreateAlarm, XSyncAlarm(id = alarm, owner = this)) ?: return
-        state.putSyncAlarm(attributes)
+        val notifications = state.putSyncAlarm(attributes)
         own(alarm)
+        sendSyncAlarmNotifyDispatches(notifications)
     }
 
     private fun syncChangeAlarm(body: ByteArray, majorOpcode: Int) {
@@ -7138,7 +7155,7 @@ internal class X11Connection(
             ?: return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.ChangeAlarm, badValue = alarm)
         val valueMask = byteOrder.u32(body, 4)
         val updated = parseSyncAlarmAttributes(body, valueMask, valuesOffset = 8, majorOpcode, XSync.ChangeAlarm, current) ?: return
-        state.putSyncAlarm(updated)
+        sendSyncAlarmNotifyDispatches(state.putSyncAlarm(updated))
     }
 
     private fun syncQueryAlarm(body: ByteArray, majorOpcode: Int) {
@@ -7160,8 +7177,21 @@ internal class X11Connection(
     private fun syncDestroyAlarm(body: ByteArray, majorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XSync.DestroyAlarm, badValue = 0)
         val alarm = byteOrder.u32(body, 0)
+        val current = state.syncAlarm(alarm)
+            ?: return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.DestroyAlarm, badValue = alarm)
         if (!state.removeSyncAlarm(alarm)) {
             return writeError(error = XSync.BadAlarm, opcode = majorOpcode, minorOpcode = XSync.DestroyAlarm, badValue = alarm)
+        }
+        if (current.events) {
+            sendSyncAlarmNotifyEvent(
+                XSyncAlarmNotifyEvent(
+                    alarmId = alarm,
+                    counterValue = state.syncCounter(current.counterId)?.value ?: 0,
+                    alarmValue = current.testValue,
+                    timestamp = state.syncServerTime(),
+                    state = XSync.AlarmDestroyed,
+                ),
+            )
         }
         ownedResources.remove(alarm)
     }
@@ -7304,6 +7334,7 @@ internal class X11Connection(
             waitValue = waitValue,
             testType = testType,
             testValue = testValue,
+            counterGeneration = current?.generation ?: 0,
             eventThreshold = eventThreshold,
         )
     }
@@ -7376,6 +7407,7 @@ internal class X11Connection(
             waitValue = waitValue,
             testType = testType,
             testValue = condition.testValue,
+            counterGeneration = condition.counterGeneration,
             delta = delta,
             events = events,
             state = state,
@@ -8207,6 +8239,33 @@ internal class X11Connection(
         byteOrder.put16(bytes, 14, event.height)
         byteOrder.put32(bytes, 16, event.timestamp)
         bytes[20] = if (event.shaped) 1 else 0
+        write(bytes)
+    }
+
+    override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XSync.FirstEvent + 0).toByte()
+        bytes[1] = 0
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.counterId)
+        putSyncValue(bytes, 8, event.waitValue)
+        putSyncValue(bytes, 16, event.counterValue)
+        byteOrder.put32(bytes, 24, event.timestamp)
+        byteOrder.put16(bytes, 28, event.count)
+        bytes[30] = if (event.destroyed) 1 else 0
+        write(bytes)
+    }
+
+    override fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XSync.FirstEvent + 1).toByte()
+        bytes[1] = 1
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.alarmId)
+        putSyncValue(bytes, 8, event.counterValue)
+        putSyncValue(bytes, 16, event.alarmValue)
+        byteOrder.put32(bytes, 24, event.timestamp)
+        bytes[28] = event.state.toByte()
         write(bytes)
     }
 

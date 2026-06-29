@@ -218,10 +218,49 @@ class XSyncProtocolTest {
                     }
 
                     owner.soTimeout = 2_000
+                    val event = owner.getInputStream().readExactly(32)
+                    assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                    assertEquals(0, event[1].toInt() and 0xff)
+                    assertEquals(counter, u32le(event, 4))
+                    assertEquals(5, syncValue(event, 8))
+                    assertEquals(5, syncValue(event, 16))
+
                     val queried = readReply(owner.getInputStream())
                     assertEquals(3, u16le(queried, 2))
                     assertEquals(5, syncValue(queried, 8))
                 }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC Await emits CounterNotify when condition is already satisfied`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val counter = X11Ids.ResourceIdBase + 0x334
+                socket.getOutputStream().apply {
+                    write(syncCounterRequest(XSync.CreateCounter, counter, 10))
+                    write(syncAwaitRequest(counter, XSync.Absolute, 5, XSync.PositiveComparison, 0))
+                    write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(counter)))
+                    flush()
+                }
+
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                assertEquals(0, event[1].toInt() and 0xff)
+                assertEquals(2, u16le(event, 2))
+                assertEquals(counter, u32le(event, 4))
+                assertEquals(5, syncValue(event, 8))
+                assertEquals(10, syncValue(event, 16))
+
+                val queried = readReply(socket.getInputStream())
+                assertEquals(3, u16le(queried, 2))
+                assertEquals(10, syncValue(queried, 8))
             }
             server.close()
             serverThread.join(1_000)
@@ -244,9 +283,141 @@ class XSyncProtocolTest {
                 out.write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(XSync.ServerTimeCounter)))
                 out.flush()
 
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                assertEquals(0, event[1].toInt() and 0xff)
+                assertEquals(XSync.ServerTimeCounter, u32le(event, 4))
+
                 val later = readReply(socket.getInputStream())
                 assertEquals(3, u16le(later, 2))
                 assertTrue(syncValue(later, 8) >= now + 30)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC positive transition await on SERVERTIME resumes when time crosses target`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(XSync.ServerTimeCounter)))
+                out.flush()
+                val now = syncValue(readReply(socket.getInputStream()), 8)
+
+                out.write(syncAwaitRequest(XSync.ServerTimeCounter, XSync.Absolute, now + 30, XSync.PositiveTransition, 0))
+                out.write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(XSync.ServerTimeCounter)))
+                out.flush()
+
+                val event = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                assertEquals(0, event[1].toInt() and 0xff)
+                assertEquals(XSync.ServerTimeCounter, u32le(event, 4))
+                assertEquals(now + 30, syncValue(event, 8))
+                assertTrue(syncValue(event, 16) >= now + 30)
+
+                val later = readReply(socket.getInputStream())
+                assertEquals(3, u16le(later, 2))
+                assertTrue(syncValue(later, 8) >= now + 30)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC positive transition await waits for a later crossing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { changer ->
+                    owner.soTimeout = 500
+                    changer.soTimeout = 2_000
+                    setup(owner)
+                    setup(changer)
+                    val counter = X11Ids.ResourceIdBase + 0x444
+                    owner.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.CreateCounter, counter, 10))
+                        write(syncAwaitRequest(counter, XSync.Absolute, 5, XSync.PositiveTransition, 0))
+                        write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(counter)))
+                        flush()
+                    }
+                    assertTrue(runCatching { owner.getInputStream().readExactly(1) }.isFailure)
+
+                    changer.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.SetCounter, counter, 11))
+                        flush()
+                    }
+                    assertTrue(runCatching { owner.getInputStream().readExactly(1) }.isFailure)
+
+                    changer.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.SetCounter, counter, 0))
+                        flush()
+                    }
+                    assertTrue(runCatching { owner.getInputStream().readExactly(1) }.isFailure)
+
+                    changer.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.SetCounter, counter, 5))
+                        flush()
+                    }
+
+                    owner.soTimeout = 2_000
+                    val event = owner.getInputStream().readExactly(32)
+                    assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                    assertEquals(counter, u32le(event, 4))
+                    assertEquals(5, syncValue(event, 8))
+                    assertEquals(5, syncValue(event, 16))
+
+                    val queried = readReply(owner.getInputStream())
+                    assertEquals(3, u16le(queried, 2))
+                    assertEquals(5, syncValue(queried, 8))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC positive transition await latches a crossing before later counter changes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                Socket("127.0.0.1", server.localPort).use { changer ->
+                    owner.soTimeout = 500
+                    changer.soTimeout = 2_000
+                    setup(owner)
+                    setup(changer)
+                    val counter = X11Ids.ResourceIdBase + 0x445
+                    owner.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.CreateCounter, counter, 0))
+                        write(syncAwaitRequest(counter, XSync.Absolute, 5, XSync.PositiveTransition, 0))
+                        write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(counter)))
+                        flush()
+                    }
+                    assertTrue(runCatching { owner.getInputStream().readExactly(1) }.isFailure)
+
+                    changer.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.SetCounter, counter, 5))
+                        write(syncCounterRequest(XSync.SetCounter, counter, 0))
+                        flush()
+                    }
+
+                    owner.soTimeout = 2_000
+                    val event = owner.getInputStream().readExactly(32)
+                    assertEquals(XSync.FirstEvent, event[0].toInt() and 0xff)
+                    assertEquals(counter, u32le(event, 4))
+                    assertEquals(5, syncValue(event, 8))
+                    assertEquals(5, syncValue(event, 16))
+
+                    val queried = readReply(owner.getInputStream())
+                    assertEquals(3, u16le(queried, 2))
+                    assertTrue(syncValue(queried, 8) == 0L || syncValue(queried, 8) == 5L)
+                }
             }
             server.close()
             serverThread.join(1_000)
@@ -266,6 +437,7 @@ class XSyncProtocolTest {
                 out.write(syncCounterRequest(XSync.CreateCounter, counter, 10))
                 out.write(createAlarmRequest(alarm, counter, XSync.Absolute, 12, XSync.PositiveComparison, 2, events = true))
                 out.write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                out.write(syncCounterRequest(XSync.ChangeCounter, counter, 2))
                 out.write(changeAlarmEventsRequest(alarm, events = false))
                 out.write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
                 out.write(request(XSync.MajorOpcode, XSync.DestroyAlarm, u32leBytes(alarm)))
@@ -284,15 +456,132 @@ class XSyncProtocolTest {
                 assertEquals(1, initial[36].toInt() and 0xff)
                 assertEquals(XSync.AlarmActive, initial[37].toInt() and 0xff)
 
+                val alarmEvent = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent + 1, alarmEvent[0].toInt() and 0xff)
+                assertEquals(1, alarmEvent[1].toInt() and 0xff)
+                assertEquals(alarm, u32le(alarmEvent, 4))
+                assertEquals(12, syncValue(alarmEvent, 8))
+                assertEquals(12, syncValue(alarmEvent, 16))
+                assertEquals(XSync.AlarmActive, alarmEvent[28].toInt() and 0xff)
+
                 val changed = readReply(socket.getInputStream())
-                assertEquals(5, u16le(changed, 2))
+                assertEquals(6, u16le(changed, 2))
                 assertEquals(0, changed[36].toInt() and 0xff)
 
-                assertError(socket.getInputStream(), error = XSync.BadAlarm, badValue = alarm, sequence = 7, minorOpcode = XSync.QueryAlarm)
+                assertError(socket.getInputStream(), error = XSync.BadAlarm, badValue = alarm, sequence = 8, minorOpcode = XSync.QueryAlarm)
 
                 val recovered = readReply(socket.getInputStream())
-                assertEquals(8, u16le(recovered, 2))
+                assertEquals(9, u16le(recovered, 2))
                 assertEquals(XSync.MajorVersion, recovered[8].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC DestroyAlarm emits AlarmNotify when events are enabled`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val counter = X11Ids.ResourceIdBase + 0x406
+                val alarm = X11Ids.ResourceIdBase + 0x407
+                socket.getOutputStream().apply {
+                    write(syncCounterRequest(XSync.CreateCounter, counter, 10))
+                    write(createAlarmRequest(alarm, counter, XSync.Absolute, 20, XSync.PositiveComparison, 2, events = true))
+                    write(request(XSync.MajorOpcode, XSync.DestroyAlarm, u32leBytes(alarm)))
+                    write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                    flush()
+                }
+
+                val destroyedEvent = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent + 1, destroyedEvent[0].toInt() and 0xff)
+                assertEquals(1, destroyedEvent[1].toInt() and 0xff)
+                assertEquals(3, u16le(destroyedEvent, 2))
+                assertEquals(alarm, u32le(destroyedEvent, 4))
+                assertEquals(10, syncValue(destroyedEvent, 8))
+                assertEquals(20, syncValue(destroyedEvent, 16))
+                assertEquals(XSync.AlarmDestroyed, destroyedEvent[28].toInt() and 0xff)
+
+                assertError(socket.getInputStream(), error = XSync.BadAlarm, badValue = alarm, sequence = 4, minorOpcode = XSync.QueryAlarm)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC alarm delta advances past large counter jumps without deactivating`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val counter = X11Ids.ResourceIdBase + 0x408
+                val alarm = X11Ids.ResourceIdBase + 0x409
+                socket.getOutputStream().apply {
+                    write(syncCounterRequest(XSync.CreateCounter, counter, 0))
+                    write(createAlarmRequest(alarm, counter, XSync.Absolute, 1, XSync.PositiveComparison, 1, events = true))
+                    write(syncCounterRequest(XSync.ChangeCounter, counter, 2_000))
+                    write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                    flush()
+                }
+
+                val alarmEvent = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent + 1, alarmEvent[0].toInt() and 0xff)
+                assertEquals(1, alarmEvent[1].toInt() and 0xff)
+                assertEquals(3, u16le(alarmEvent, 2))
+                assertEquals(alarm, u32le(alarmEvent, 4))
+                assertEquals(2_000, syncValue(alarmEvent, 8))
+                assertEquals(1, syncValue(alarmEvent, 16))
+                assertEquals(XSync.AlarmActive, alarmEvent[28].toInt() and 0xff)
+
+                val queried = readReply(socket.getInputStream())
+                assertEquals(4, u16le(queried, 2))
+                assertEquals(2, u32le(queried, 4))
+                assertEquals(counter, u32le(queried, 8))
+                assertEquals(2_001, syncValue(queried, 16))
+                assertEquals(XSync.AlarmActive, queried[37].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SYNC transition alarm delta advances past large counter jumps`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val counter = X11Ids.ResourceIdBase + 0x40a
+                val alarm = X11Ids.ResourceIdBase + 0x40b
+                socket.getOutputStream().apply {
+                    write(syncCounterRequest(XSync.CreateCounter, counter, 0))
+                    write(createAlarmRequest(alarm, counter, XSync.Absolute, 10, XSync.PositiveTransition, 10, events = true))
+                    write(syncCounterRequest(XSync.ChangeCounter, counter, 25))
+                    write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                    flush()
+                }
+
+                val alarmEvent = socket.getInputStream().readExactly(32)
+                assertEquals(XSync.FirstEvent + 1, alarmEvent[0].toInt() and 0xff)
+                assertEquals(1, alarmEvent[1].toInt() and 0xff)
+                assertEquals(3, u16le(alarmEvent, 2))
+                assertEquals(alarm, u32le(alarmEvent, 4))
+                assertEquals(25, syncValue(alarmEvent, 8))
+                assertEquals(10, syncValue(alarmEvent, 16))
+                assertEquals(XSync.AlarmActive, alarmEvent[28].toInt() and 0xff)
+
+                val queried = readReply(socket.getInputStream())
+                assertEquals(4, u16le(queried, 2))
+                assertEquals(2, u32le(queried, 4))
+                assertEquals(counter, u32le(queried, 8))
+                assertEquals(30, syncValue(queried, 16))
+                assertEquals(XSync.AlarmActive, queried[37].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)

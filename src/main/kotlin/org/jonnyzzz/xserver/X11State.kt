@@ -108,6 +108,7 @@ internal class X11State(
     private val syncAlarms = linkedMapOf<Int, XSyncAlarm>()
     private val syncFences = linkedMapOf<Int, XSyncFence>()
     private val syncPriorities = linkedMapOf<XEventSink, Int>()
+    private val syncCounterWaiters = mutableListOf<XSyncCounterWaiter>()
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
@@ -2896,18 +2897,21 @@ internal class X11State(
     @Synchronized
     fun syncCounter(id: Int): XSyncCounter? =
         if (id == XSync.ServerTimeCounter) {
-            XSyncCounter(id = id, value = serverTimeCounterValue(), system = true)
+            val value = serverTimeCounterValue()
+            XSyncCounter(id = id, value = value, previousValue = value, generation = value, system = true)
         } else {
             syncCounters[id]
         }
 
     @Synchronized
-    fun setSyncCounterValue(id: Int, value: Long): Boolean {
-        val counter = syncCounters[id] ?: return false
-        syncCounters[id] = counter.copy(value = value)
-        updateSyncAlarmsForCounter(id)
+    fun setSyncCounterValue(id: Int, value: Long): List<XSyncAlarmNotifyDispatch>? {
+        val counter = syncCounters[id] ?: return null
+        val updated = counter.copy(value = value, previousValue = counter.value, generation = counter.generation + 1)
+        syncCounters[id] = updated
+        latchSyncCounterWaiters()
+        val notifications = updateSyncAlarmsForCounter(id)
         notifySyncWaiters()
-        return true
+        return notifications
     }
 
     @Synchronized
@@ -2918,32 +2922,59 @@ internal class X11State(
         } catch (_: ArithmeticException) {
             return XSyncCounterChangeResult.Overflow
         }
-        syncCounters[id] = counter.copy(value = value)
-        updateSyncAlarmsForCounter(id)
+        val updated = counter.copy(value = value, previousValue = counter.value, generation = counter.generation + 1)
+        syncCounters[id] = updated
+        latchSyncCounterWaiters()
+        val notifications = updateSyncAlarmsForCounter(id)
         notifySyncWaiters()
-        return XSyncCounterChangeResult.Changed
+        return XSyncCounterChangeResult.Changed(notifications)
     }
 
     @Synchronized
-    fun removeSyncCounter(id: Int): Boolean {
+    fun removeSyncCounter(id: Int): List<XSyncAlarmNotifyDispatch>? {
         val removed = syncCounters.remove(id) != null
         if (removed) {
+            val notifications = mutableListOf<XSyncAlarmNotifyDispatch>()
             syncAlarms.replaceAll { _, alarm ->
-                if (alarm.counterId == id) alarm.copy(counterId = 0, state = XSync.AlarmInactive) else alarm
+                if (alarm.counterId == id) {
+                    val updated = alarm.copy(counterId = 0, state = XSync.AlarmInactive)
+                    if (alarm.events) {
+                        notifications += XSyncAlarmNotifyDispatch(
+                            sink = alarm.owner,
+                            event = XSyncAlarmNotifyEvent(
+                                alarmId = alarm.id,
+                                counterValue = 0,
+                                alarmValue = alarm.testValue,
+                                timestamp = syncServerTime(),
+                                state = XSync.AlarmInactive,
+                            ),
+                        )
+                    }
+                    updated
+                } else {
+                    alarm
+                }
             }
+            latchSyncCounterWaiters()
             notifySyncWaiters()
+            return notifications
         }
-        return removed
+        return null
     }
 
     @Synchronized
-    fun putSyncAlarm(alarm: XSyncAlarm) {
+    fun putSyncAlarm(alarm: XSyncAlarm): List<XSyncAlarmNotifyDispatch> {
         syncAlarms[alarm.id] = alarm
+        val notifications = if (alarm.counterId == 0) emptyList() else updateSyncAlarmsForCounter(alarm.counterId)
         notifySyncWaiters()
+        return notifications
     }
 
     @Synchronized
     fun syncAlarm(id: Int): XSyncAlarm? = syncAlarms[id]
+
+    @Synchronized
+    fun syncServerTime(): Int = serverTimeCounterValue().toInt()
 
     @Synchronized
     fun removeSyncAlarm(id: Int): Boolean {
@@ -2993,9 +3024,25 @@ internal class X11State(
         conditions.any { condition -> syncCounterTriggerSatisfied(condition) }
 
     @Synchronized
-    fun awaitSyncCounters(sink: XEventSink, conditions: List<XSyncWaitCondition>) {
-        while (!sink.isKilled() && !syncCounterAwaitSatisfied(conditions)) {
-            waitForSyncChange()
+    fun syncCounterNotifyEvents(conditions: List<XSyncWaitCondition>): List<XSyncCounterNotifyEvent> =
+        syncCounterNotifyEventsIfSatisfied(conditions) ?: emptyList()
+
+    @Synchronized
+    fun awaitSyncCounters(sink: XEventSink, conditions: List<XSyncWaitCondition>): List<XSyncCounterNotifyEvent> {
+        syncCounterNotifyEventsIfSatisfied(conditions)?.let { return it }
+        val waiter = XSyncCounterWaiter(conditions)
+        syncCounterWaiters += waiter
+        try {
+            while (!sink.isKilled() && waiter.events == null) {
+                syncCounterNotifyEventsIfSatisfied(conditions)?.let { events ->
+                    waiter.events = events
+                    break
+                }
+                waitForSyncChange()
+            }
+            return waiter.events ?: syncCounterNotifyEventsIfSatisfied(conditions) ?: emptyList()
+        } finally {
+            syncCounterWaiters.remove(waiter)
         }
     }
 
@@ -3012,28 +3059,154 @@ internal class X11State(
 
     private fun syncCounterTriggerSatisfied(condition: XSyncWaitCondition): Boolean {
         if (condition.counterId == 0) return true
-        val value = syncCounter(condition.counterId)?.value ?: return true
-        return syncTriggerSatisfied(value, condition.testValue, condition.testType)
+        val counter = syncCounter(condition.counterId) ?: return true
+        return syncTriggerSatisfied(counter, condition.testValue, condition.testType, condition.counterGeneration)
+    }
+
+    private fun syncCounterNotifyEventsIfSatisfied(conditions: List<XSyncWaitCondition>): List<XSyncCounterNotifyEvent>? {
+        if (!syncCounterAwaitSatisfied(conditions)) return null
+        return conditions.mapNotNull { condition -> syncCounterNotifyEvent(condition) }
+    }
+
+    private fun syncCounterNotifyEvent(condition: XSyncWaitCondition): XSyncCounterNotifyEvent? {
+        val counter = syncCounter(condition.counterId)
+        val destroyed = condition.counterId != 0 && counter == null
+        val counterValue = counter?.value ?: 0
+        if (!destroyed && condition.counterId != 0 && !syncCounterNotifyThresholdReached(condition, counterValue)) {
+            return null
+        }
+        return XSyncCounterNotifyEvent(
+            counterId = condition.counterId,
+            waitValue = condition.testValue,
+            counterValue = counterValue,
+            timestamp = syncServerTime(),
+            count = 0,
+            destroyed = destroyed,
+        )
+    }
+
+    private fun syncCounterNotifyThresholdReached(condition: XSyncWaitCondition, counterValue: Long): Boolean {
+        val difference = try {
+            Math.subtractExact(counterValue, condition.testValue)
+        } catch (_: ArithmeticException) {
+            return false
+        }
+        return when (condition.testType) {
+            XSync.PositiveTransition, XSync.PositiveComparison -> difference >= condition.eventThreshold
+            XSync.NegativeTransition, XSync.NegativeComparison -> difference <= condition.eventThreshold
+            else -> false
+        }
+    }
+
+    private fun latchSyncCounterWaiters() {
+        syncCounterWaiters.forEach { waiter ->
+            if (waiter.events == null) {
+                waiter.events = syncCounterNotifyEventsIfSatisfied(waiter.conditions)
+            }
+        }
     }
 
     private fun serverTimeCounterValue(): Long =
         (System.currentTimeMillis() - serverStartMillis).coerceAtLeast(0L)
 
-    private fun updateSyncAlarmsForCounter(counterId: Int) {
-        val counter = syncCounter(counterId) ?: return
+    private fun updateSyncAlarmsForCounter(counterId: Int): List<XSyncAlarmNotifyDispatch> {
+        val counter = syncCounter(counterId) ?: return emptyList()
+        val notifications = mutableListOf<XSyncAlarmNotifyDispatch>()
         syncAlarms.replaceAll { _, alarm ->
-            if (alarm.counterId == counterId && alarm.state == XSync.AlarmActive && syncTriggerSatisfied(counter.value, alarm.testValue, alarm.testType)) {
-                alarm.copy(state = XSync.AlarmInactive)
+            if (alarm.counterId == counterId && alarm.state == XSync.AlarmActive && syncTriggerSatisfied(counter, alarm.testValue, alarm.testType, alarm.counterGeneration)) {
+                val updated = advanceSyncAlarmAfterTrigger(alarm, counter)
+                if (alarm.events) {
+                    notifications += XSyncAlarmNotifyDispatch(
+                        sink = alarm.owner,
+                        event =
+                            XSyncAlarmNotifyEvent(
+                                alarmId = alarm.id,
+                                counterValue = counter.value,
+                                alarmValue = alarm.testValue,
+                                timestamp = syncServerTime(),
+                                state = updated.state,
+                            ),
+                    )
+                }
+                updated
             } else {
                 alarm
             }
         }
+        return notifications
     }
 
-    private fun syncTriggerSatisfied(counterValue: Long, testValue: Long, testType: Int): Boolean =
+    private fun advanceSyncAlarmAfterTrigger(alarm: XSyncAlarm, counter: XSyncCounter): XSyncAlarm {
+        if (
+            alarm.delta == 0L &&
+            (alarm.testType == XSync.PositiveComparison || alarm.testType == XSync.NegativeComparison)
+        ) {
+            return alarm.copy(state = XSync.AlarmInactive, counterGeneration = counter.generation)
+        }
+        val testValue = when (alarm.testType) {
+            XSync.PositiveComparison, XSync.PositiveTransition ->
+                advanceSyncComparisonAlarmValue(alarm.testValue, counter.value, alarm.delta, positive = true)
+            XSync.NegativeComparison, XSync.NegativeTransition ->
+                advanceSyncComparisonAlarmValue(alarm.testValue, counter.value, alarm.delta, positive = false)
+            else ->
+                try {
+                    Math.addExact(alarm.testValue, alarm.delta)
+                } catch (_: ArithmeticException) {
+                    null
+                }
+        } ?: return alarm.copy(state = XSync.AlarmInactive, counterGeneration = counter.generation)
+        return if (!syncTriggerSatisfied(counter, testValue, alarm.testType, counter.generation)) {
+            alarm.copy(
+                valueType = XSync.Absolute,
+                waitValue = testValue,
+                testValue = testValue,
+                counterGeneration = counter.generation,
+                state = XSync.AlarmActive,
+            )
+        } else {
+            alarm.copy(state = XSync.AlarmInactive, counterGeneration = counter.generation)
+        }
+    }
+
+    private fun advanceSyncComparisonAlarmValue(testValue: Long, counterValue: Long, delta: Long, positive: Boolean): Long? {
+        if (delta == 0L) return null
+        val distance = if (positive) {
+            java.math.BigInteger.valueOf(counterValue).subtract(java.math.BigInteger.valueOf(testValue))
+        } else {
+            java.math.BigInteger.valueOf(testValue).subtract(java.math.BigInteger.valueOf(counterValue))
+        }
+        val steps = if (distance.signum() < 0) {
+            java.math.BigInteger.ONE
+        } else {
+            distance.divide(java.math.BigInteger.valueOf(delta).abs()).add(java.math.BigInteger.ONE)
+        }
+        val nextValue = java.math.BigInteger.valueOf(testValue).add(java.math.BigInteger.valueOf(delta).multiply(steps))
+        return if (
+            nextValue < java.math.BigInteger.valueOf(Long.MIN_VALUE) ||
+            nextValue > java.math.BigInteger.valueOf(Long.MAX_VALUE)
+        ) {
+            null
+        } else {
+            nextValue.toLong()
+        }
+    }
+
+    private fun syncTriggerSatisfied(counter: XSyncCounter, testValue: Long, testType: Int, sinceGeneration: Long): Boolean =
         when (testType) {
-            XSync.PositiveTransition, XSync.PositiveComparison -> counterValue >= testValue
-            XSync.NegativeTransition, XSync.NegativeComparison -> counterValue <= testValue
+            XSync.PositiveComparison -> counter.value >= testValue
+            XSync.NegativeComparison -> counter.value <= testValue
+            XSync.PositiveTransition ->
+                if (counter.system) {
+                    sinceGeneration < testValue && counter.value >= testValue
+                } else {
+                    counter.generation > sinceGeneration && counter.previousValue < testValue && counter.value >= testValue
+                }
+            XSync.NegativeTransition ->
+                if (counter.system) {
+                    sinceGeneration > testValue && counter.value <= testValue
+                } else {
+                    counter.generation > sinceGeneration && counter.previousValue > testValue && counter.value <= testValue
+                }
             else -> false
         }
 
@@ -6947,13 +7120,15 @@ internal data class XScreenSaverAttributes(
 internal data class XSyncCounter(
     val id: Int,
     val value: Long,
+    val previousValue: Long = value,
+    val generation: Long = 0,
     val system: Boolean = false,
 )
 
-internal enum class XSyncCounterChangeResult {
-    Missing,
-    Overflow,
-    Changed,
+internal sealed interface XSyncCounterChangeResult {
+    data object Missing : XSyncCounterChangeResult
+    data object Overflow : XSyncCounterChangeResult
+    data class Changed(val alarmNotifications: List<XSyncAlarmNotifyDispatch>) : XSyncCounterChangeResult
 }
 
 internal data class XSyncWaitCondition(
@@ -6962,7 +7137,22 @@ internal data class XSyncWaitCondition(
     val waitValue: Long,
     val testType: Int,
     val testValue: Long,
+    val counterGeneration: Long = 0,
     val eventThreshold: Long = 0,
+)
+
+internal data class XSyncCounterNotifyEvent(
+    val counterId: Int,
+    val waitValue: Long,
+    val counterValue: Long,
+    val timestamp: Int,
+    val count: Int,
+    val destroyed: Boolean,
+)
+
+private data class XSyncCounterWaiter(
+    val conditions: List<XSyncWaitCondition>,
+    var events: List<XSyncCounterNotifyEvent>? = null,
 )
 
 internal data class XSyncAlarm(
@@ -6973,9 +7163,23 @@ internal data class XSyncAlarm(
     val waitValue: Long = 0,
     val testType: Int = XSync.PositiveComparison,
     val testValue: Long = 0,
+    val counterGeneration: Long = 0,
     val delta: Long = 1,
     val events: Boolean = true,
     val state: Int = XSync.AlarmInactive,
+)
+
+internal data class XSyncAlarmNotifyEvent(
+    val alarmId: Int,
+    val counterValue: Long,
+    val alarmValue: Long,
+    val timestamp: Int,
+    val state: Int,
+)
+
+internal data class XSyncAlarmNotifyDispatch(
+    val sink: XEventSink,
+    val event: XSyncAlarmNotifyEvent,
 )
 
 internal data class XSyncFence(
