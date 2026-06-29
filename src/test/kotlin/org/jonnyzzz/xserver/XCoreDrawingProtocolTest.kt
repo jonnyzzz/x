@@ -7048,6 +7048,42 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `QueryKeymap reports currently pressed keycodes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+
+                out.write(queryKeymapRequest())
+                out.flush()
+                assertKeymap(readReply(input), sequence = 1)
+
+                server.input.keyDown(10)
+                server.input.keyDown(63)
+                assertContains(httpGet(server.localPort, "/state.json"), """"keycodesDown":[10,63]""")
+                out.write(queryKeymapRequest())
+                out.flush()
+                assertKeymap(readReply(input), sequence = 2, 10, 63)
+
+                server.input.keyUp(10)
+                out.write(queryKeymapRequest())
+                out.flush()
+                assertKeymap(readReply(input), sequence = 3, 63)
+
+                server.input.keyUp(63)
+                out.write(queryKeymapRequest())
+                out.flush()
+                assertKeymap(readReply(input), sequence = 4)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `active GrabKeyboard receives key events when input focus is None`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -17012,6 +17048,21 @@ class XCoreDrawingProtocolTest {
             assertEquals(value, reply[32 + index].toInt() and 0xff)
         }
         assertZeroBytes(reply, 32 + keycodes.size, 32 + payloadBytes)
+    }
+
+    private fun assertKeymap(reply: ByteArray, sequence: Int, vararg downKeycodes: Int) {
+        assertEquals(1, reply[0].toInt())
+        assertEquals(0, reply[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(2, u32le(reply, 4))
+        assertEquals(40, reply.size)
+        val expected = ByteArray(32)
+        for (keycode in downKeycodes) {
+            expected[keycode / 8] = (expected[keycode / 8].toInt() or (1 shl (keycode % 8))).toByte()
+        }
+        expected.forEachIndexed { index, value ->
+            assertEquals(value.toInt() and 0xff, reply[8 + index].toInt() and 0xff, "keymap byte $index")
+        }
     }
 
     private fun assertKeyboardMapping(reply: ByteArray, sequence: Int, keysymsPerKeycode: Int, vararg keysyms: Int) {

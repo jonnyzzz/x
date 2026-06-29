@@ -837,6 +837,15 @@ internal class X11State(
         )
 
     @Synchronized
+    fun queryKeymap(): ByteArray {
+        val keys = ByteArray(32)
+        for (keycode in pressedKeycodes) {
+            keys[keycode / 8] = (keys[keycode / 8].toInt() or (1 shl (keycode % 8))).toByte()
+        }
+        return keys
+    }
+
+    @Synchronized
     fun keyboardMapping(firstKeycode: Int, count: Int): XKeyboardMapping {
         val rows = linkedMapOf<Int, List<Int>>()
         for (keycode in firstKeycode until firstKeycode + count) {

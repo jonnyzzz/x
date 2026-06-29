@@ -4915,7 +4915,9 @@ internal class X11Connection(
 
     private fun queryKeymap(body: ByteArray) {
         if (body.isNotEmpty()) return writeError(error = 16, opcode = 44, badValue = 0)
-        write(reply(extra = 0, payloadUnits = 2))
+        val reply = reply(extra = 0, payloadUnits = 2)
+        state.queryKeymap().copyInto(reply, 8)
+        write(reply)
     }
 
     private fun openFont(body: ByteArray) {
