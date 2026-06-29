@@ -110,6 +110,7 @@ internal class X11State(
     private val serverGrabLock = ReentrantLock()
     private val serverGrabReleased = serverGrabLock.newCondition()
     private var serverGrabOwner: XEventSink? = null
+    private val serverGrabImperviousClients = mutableSetOf<XEventSink>()
     private var accessControlEnabled = false
     private val accessHosts = linkedSetOf<XAccessHost>()
 
@@ -163,6 +164,12 @@ internal class X11State(
             majorOpcode = XXinerama.MajorOpcode,
             firstEvent = XXinerama.FirstEvent,
             firstError = XXinerama.FirstError,
+        ),
+        XExtension(
+            name = "XTEST",
+            majorOpcode = XXTest.MajorOpcode,
+            firstEvent = XXTest.FirstEvent,
+            firstError = XXTest.FirstError,
         ),
     )
 
@@ -455,6 +462,17 @@ internal class X11State(
 
     @Synchronized
     fun displayedCursorSnapshot(): XCursorIdentity? = displayedCursorIdentity()
+
+    @Synchronized
+    fun windowCursorMatches(windowId: Int, cursor: Int): Boolean? {
+        val window = windows[windowId] ?: return null
+        val windowCursor = window.cursorId
+        return when (cursor) {
+            XXTest.CursorNone -> windowCursor == null
+            XXTest.CursorCurrent -> windowCursor == displayedCursorId()
+            else -> windowCursor == cursor
+        }
+    }
 
     @Synchronized
     fun cursorNotifyDispatchesIfDisplayChanged(previousCursor: XCursorIdentity?): List<XXFixesCursorNotifyDispatch> =
@@ -1424,28 +1442,40 @@ internal class X11State(
         return if (start <= endInclusive) start..endInclusive else null
     }
 
-    fun processWhenServerGrabAllows(owner: XEventSink, process: () -> Unit) {
+    fun processWhenServerGrabAllows(owner: XEventSink, beforeProcess: () -> Unit = {}, process: () -> Unit) {
         while (true) {
-            requestProcessingLock.lock()
-            val allowed = serverGrabLock.withLock {
-                owner.isKilled() || serverGrabOwner == null || serverGrabOwner == owner
+            serverGrabLock.withLock {
+                while (!owner.isKilled() && serverGrabOwner != null && serverGrabOwner != owner && owner !in serverGrabImperviousClients) {
+                    serverGrabReleased.await()
+                }
             }
-            if (allowed) {
-                try {
+
+            if (owner.isKilled()) return
+            beforeProcess()
+            requestProcessingLock.lock()
+            try {
+                val allowed = serverGrabLock.withLock {
+                    owner.isKilled() || serverGrabOwner == null || serverGrabOwner == owner || owner in serverGrabImperviousClients
+                }
+                if (allowed) {
                     if (!owner.isKilled()) {
                         process()
                     }
                     return
-                } finally {
-                    requestProcessingLock.unlock()
                 }
+            } finally {
+                requestProcessingLock.unlock()
             }
-            requestProcessingLock.unlock()
+        }
+    }
 
-            serverGrabLock.withLock {
-                while (!owner.isKilled() && serverGrabOwner != null && serverGrabOwner != owner) {
-                    serverGrabReleased.await()
-                }
+    fun setServerGrabImpervious(owner: XEventSink, impervious: Boolean) {
+        serverGrabLock.withLock {
+            if (impervious) {
+                serverGrabImperviousClients += owner
+                serverGrabReleased.signalAll()
+            } else {
+                serverGrabImperviousClients -= owner
             }
         }
     }
@@ -1479,6 +1509,7 @@ internal class X11State(
             if (serverGrabOwner == owner) {
                 serverGrabOwner = null
             }
+            serverGrabImperviousClients -= owner
             serverGrabReleased.signalAll()
         }
     }
@@ -1531,6 +1562,7 @@ internal class X11State(
 
     @Synchronized
     fun unregisterEventSink(sink: XEventSink): XEventSinkRemoval {
+        setServerGrabImpervious(sink, impervious = false)
         val xfixesSelectionNotifyDispatches = selectionOwners
             .filterValues { it.sink == sink }
             .flatMap { (selection) ->

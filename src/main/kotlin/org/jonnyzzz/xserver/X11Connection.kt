@@ -95,7 +95,11 @@ internal class X11Connection(
                 } else {
                     input.readExactly(units * 4 - 4)
                 }
-                state.processWhenServerGrabAllows(this) {
+                val preDispatchDelay = requestPreDispatchDelay(opcode, minorOpcode, body)
+                state.processWhenServerGrabAllows(
+                    owner = this,
+                    beforeProcess = { preDispatchDelay.takeIf { it > 0 }?.let { Thread.sleep(it) } },
+                ) {
                     sequence = (sequence + 1) and 0xffff
                     if (trace) {
                         System.err.println("x11 seq=$sequence opcode=$opcode minor=$minorOpcode units=$units body=${body.size}")
@@ -108,6 +112,9 @@ internal class X11Connection(
             closeDownClient()
         }
     }
+
+    private fun requestPreDispatchDelay(opcode: Int, minorOpcode: Int, body: ByteArray): Long =
+        if (opcode == XXTest.MajorOpcode && minorOpcode == XXTest.FakeInput) xtestFakeInputDelayIfValid(body) else 0
 
     private fun extendedRequestBodySize(extendedUnits: Int): Int? {
         val units = extendedUnits.toUInt().toLong()
@@ -159,6 +166,10 @@ internal class X11Connection(
             }
             if (extension.name == "XINERAMA") {
                 xinerama(minorOpcode, body, opcode)
+                return
+            }
+            if (extension.name == "XTEST") {
+                xtest(minorOpcode, body, opcode)
                 return
             }
         }
@@ -6354,6 +6365,7 @@ internal class X11Connection(
             XShape.MajorOpcode -> "SHAPE.${XShape.operationName(minorOpcode)}"
             XXkb.MajorOpcode -> "XKEYBOARD.${XXkb.operationName(minorOpcode)}"
             XXinerama.MajorOpcode -> "XINERAMA.${XXinerama.operationName(minorOpcode)}"
+            XXTest.MajorOpcode -> "XTEST.${XXTest.operationName(minorOpcode)}"
             1 -> "CreateWindow"
             2 -> "ChangeWindowAttributes"
             3 -> "GetWindowAttributes"
@@ -6555,6 +6567,146 @@ internal class X11Connection(
         byteOrder.put16(reply, 36, state.width)
         byteOrder.put16(reply, 38, state.height)
         write(reply)
+    }
+
+    private fun xtest(minorOpcode: Int, body: ByteArray, majorOpcode: Int) {
+        when (minorOpcode) {
+            XXTest.GetVersion -> xtestGetVersion(body, majorOpcode)
+            XXTest.CompareCursor -> xtestCompareCursor(body, majorOpcode)
+            XXTest.FakeInput -> xtestFakeInput(body, majorOpcode)
+            XXTest.GrabControl -> xtestGrabControl(body, majorOpcode)
+            else -> unsupportedRequest(majorOpcode, minorOpcode, "XTEST.${XXTest.operationName(minorOpcode)}")
+        }
+    }
+
+    private fun xtestGetVersion(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXTest.GetVersion, badValue = 0)
+        val reply = reply(extra = XXTest.MajorVersion, payloadUnits = 0)
+        byteOrder.put16(reply, 8, XXTest.MinorVersion)
+        write(reply)
+    }
+
+    private fun xtestCompareCursor(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXTest.CompareCursor, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        val cursor = byteOrder.u32(body, 4)
+        state.window(window) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXTest.CompareCursor, badValue = window)
+        if (cursor != XXTest.CursorNone && cursor != XXTest.CursorCurrent && !state.hasCursor(cursor)) {
+            return writeError(error = 6, opcode = majorOpcode, minorOpcode = XXTest.CompareCursor, badValue = cursor)
+        }
+        val same = state.windowCursorMatches(window, cursor) ?: return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXTest.CompareCursor, badValue = window)
+        val reply = reply(extra = if (same) 1 else 0, payloadUnits = 0)
+        write(reply)
+    }
+
+    private fun xtestFakeInput(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 32) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = 0)
+        val type = body[0].toInt() and 0xff
+        val detail = body[1].toInt() and 0xff
+        when (type) {
+            XXTest.KeyPress,
+            XXTest.KeyRelease -> {
+                if (detail !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+                    return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = detail)
+                }
+                val pressed = type == XXTest.KeyPress
+                val dispatch = state.keyboardKey(keycode = detail, modifiers = 0, pressed = pressed)
+                val pointer = state.queryPointer(X11Ids.RootWindow)
+                state.recordInputOperation(
+                    kind = if (pressed) "xtest-key-down" else "xtest-key-up",
+                    x = pointer?.rootX ?: 0,
+                    y = pointer?.rootY ?: 0,
+                    button = detail.toString(),
+                    targetWindowId = dispatch.targetWindowId,
+                    deliveredEvents = dispatch.deliveredEvents,
+                )
+            }
+            XXTest.ButtonPress,
+            XXTest.ButtonRelease -> {
+                if (detail !in 1..255) {
+                    return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = detail)
+                }
+                val pressed = type == XXTest.ButtonPress
+                val pointer = state.queryPointer(X11Ids.RootWindow)
+                val dispatch = state.pointerButton(
+                    x = pointer?.rootX ?: 0,
+                    y = pointer?.rootY ?: 0,
+                    button = detail,
+                    pressed = pressed,
+                )
+                state.recordInputOperation(
+                    kind = if (pressed) "xtest-pointer-down" else "xtest-pointer-up",
+                    x = pointer?.rootX ?: 0,
+                    y = pointer?.rootY ?: 0,
+                    button = detail.toString(),
+                    targetWindowId = dispatch.targetWindowId,
+                    deliveredEvents = dispatch.deliveredEvents,
+                )
+            }
+            XXTest.MotionNotify -> {
+                if (detail !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = detail)
+                val root = byteOrder.u32(body, 8)
+                val rootX = byteOrder.i16(body, 20)
+                val rootY = byteOrder.i16(body, 22)
+                val rootWindow = if (root == 0) X11Ids.RootWindow else root
+                if (rootWindow != X11Ids.RootWindow || state.window(rootWindow) == null) {
+                    return writeError(error = 3, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = rootWindow)
+                }
+                val dispatch = state.warpPointer(
+                    sourceWindowId = 0,
+                    destinationWindowId = if (detail == 0) rootWindow else 0,
+                    sourceX = 0,
+                    sourceY = 0,
+                    sourceWidth = 0,
+                    sourceHeight = 0,
+                    destinationX = rootX,
+                    destinationY = rootY,
+                )
+                state.recordInputOperation(
+                    kind = "xtest-motion",
+                    x = rootX,
+                    y = rootY,
+                    button = detail.toString(),
+                    targetWindowId = dispatch.targetWindowId,
+                    deliveredEvents = dispatch.deliveredEvents,
+                )
+            }
+            else -> return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.FakeInput, badValue = type)
+        }
+    }
+
+    private fun xtestGrabControl(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXTest.GrabControl, badValue = 0)
+        val impervious = body[0].toInt() and 0xff
+        if (impervious !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXTest.GrabControl, badValue = impervious)
+        state.setServerGrabImpervious(this, impervious != 0)
+    }
+
+    private fun xtestFakeInputDelayIfValid(body: ByteArray): Long {
+        if (body.size != 32) return 0
+        val type = body[0].toInt() and 0xff
+        val detail = body[1].toInt() and 0xff
+        return when (type) {
+            XXTest.KeyPress,
+            XXTest.KeyRelease -> {
+                if (detail in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) byteOrder.u32(body, 4).toUInt().toLong() else 0
+            }
+            XXTest.ButtonPress,
+            XXTest.ButtonRelease -> {
+                if (detail in 1..255) byteOrder.u32(body, 4).toUInt().toLong() else 0
+            }
+            XXTest.MotionNotify -> {
+                if (detail !in 0..1) return 0
+                val root = byteOrder.u32(body, 8)
+                val rootWindow = if (root == 0) X11Ids.RootWindow else root
+                if (rootWindow == X11Ids.RootWindow && state.window(rootWindow) != null) {
+                    byteOrder.u32(body, 4).toUInt().toLong()
+                } else {
+                    0
+                }
+            }
+            else -> 0
+        }
     }
 
     private fun getKeyboardMapping(body: ByteArray) {
