@@ -119,6 +119,7 @@ internal class X11State(
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
     private val randrOutputProperties = linkedMapOf<Int, XRandrOutputProperty>()
+    private var randrPrimaryOutput = 0
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -6481,6 +6482,83 @@ internal class X11State(
             selections
                 .filter { (_, eventMask) -> (eventMask and XRandr.OutputPropertyNotifyMask) != 0 }
                 .map { (windowId) -> XRandrOutputPropertyNotifyDispatch(sink = sink, windowId = windowId) }
+        }
+
+    @Synchronized
+    fun randrPrimaryOutput(): Int = randrPrimaryOutput
+
+    @Synchronized
+    fun setRandrPrimaryOutput(output: Int): XRandrPrimaryOutputChange {
+        if (randrPrimaryOutput == output) return XRandrPrimaryOutputChange.Empty
+        randrPrimaryOutput = output
+        val timestamp = syncServerTime()
+        return XRandrPrimaryOutputChange(
+            configureNotifyDispatches = rootConfigureNotifySinks(),
+            screenChangeNotifyDispatches = randrScreenChangeNotifySinks(timestamp),
+            outputChangeNotifyDispatches = randrOutputChangeNotifySinks(timestamp),
+        )
+    }
+
+    private fun rootConfigureNotifySinks(): List<XConfigureNotifyDispatch> {
+        val root = windows[X11Ids.RootWindow] ?: return emptyList()
+        val event = XConfigureNotifyEvent(
+            eventWindowId = root.id,
+            windowId = root.id,
+            aboveSiblingId = 0,
+            x = root.x,
+            y = root.y,
+            width = root.width,
+            height = root.height,
+            borderWidth = root.borderWidth,
+            overrideRedirect = root.overrideRedirect,
+        )
+        return eventSelectionsForWindow(root.id, XEventMasks.StructureNotify).map { sink ->
+            XConfigureNotifyDispatch(sink = sink, event = event)
+        }
+    }
+
+    private fun randrScreenChangeNotifySinks(timestamp: Int): List<XRandrScreenChangeNotifyDispatch> =
+        randrInputs.flatMap { (sink, selections) ->
+            selections
+                .filter { (_, eventMask) -> (eventMask and XRandr.ScreenChangeNotifyMask) != 0 }
+                .map { (windowId) ->
+                    XRandrScreenChangeNotifyDispatch(
+                        sink = sink,
+                        event = XRandrScreenChangeNotifyEvent(
+                            windowId = windowId,
+                            timestamp = timestamp,
+                            configTimestamp = timestamp,
+                            width = width,
+                            height = height,
+                            widthMillimeters = widthMillimeters,
+                            heightMillimeters = heightMillimeters,
+                            rotation = XRandr.Rotate0,
+                            subpixelOrder = XRandr.SubPixelUnknown,
+                        ),
+                    )
+                }
+        }
+
+    private fun randrOutputChangeNotifySinks(timestamp: Int): List<XRandrOutputChangeNotifyDispatch> =
+        randrInputs.flatMap { (sink, selections) ->
+            selections
+                .filter { (_, eventMask) -> (eventMask and XRandr.OutputChangeNotifyMask) != 0 }
+                .map { (windowId) ->
+                    XRandrOutputChangeNotifyDispatch(
+                        sink = sink,
+                        event = XRandrOutputChangeNotifyEvent(
+                            windowId = windowId,
+                            output = XRandr.OutputId,
+                            crtc = XRandr.CrtcId,
+                            mode = XRandr.ModeId,
+                            timestamp = timestamp,
+                            configTimestamp = timestamp,
+                            rotation = XRandr.Rotate0,
+                            connection = XRandr.Connected,
+                            subpixelOrder = XRandr.SubPixelUnknown,
+                        ),
+                    )
+                }
         }
 
     @Synchronized

@@ -159,7 +159,7 @@ class XRandrProtocolTest {
 
                 val primary = readReply(socket.getInputStream())
                 assertEquals(22, u16le(primary, 2))
-                assertEquals(XRandr.OutputId, u32le(primary, 8))
+                assertEquals(0, u32le(primary, 8))
 
                 val providers = readReply(socket.getInputStream())
                 assertEquals(23, u16le(providers, 2))
@@ -175,7 +175,7 @@ class XRandrProtocolTest {
                 assertEquals(1, u32le(monitors, 12))
                 assertEquals(1, u32le(monitors, 16))
                 assertEquals(0, u32le(monitors, 32))
-                assertEquals(1, monitors[36].toInt() and 0xff)
+                assertEquals(0, monitors[36].toInt() and 0xff)
                 assertEquals(1, monitors[37].toInt() and 0xff)
                 assertEquals(1, u16le(monitors, 38))
                 assertEquals(0, u16le(monitors, 40))
@@ -470,6 +470,69 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR SetOutputPrimary updates primary output and emits output change notify`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(selectInputRequest(X11Ids.RootWindow, XRandr.ScreenChangeNotifyMask or XRandr.OutputChangeNotifyMask))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.StructureNotify))
+                out.write(u32Request(XRandr.GetOutputPrimary, X11Ids.RootWindow))
+                out.write(setOutputPrimaryRequest(X11Ids.RootWindow, XRandr.OutputId))
+                out.write(getMonitorsRequest(X11Ids.RootWindow, 1))
+                out.write(setOutputPrimaryRequest(X11Ids.RootWindow, XRandr.OutputId))
+                out.write(u32Request(XRandr.GetOutputPrimary, X11Ids.RootWindow))
+                out.write(setOutputPrimaryRequest(X11Ids.RootWindow, 0))
+                out.write(getMonitorsRequest(X11Ids.RootWindow, 1))
+                out.write(setOutputPrimaryRequest(X11Ids.RootWindow, 0))
+                out.write(u32Request(XRandr.GetOutputPrimary, X11Ids.RootWindow))
+                out.write(setOutputPrimaryRequest(0x0102_0304, XRandr.OutputId))
+                out.write(setOutputPrimaryRequest(X11Ids.RootWindow, 0x0102_0304))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetOutputPrimary, ByteArray(4)))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                val initial = readReply(socket.getInputStream())
+                assertEquals(3, u16le(initial, 2))
+                assertEquals(0, u32le(initial, 8))
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 4)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 4)
+                assertOutputChangeNotify(socket.getInputStream().readExactly(32), sequence = 4)
+
+                assertMonitorReply(readReply(socket.getInputStream()), sequence = 5, primary = 1)
+
+                val primary = readReply(socket.getInputStream())
+                assertEquals(7, u16le(primary, 2))
+                assertEquals(XRandr.OutputId, u32le(primary, 8))
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 8)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 8)
+                assertOutputChangeNotify(socket.getInputStream().readExactly(32), sequence = 8)
+
+                assertMonitorReply(readReply(socket.getInputStream()), sequence = 9, primary = 0)
+
+                val none = readReply(socket.getInputStream())
+                assertEquals(11, u16le(none, 2))
+                assertEquals(0, u32le(none, 8))
+
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 12, minorOpcode = XRandr.SetOutputPrimary)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = 0x0102_0304, sequence = 13, minorOpcode = XRandr.SetOutputPrimary)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 14, minorOpcode = XRandr.SetOutputPrimary)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(15, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR swaps replies for big endian clients`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -686,6 +749,21 @@ class XRandrProtocolTest {
         return request(XRandr.MajorOpcode, XRandr.SelectInput, body)
     }
 
+    private fun changeWindowEventMaskRequest(window: Int, eventMask: Int): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, window)
+        put32le(body, 4, 1 shl 11)
+        put32le(body, 8, eventMask)
+        return request(2, 0, body)
+    }
+
+    private fun setOutputPrimaryRequest(window: Int, output: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put32le(body, 4, output)
+        return request(XRandr.MajorOpcode, XRandr.SetOutputPrimary, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -893,6 +971,67 @@ class XRandrProtocolTest {
         assertEquals(XRandr.OutputId, u32le(bytes, 8))
         assertEquals(atom, u32le(bytes, 12))
         assertEquals(state, bytes[20].toInt() and 0xff)
+    }
+
+    private fun assertOutputChangeNotify(bytes: ByteArray, sequence: Int) {
+        assertEquals(XRandr.FirstEvent + XRandr.Notify, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.NotifyOutputChange, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 12))
+        assertEquals(XRandr.OutputId, u32le(bytes, 16))
+        assertEquals(XRandr.CrtcId, u32le(bytes, 20))
+        assertEquals(XRandr.ModeId, u32le(bytes, 24))
+        assertEquals(XRandr.Rotate0, u16le(bytes, 28))
+        assertEquals(XRandr.Connected, bytes[30].toInt() and 0xff)
+        assertEquals(XRandr.SubPixelUnknown, bytes[31].toInt() and 0xff)
+    }
+
+    private fun assertScreenChangeNotify(bytes: ByteArray, sequence: Int) {
+        assertEquals(XRandr.FirstEvent + XRandr.ScreenChangeNotify, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.Rotate0, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 12))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 16))
+        assertEquals(0, u16le(bytes, 20))
+        assertEquals(XRandr.SubPixelUnknown, u16le(bytes, 22))
+        assertEquals(120, u16le(bytes, 24))
+        assertEquals(90, u16le(bytes, 26))
+        assertEquals(32, u16le(bytes, 28))
+        assertEquals(24, u16le(bytes, 30))
+    }
+
+    private fun assertConfigureNotify(bytes: ByteArray, sequence: Int) {
+        assertEquals(22, bytes[0].toInt() and 0xff)
+        assertEquals(0, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 4))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 8))
+        assertEquals(0, u32le(bytes, 12))
+        assertEquals(0, u16le(bytes, 16))
+        assertEquals(0, u16le(bytes, 18))
+        assertEquals(120, u16le(bytes, 20))
+        assertEquals(90, u16le(bytes, 22))
+        assertEquals(0, u16le(bytes, 24))
+        assertEquals(0, bytes[26].toInt() and 0xff)
+    }
+
+    private fun assertMonitorReply(reply: ByteArray, sequence: Int, primary: Int) {
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(7, u32le(reply, 4))
+        assertEquals(XRandr.Success, reply[1].toInt() and 0xff)
+        assertEquals(1, u32le(reply, 12))
+        assertEquals(1, u32le(reply, 16))
+        assertEquals(0, u32le(reply, 32))
+        assertEquals(primary, reply[36].toInt() and 0xff)
+        assertEquals(1, reply[37].toInt() and 0xff)
+        assertEquals(1, u16le(reply, 38))
+        assertEquals(0, u16le(reply, 40))
+        assertEquals(0, u16le(reply, 42))
+        assertEquals(120, u16le(reply, 44))
+        assertEquals(90, u16le(reply, 46))
+        assertEquals(32, u32le(reply, 48))
+        assertEquals(24, u32le(reply, 52))
+        assertEquals(XRandr.OutputId, u32le(reply, 56))
     }
 
     private fun readReply(input: InputStream): ByteArray {

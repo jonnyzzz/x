@@ -6834,6 +6834,7 @@ internal class X11Connection(
             XRandr.GetCrtcInfo -> randrGetCrtcInfo(body, majorOpcode)
             XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
             XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
+            XRandr.SetOutputPrimary -> randrSetOutputPrimary(body, majorOpcode)
             XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
             XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
             XRandr.GetMonitors -> randrGetMonitors(body, majorOpcode)
@@ -7173,8 +7174,19 @@ internal class X11Connection(
         val window = byteOrder.u32(body, 0)
         if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetOutputPrimary, badValue = window)
         val reply = reply(extra = 0, payloadUnits = 0)
-        byteOrder.put32(reply, 8, XRandr.OutputId)
+        byteOrder.put32(reply, 8, state.randrPrimaryOutput())
         write(reply)
+    }
+
+    private fun randrSetOutputPrimary(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetOutputPrimary, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.SetOutputPrimary, badValue = window)
+        val output = byteOrder.u32(body, 4)
+        if (output != 0 && output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.SetOutputPrimary, badValue = output)
+        }
+        sendRandrPrimaryOutputChange(state.setRandrPrimaryOutput(output))
     }
 
     private fun randrGetProviders(body: ByteArray, majorOpcode: Int) {
@@ -7198,7 +7210,7 @@ internal class X11Connection(
         byteOrder.put32(reply, 12, 1)
         byteOrder.put32(reply, 16, 1)
         byteOrder.put32(reply, 32, 0)
-        reply[36] = 1
+        reply[36] = if (state.randrPrimaryOutput() == XRandr.OutputId) 1 else 0
         reply[37] = 1
         byteOrder.put16(reply, 38, 1)
         byteOrder.put16(reply, 40, 0)
@@ -8916,6 +8928,24 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendRandrScreenChangeNotifyEvent(event: XRandrScreenChangeNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XRandr.FirstEvent + XRandr.ScreenChangeNotify).toByte()
+        bytes[1] = event.rotation.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        byteOrder.put32(bytes, 8, event.configTimestamp)
+        byteOrder.put32(bytes, 12, X11Ids.RootWindow)
+        byteOrder.put32(bytes, 16, event.windowId)
+        byteOrder.put16(bytes, 20, 0)
+        byteOrder.put16(bytes, 22, event.subpixelOrder)
+        byteOrder.put16(bytes, 24, event.width)
+        byteOrder.put16(bytes, 26, event.height)
+        byteOrder.put16(bytes, 28, event.widthMillimeters)
+        byteOrder.put16(bytes, 30, event.heightMillimeters)
+        write(bytes)
+    }
+
     override fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XRandr.FirstEvent + XRandr.Notify).toByte()
@@ -8926,6 +8956,23 @@ internal class X11Connection(
         byteOrder.put32(bytes, 12, event.atom)
         byteOrder.put32(bytes, 16, event.timestamp)
         bytes[20] = event.state.toByte()
+        write(bytes)
+    }
+
+    override fun sendRandrOutputChangeNotifyEvent(event: XRandrOutputChangeNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XRandr.FirstEvent + XRandr.Notify).toByte()
+        bytes[1] = XRandr.NotifyOutputChange.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.timestamp)
+        byteOrder.put32(bytes, 8, event.configTimestamp)
+        byteOrder.put32(bytes, 12, event.windowId)
+        byteOrder.put32(bytes, 16, event.output)
+        byteOrder.put32(bytes, 20, event.crtc)
+        byteOrder.put32(bytes, 24, event.mode)
+        byteOrder.put16(bytes, 28, event.rotation)
+        bytes[30] = event.connection.toByte()
+        bytes[31] = event.subpixelOrder.toByte()
         write(bytes)
     }
 
@@ -10141,6 +10188,24 @@ internal class X11Connection(
                 )
             }
         }
+    }
+
+    private fun sendRandrOutputChangeNotify(notifications: List<XRandrOutputChangeNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendRandrOutputChangeNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendRandrScreenChangeNotify(notifications: List<XRandrScreenChangeNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendRandrScreenChangeNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendRandrPrimaryOutputChange(change: XRandrPrimaryOutputChange) {
+        sendConfigureNotify(change.configureNotifyDispatches)
+        sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
+        sendRandrOutputChangeNotify(change.outputChangeNotifyDispatches)
     }
 
     private fun sendResourceRemoval(removal: XResourceRemoval) {

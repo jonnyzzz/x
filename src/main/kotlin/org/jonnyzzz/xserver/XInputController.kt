@@ -178,6 +178,8 @@ internal interface XEventSink {
     fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
     fun sendXFixesCursorNotifyEvent(event: XXFixesCursorNotifyEvent)
     fun sendShapeNotifyEvent(event: XShapeNotifyEvent)
+    fun sendRandrScreenChangeNotifyEvent(event: XRandrScreenChangeNotifyEvent)
+    fun sendRandrOutputChangeNotifyEvent(event: XRandrOutputChangeNotifyEvent)
     fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent)
     fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
     fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent)
@@ -505,6 +507,54 @@ internal data class XRandrOutputPropertyNotifyDispatch(
     val sink: XEventSink,
     val windowId: Int,
 )
+
+internal data class XRandrScreenChangeNotifyEvent(
+    val windowId: Int,
+    val timestamp: Int,
+    val configTimestamp: Int,
+    val width: Int,
+    val height: Int,
+    val widthMillimeters: Int,
+    val heightMillimeters: Int,
+    val rotation: Int,
+    val subpixelOrder: Int,
+)
+
+internal data class XRandrScreenChangeNotifyDispatch(
+    val sink: XEventSink,
+    val event: XRandrScreenChangeNotifyEvent,
+)
+
+internal data class XRandrOutputChangeNotifyEvent(
+    val windowId: Int,
+    val output: Int,
+    val crtc: Int,
+    val mode: Int,
+    val timestamp: Int,
+    val configTimestamp: Int,
+    val rotation: Int,
+    val connection: Int,
+    val subpixelOrder: Int,
+)
+
+internal data class XRandrOutputChangeNotifyDispatch(
+    val sink: XEventSink,
+    val event: XRandrOutputChangeNotifyEvent,
+)
+
+internal data class XRandrPrimaryOutputChange(
+    val configureNotifyDispatches: List<XConfigureNotifyDispatch>,
+    val screenChangeNotifyDispatches: List<XRandrScreenChangeNotifyDispatch>,
+    val outputChangeNotifyDispatches: List<XRandrOutputChangeNotifyDispatch>,
+) {
+    companion object {
+        val Empty = XRandrPrimaryOutputChange(
+            configureNotifyDispatches = emptyList(),
+            screenChangeNotifyDispatches = emptyList(),
+            outputChangeNotifyDispatches = emptyList(),
+        )
+    }
+}
 
 internal data class XSyntheticEvent(
     val bytes: ByteArray,
