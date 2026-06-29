@@ -3577,7 +3577,7 @@ internal class X11State(
             val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
                 source.compositeSourcePixelSamplerOptional(destinationDrawableId)
             } else if (source.hasPictureClip()) {
-                source.sourcePixelSamplerOptional()
+                source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
             } else {
                 source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
             }) ?: return null
@@ -3619,7 +3619,7 @@ internal class X11State(
             }
         }
         if (source.hasPictureClip()) {
-            val sourcePixelAt = source.sourcePixelSamplerOptional() ?: return null
+            val sourcePixelAt = source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId) ?: return null
             return destinationFramebuffer.compositeGeneratedOptional(
                 sourceX = sourceX,
                 sourceY = sourceY,
@@ -4777,25 +4777,25 @@ internal class X11State(
         gradientSampler()?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
-        val snapshot = framebuffer.snapshot().takeIf { sourceDrawableId == snapshotDrawableId }
+        val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
             return { x, y -> sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) ?: 0 }
         }
         return { x, y -> sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) ?: 0 }
     }
 
-    private fun XPicture.sourcePixelSamplerOptional(): ((x: Int, y: Int) -> Int?)? {
+    private fun XPicture.sourcePixelSamplerOptional(snapshotDrawableId: Int? = null): ((x: Int, y: Int) -> Int?)? {
         solidPixel?.let { pixel -> return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(pixel, x + 0.5, y + 0.5) else null } }
         gradientSampler()?.let { sampler ->
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else null }
         }
-        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
-        return { x, y ->
-            if (!insidePictureClip(x, y)) {
-                null
-            } else {
-                sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName)
-            }
+        val sourceDrawableId = drawableId ?: return null
+        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
+        return if (snapshot != null) {
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) else null }
+        } else {
+            { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else null }
         }
     }
 
@@ -4893,7 +4893,7 @@ internal class X11State(
         val sourceDrawableId = drawableId ?: return null
         val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val effectiveFilterName = filterNameOverride ?: filterName
-        val snapshot = framebuffer.snapshot().takeIf { sourceDrawableId == snapshotDrawableId }
+        val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         return if (snapshot != null) {
             { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x, y, effectiveFilterName) else null }
         } else {
@@ -5885,9 +5885,9 @@ internal class X11State(
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
         } else if (source.hasPictureClip()) {
-            source.sourcePixelSamplerOptional()
+            source.sourcePixelSamplerOptional(snapshotDrawableId = drawableId)
         } else {
-            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+            source.sourcePixelSampler(snapshotDrawableId = drawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
         }) ?: return false
         val first = trapezoids.firstOrNull() ?: return false
         val originY = floor(first.top.fixedToDouble()).toInt()
@@ -5931,9 +5931,9 @@ internal class X11State(
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
         } else if (source.hasPictureClip()) {
-            source.sourcePixelSamplerOptional()
+            source.sourcePixelSamplerOptional(snapshotDrawableId = drawableId)
         } else {
-            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+            source.sourcePixelSampler(snapshotDrawableId = drawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
         }) ?: return false
         val first = triangles.firstOrNull() ?: return false
         val originX = floor(first.p1.x.fixedToDouble()).toInt()
@@ -6022,9 +6022,9 @@ internal class X11State(
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(destinationDrawableId)
         } else if (source.hasPictureClip()) {
-            source.sourcePixelSamplerOptional()
+            source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
         } else {
-            source.sourcePixelSampler()?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+            source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
         }) ?: return false
         var painted = false
         for (placement in placements) {

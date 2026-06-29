@@ -8247,6 +8247,37 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER clipped self composite samples from original drawable snapshot`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val sourcePictureId = PictureId + 0x80
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(sourcePictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 2, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 3, y = 0, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderSetPictureClipRectangles(sourcePictureId, rectangles = listOf(XRectangleCommand(0, 0, 2, 1))))
+                out.write(renderComposite(sourcePictureId, PictureId, operation = XRender.OpSrc, sourceX = 0, sourceY = 0, destinationX = 1, destinationY = 0, width = 3, height = 1))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xffff_ff00.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER transformed mask picture samples mask coordinates`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
