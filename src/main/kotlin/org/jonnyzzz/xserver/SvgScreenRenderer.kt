@@ -536,13 +536,23 @@ internal object SvgScreenRenderer {
 
     private fun matchingPixmapCandidates(snapshot: XScreenSnapshot, window: XWindowSnapshot): List<XPixmapSnapshot> {
         val subtreeIds = subtreeWindows(snapshot, window).map { it.id }.toSet()
+        val recentPaintByDrawable = snapshot.drawings
+            .mapIndexedNotNull { index, drawing ->
+                if (drawing.framebufferBacked) drawing.drawableId to index else null
+            }
+            .toMap()
         return snapshot.pixmaps
             .filter { pixmap ->
                 pixmap.painted &&
                     pixmap.framebufferDataUri != null &&
                     pixmap.matchingWindowIds.any { it in subtreeIds }
             }
-            .sortedWith(compareByDescending<XPixmapSnapshot> { it.width * it.height }.thenBy { it.id })
+            .sortedWith(
+                compareByDescending<XPixmapSnapshot> { it.width * it.height }
+                    // If the bounded drawing log no longer contains a pixmap paint, fall back to stable id ordering.
+                    .thenByDescending { recentPaintByDrawable[it.id] ?: -1 }
+                    .thenBy { it.id },
+            )
     }
 
     private fun renderPixmapArticle(builder: XmlDom, pixmap: XPixmapSnapshot) {
