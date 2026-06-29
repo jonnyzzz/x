@@ -236,6 +236,75 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR provider requests reject missing providers and recover`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = 0x0102_0304
+                out.write(request(XRandr.MajorOpcode, XRandr.GetProviderInfo, ByteArray(4)))
+                out.write(getProviderInfoRequest(missing))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetProviderOffloadSink, ByteArray(8)))
+                out.write(setProviderPeerRequest(XRandr.SetProviderOffloadSink, missing))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetProviderOutputSource, ByteArray(8)))
+                out.write(setProviderPeerRequest(XRandr.SetProviderOutputSource, missing))
+                out.write(request(XRandr.MajorOpcode, XRandr.ListProviderProperties, ByteArray(0)))
+                out.write(u32Request(XRandr.ListProviderProperties, missing))
+                out.write(request(XRandr.MajorOpcode, XRandr.QueryProviderProperty, ByteArray(4)))
+                out.write(providerPropertyRequest(XRandr.QueryProviderProperty, missing, PrimaryAtom))
+                out.write(request(XRandr.MajorOpcode, XRandr.ConfigureProviderProperty, ByteArray(8)))
+                out.write(configureProviderPropertyRequest(missing, PrimaryAtom))
+                out.write(request(XRandr.MajorOpcode, XRandr.ChangeProviderProperty, ByteArray(16)))
+                out.write(changeProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, format = 8, data = "x".encodeToByteArray()))
+                out.write(request(XRandr.MajorOpcode, XRandr.DeleteProviderProperty, ByteArray(4)))
+                out.write(providerPropertyRequest(XRandr.DeleteProviderProperty, missing, PrimaryAtom))
+                out.write(request(XRandr.MajorOpcode, XRandr.GetProviderProperty, ByteArray(20)))
+                out.write(getProviderPropertyRequest(missing, PrimaryAtom, AtomAtom))
+                out.write(changeProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, format = 8, mode = 3, data = "x".encodeToByteArray()))
+                out.write(changeProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, format = 7, data = "x".encodeToByteArray()))
+                out.write(malformedChangeProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, format = 8, unitCount = 5, data = "x".encodeToByteArray()))
+                out.write(getProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, delete = 2))
+                out.write(getProviderPropertyRequest(missing, PrimaryAtom, AtomAtom, pending = 2))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.GetProviderInfo)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 2, minorOpcode = XRandr.GetProviderInfo)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 3, minorOpcode = XRandr.SetProviderOffloadSink)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 4, minorOpcode = XRandr.SetProviderOffloadSink)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 5, minorOpcode = XRandr.SetProviderOutputSource)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 6, minorOpcode = XRandr.SetProviderOutputSource)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 7, minorOpcode = XRandr.ListProviderProperties)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 8, minorOpcode = XRandr.ListProviderProperties)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 9, minorOpcode = XRandr.QueryProviderProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 10, minorOpcode = XRandr.QueryProviderProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 11, minorOpcode = XRandr.ConfigureProviderProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 12, minorOpcode = XRandr.ConfigureProviderProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 13, minorOpcode = XRandr.ChangeProviderProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 14, minorOpcode = XRandr.ChangeProviderProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 15, minorOpcode = XRandr.DeleteProviderProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 16, minorOpcode = XRandr.DeleteProviderProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 17, minorOpcode = XRandr.GetProviderProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadProvider, badValue = missing, sequence = 18, minorOpcode = XRandr.GetProviderProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 3, sequence = 19, minorOpcode = XRandr.ChangeProviderProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 7, sequence = 20, minorOpcode = XRandr.ChangeProviderProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 21, minorOpcode = XRandr.ChangeProviderProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 2, sequence = 22, minorOpcode = XRandr.GetProviderProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 2, sequence = 23, minorOpcode = XRandr.GetProviderProperty)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(24, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR SetCrtcGamma validates fixed zero gamma ramp and recovers`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1129,6 +1198,107 @@ class XRandrProtocolTest {
         put32be(body, 0, crtc)
         put32be(body, 4, timestamp)
         return requestBe(XRandr.MajorOpcode, XRandr.SetPanning, body)
+    }
+
+    private fun getProviderInfoRequest(provider: Int, configTimestamp: Int = XRandr.ConfigTimestamp): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, provider)
+        put32le(body, 4, configTimestamp)
+        return request(XRandr.MajorOpcode, XRandr.GetProviderInfo, body)
+    }
+
+    private fun setProviderPeerRequest(minorOpcode: Int, provider: Int, peerProvider: Int = 0, configTimestamp: Int = XRandr.ConfigTimestamp): ByteArray {
+        val body = ByteArray(12)
+        put32le(body, 0, provider)
+        put32le(body, 4, peerProvider)
+        put32le(body, 8, configTimestamp)
+        return request(XRandr.MajorOpcode, minorOpcode, body)
+    }
+
+    private fun providerPropertyRequest(minorOpcode: Int, provider: Int, property: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, provider)
+        put32le(body, 4, property)
+        return request(XRandr.MajorOpcode, minorOpcode, body)
+    }
+
+    private fun configureProviderPropertyRequest(
+        provider: Int,
+        property: Int,
+        pending: Int = 0,
+        range: Int = 0,
+        validValues: IntArray = intArrayOf(),
+    ): ByteArray {
+        val body = ByteArray(12 + validValues.size * 4)
+        put32le(body, 0, provider)
+        put32le(body, 4, property)
+        body[8] = pending.toByte()
+        body[9] = range.toByte()
+        validValues.forEachIndexed { index, value -> put32le(body, 12 + index * 4, value) }
+        return request(XRandr.MajorOpcode, XRandr.ConfigureProviderProperty, body)
+    }
+
+    private fun changeProviderPropertyRequest(
+        provider: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        mode: Int = 0,
+        data: ByteArray,
+    ): ByteArray {
+        val padded = (data.size + 3) and -4
+        val body = ByteArray(20 + padded)
+        put32le(body, 0, provider)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        body[12] = format.toByte()
+        body[13] = mode.toByte()
+        put32le(body, 16, when (format) {
+            16 -> data.size / 2
+            32 -> data.size / 4
+            else -> data.size
+        })
+        data.copyInto(body, 20)
+        return request(XRandr.MajorOpcode, XRandr.ChangeProviderProperty, body)
+    }
+
+    private fun malformedChangeProviderPropertyRequest(
+        provider: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        unitCount: Int,
+        data: ByteArray,
+    ): ByteArray {
+        val padded = (data.size + 3) and -4
+        val body = ByteArray(20 + padded)
+        put32le(body, 0, provider)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        body[12] = format.toByte()
+        put32le(body, 16, unitCount)
+        data.copyInto(body, 20)
+        return request(XRandr.MajorOpcode, XRandr.ChangeProviderProperty, body)
+    }
+
+    private fun getProviderPropertyRequest(
+        provider: Int,
+        property: Int,
+        type: Int,
+        longOffset: Int = 0,
+        longLength: Int = 4,
+        delete: Int = 0,
+        pending: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, provider)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        put32le(body, 12, longOffset)
+        put32le(body, 16, longLength)
+        body[20] = delete.toByte()
+        body[21] = pending.toByte()
+        return request(XRandr.MajorOpcode, XRandr.GetProviderProperty, body)
     }
 
     private fun createWindowRequest(id: Int): ByteArray {

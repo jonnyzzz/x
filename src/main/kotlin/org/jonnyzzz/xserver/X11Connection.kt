@@ -6844,6 +6844,15 @@ internal class X11Connection(
             XRandr.SetOutputPrimary -> randrSetOutputPrimary(body, majorOpcode)
             XRandr.GetOutputPrimary -> randrGetOutputPrimary(body, majorOpcode)
             XRandr.GetProviders -> randrGetProviders(body, majorOpcode)
+            XRandr.GetProviderInfo -> randrGetProviderInfo(body, majorOpcode)
+            XRandr.SetProviderOffloadSink -> randrSetProviderOffloadSink(body, majorOpcode)
+            XRandr.SetProviderOutputSource -> randrSetProviderOutputSource(body, majorOpcode)
+            XRandr.ListProviderProperties -> randrListProviderProperties(body, majorOpcode)
+            XRandr.QueryProviderProperty -> randrQueryProviderProperty(body, majorOpcode)
+            XRandr.ConfigureProviderProperty -> randrConfigureProviderProperty(body, majorOpcode)
+            XRandr.ChangeProviderProperty -> randrChangeProviderProperty(body, majorOpcode)
+            XRandr.DeleteProviderProperty -> randrDeleteProviderProperty(body, majorOpcode)
+            XRandr.GetProviderProperty -> randrGetProviderProperty(body, majorOpcode)
             XRandr.GetMonitors -> randrGetMonitors(body, majorOpcode)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RANDR.${XRandr.operationName(minorOpcode)}")
         }
@@ -7381,6 +7390,78 @@ internal class X11Connection(
         byteOrder.put32(reply, 8, state.syncServerTime())
         byteOrder.put16(reply, 12, 0)
         write(reply)
+    }
+
+    private fun randrGetProviderInfo(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetProviderInfo, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.GetProviderInfo, badValue = provider)
+    }
+
+    private fun randrSetProviderOffloadSink(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetProviderOffloadSink, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.SetProviderOffloadSink, badValue = provider)
+    }
+
+    private fun randrSetProviderOutputSource(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetProviderOutputSource, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.SetProviderOutputSource, badValue = provider)
+    }
+
+    private fun randrListProviderProperties(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 4) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ListProviderProperties, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.ListProviderProperties, badValue = provider)
+    }
+
+    private fun randrQueryProviderProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.QueryProviderProperty, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.QueryProviderProperty, badValue = provider)
+    }
+
+    private fun randrConfigureProviderProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12 || (body.size - 12) % 4 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ConfigureProviderProperty, badValue = 0)
+        }
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.ConfigureProviderProperty, badValue = provider)
+    }
+
+    private fun randrChangeProviderProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ChangeProviderProperty, badValue = 0)
+        val mode = body[13].toInt() and 0xff
+        if (mode !in XPropertyMode.Replace..XPropertyMode.Append) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ChangeProviderProperty, badValue = mode)
+        val format = body[12].toInt() and 0xff
+        if (format !in XPropertyFormat.ValidFormats) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ChangeProviderProperty, badValue = format)
+        val unitCount = Integer.toUnsignedLong(byteOrder.u32(body, 16))
+        val byteLength = unitCount * (format / 8)
+        val expectedSize = 20L + paddedLength(byteLength)
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ChangeProviderProperty, badValue = 0)
+        }
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.ChangeProviderProperty, badValue = provider)
+    }
+
+    private fun randrDeleteProviderProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.DeleteProviderProperty, badValue = 0)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.DeleteProviderProperty, badValue = provider)
+    }
+
+    private fun randrGetProviderProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetProviderProperty, badValue = 0)
+        val delete = body[20].toInt() and 0xff
+        if (delete !in XPropertyDelete.False..XPropertyDelete.True) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetProviderProperty, badValue = delete)
+        }
+        val pending = body[21].toInt() and 0xff
+        if (pending !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetProviderProperty, badValue = pending)
+        val provider = byteOrder.u32(body, 0)
+        writeError(error = XRandr.BadProvider, opcode = majorOpcode, minorOpcode = XRandr.GetProviderProperty, badValue = provider)
     }
 
     private fun randrGetMonitors(body: ByteArray, majorOpcode: Int) {

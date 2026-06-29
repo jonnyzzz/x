@@ -39,6 +39,15 @@ internal object XRandr {
     const val SetOutputPrimary = 30
     const val GetOutputPrimary = 31
     const val GetProviders = 32
+    const val GetProviderInfo = 33
+    const val SetProviderOffloadSink = 34
+    const val SetProviderOutputSource = 35
+    const val ListProviderProperties = 36
+    const val QueryProviderProperty = 37
+    const val ConfigureProviderProperty = 38
+    const val ChangeProviderProperty = 39
+    const val DeleteProviderProperty = 40
+    const val GetProviderProperty = 41
     const val GetMonitors = 42
 
     const val Rotate0 = 1
@@ -109,6 +118,15 @@ internal object XRandr {
             SetOutputPrimary -> "SetOutputPrimary"
             GetOutputPrimary -> "GetOutputPrimary"
             GetProviders -> "GetProviders"
+            GetProviderInfo -> "GetProviderInfo"
+            SetProviderOffloadSink -> "SetProviderOffloadSink"
+            SetProviderOutputSource -> "SetProviderOutputSource"
+            ListProviderProperties -> "ListProviderProperties"
+            QueryProviderProperty -> "QueryProviderProperty"
+            ConfigureProviderProperty -> "ConfigureProviderProperty"
+            ChangeProviderProperty -> "ChangeProviderProperty"
+            DeleteProviderProperty -> "DeleteProviderProperty"
+            GetProviderProperty -> "GetProviderProperty"
             GetMonitors -> "GetMonitors"
             else -> "Unknown"
         }
