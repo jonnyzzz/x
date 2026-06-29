@@ -27,6 +27,7 @@ internal object XRandr {
     const val DeleteOutputProperty = 14
     const val GetOutputProperty = 15
     const val GetCrtcInfo = 20
+    const val SetCrtcConfig = 21
     const val GetCrtcGammaSize = 22
     const val GetCrtcGamma = 23
     const val SetCrtcGamma = 24
@@ -40,6 +41,9 @@ internal object XRandr {
     const val Connected = 0
     const val SubPixelUnknown = 0
     const val Success = 0
+    const val InvalidConfigTime = 1
+    const val InvalidTime = 2
+    const val Failed = 3
     const val ScreenChangeNotify = 0
     const val Notify = 1
     const val NotifyOutputChange = 1
@@ -68,6 +72,7 @@ internal object XRandr {
     const val CrtcId = 0x0000_0201
     const val OutputId = 0x0000_0202
 
+    const val ConfigTimestamp = 1
     const val GammaRampSize = 0
     const val RefreshRate = 60
     const val OutputName = "screen-0"
@@ -88,6 +93,7 @@ internal object XRandr {
             DeleteOutputProperty -> "DeleteOutputProperty"
             GetOutputProperty -> "GetOutputProperty"
             GetCrtcInfo -> "GetCrtcInfo"
+            SetCrtcConfig -> "SetCrtcConfig"
             GetCrtcGammaSize -> "GetCrtcGammaSize"
             GetCrtcGamma -> "GetCrtcGamma"
             SetCrtcGamma -> "SetCrtcGamma"

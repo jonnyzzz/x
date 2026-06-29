@@ -122,6 +122,7 @@ internal class X11State(
     private var pointerMapping = XPointerMapping.Default
     private val randrOutputProperties = linkedMapOf<Int, XRandrOutputProperty>()
     private var randrPrimaryOutput = 0
+    private var randrLastCrtcConfigTime = XRandr.ConfigTimestamp
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -6488,6 +6489,23 @@ internal class X11State(
 
     @Synchronized
     fun randrPrimaryOutput(): Int = randrPrimaryOutput
+
+    @Synchronized
+    fun randrLastCrtcConfigTime(): Int = randrLastCrtcConfigTime
+
+    @Synchronized
+    fun markRandrCrtcConfigSet(): Int {
+        // The fixed display configuration is unchanged, but RANDR still advances
+        // the last successful set time for later InvalidTime checks.
+        val now = syncServerTime()
+        val timestamp = if (Integer.compareUnsigned(now, randrLastCrtcConfigTime) <= 0) {
+            randrLastCrtcConfigTime + 1
+        } else {
+            now
+        }
+        randrLastCrtcConfigTime = timestamp
+        return timestamp
+    }
 
     @Synchronized
     fun setRandrScreenSize(widthMillimeters: Int, heightMillimeters: Int): XRandrScreenSizeChange {

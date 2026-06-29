@@ -6833,6 +6833,7 @@ internal class X11Connection(
             XRandr.DeleteOutputProperty -> randrDeleteOutputProperty(body, majorOpcode)
             XRandr.GetOutputProperty -> randrGetOutputProperty(body, majorOpcode)
             XRandr.GetCrtcInfo -> randrGetCrtcInfo(body, majorOpcode)
+            XRandr.SetCrtcConfig -> randrSetCrtcConfig(body, majorOpcode)
             XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
             XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
             XRandr.SetCrtcGamma -> randrSetCrtcGamma(body, majorOpcode)
@@ -6867,7 +6868,7 @@ internal class X11Connection(
         val reply = reply(extra = XRandr.Rotate0, payloadUnits = 3)
         byteOrder.put32(reply, 8, X11Ids.RootWindow)
         byteOrder.put32(reply, 12, state.syncServerTime())
-        byteOrder.put32(reply, 16, 1)
+        byteOrder.put32(reply, 16, XRandr.ConfigTimestamp)
         byteOrder.put16(reply, 20, 1)
         byteOrder.put16(reply, 22, 0)
         byteOrder.put16(reply, 24, XRandr.Rotate0)
@@ -6928,7 +6929,7 @@ internal class X11Connection(
         val payloadSize = 4 + 4 + 32 + paddedLength(modeName.size)
         val reply = reply(extra = 0, payloadUnits = payloadSize / 4)
         byteOrder.put32(reply, 8, state.syncServerTime())
-        byteOrder.put32(reply, 12, 1)
+        byteOrder.put32(reply, 12, XRandr.ConfigTimestamp)
         byteOrder.put16(reply, 16, 1)
         byteOrder.put16(reply, 18, 1)
         byteOrder.put16(reply, 20, 1)
@@ -7165,6 +7166,55 @@ internal class X11Connection(
         byteOrder.put16(reply, 30, 1)
         byteOrder.put32(reply, 32, XRandr.OutputId)
         byteOrder.put32(reply, 36, XRandr.OutputId)
+        write(reply)
+    }
+
+    private fun randrSetCrtcConfig(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 24 || (body.size - 24) % 4 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = 0)
+        }
+        val crtc = byteOrder.u32(body, 0)
+        if (crtc != XRandr.CrtcId) {
+            return writeError(error = XRandr.BadCrtc, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = crtc)
+        }
+        val configTimestamp = byteOrder.u32(body, 8)
+        if (configTimestamp != XRandr.ConfigTimestamp) {
+            return writeRandrSetCrtcConfigReply(XRandr.InvalidConfigTime)
+        }
+        val timestamp = byteOrder.u32(body, 4)
+        if (timestamp != 0 && Integer.compareUnsigned(timestamp, state.randrLastCrtcConfigTime()) < 0) {
+            return writeRandrSetCrtcConfigReply(XRandr.InvalidTime)
+        }
+        val x = byteOrder.i16(body, 12)
+        val y = byteOrder.i16(body, 14)
+        val mode = byteOrder.u32(body, 16)
+        val rotation = byteOrder.u16(body, 20)
+        if (x < 0 || x >= state.width) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = x)
+        if (y < 0 || y >= state.height) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = y)
+        if (rotation != XRandr.Rotate0) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = rotation)
+        }
+        if (mode != 0 && mode != XRandr.ModeId) {
+            return writeError(error = XRandr.BadMode, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = mode)
+        }
+        val outputs = (24 until body.size step 4).map { byteOrder.u32(body, it) }
+        val invalidOutput = outputs.firstOrNull { it != XRandr.OutputId }
+        if (invalidOutput != null) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = invalidOutput)
+        }
+        if (mode == 0) {
+            if (outputs.isNotEmpty()) return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = 0)
+            return writeRandrSetCrtcConfigReply(XRandr.Failed)
+        }
+        if (outputs.size != 1 || x != 0 || y != 0) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.SetCrtcConfig, badValue = 0)
+        }
+        writeRandrSetCrtcConfigReply(XRandr.Success, timestamp = state.markRandrCrtcConfigSet())
+    }
+
+    private fun writeRandrSetCrtcConfigReply(status: Int, timestamp: Int = state.syncServerTime()) {
+        val reply = reply(extra = status, payloadUnits = 0)
+        byteOrder.put32(reply, 8, timestamp)
         write(reply)
     }
 

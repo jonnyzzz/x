@@ -80,7 +80,7 @@ class XRandrProtocolTest {
                 assertEquals(3, u32le(screenInfo, 4))
                 assertEquals(XRandr.Rotate0, screenInfo[1].toInt() and 0xff)
                 assertEquals(X11Ids.RootWindow, u32le(screenInfo, 8))
-                assertEquals(1, u32le(screenInfo, 16))
+                assertEquals(XRandr.ConfigTimestamp, u32le(screenInfo, 16))
                 assertEquals(1, u16le(screenInfo, 20))
                 assertEquals(0, u16le(screenInfo, 22))
                 assertEquals(XRandr.Rotate0, u16le(screenInfo, 24))
@@ -264,6 +264,64 @@ class XRandrProtocolTest {
 
                 val recovered = readReply(socket.getInputStream())
                 assertEquals(7, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR SetCrtcConfig validates fixed crtc configuration and recovers`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(request(XRandr.MajorOpcode, XRandr.SetCrtcConfig, ByteArray(20)))
+                out.write(setCrtcConfigRequest(crtc = 0x0102_0304))
+                out.write(setCrtcConfigRequest(configTimestamp = 0))
+                out.write(setCrtcConfigRequest())
+                out.write(setCrtcConfigRequest(timestamp = XRandr.ConfigTimestamp))
+                out.write(setCrtcConfigRequest(x = 1))
+                out.write(setCrtcConfigRequest(rotation = 2))
+                out.write(setCrtcConfigRequest(mode = 0x0102_0304))
+                out.write(setCrtcConfigRequest(outputs = intArrayOf(0x0102_0304)))
+                out.write(setCrtcConfigRequest(outputs = intArrayOf()))
+                out.write(setCrtcConfigRequest(mode = 0, outputs = intArrayOf()))
+                out.write(setCrtcConfigRequest())
+                out.write(crtcInfoRequest(XRandr.CrtcId))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 1, minorOpcode = XRandr.SetCrtcConfig)
+                assertError(socket.getInputStream(), error = XRandr.BadCrtc, badValue = 0x0102_0304, sequence = 2, minorOpcode = XRandr.SetCrtcConfig)
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 3, status = XRandr.InvalidConfigTime)
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 4, status = XRandr.Success)
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 5, status = XRandr.InvalidTime)
+                assertError(socket.getInputStream(), error = 8, badValue = 0, sequence = 6, minorOpcode = XRandr.SetCrtcConfig)
+                assertError(socket.getInputStream(), error = 2, badValue = 2, sequence = 7, minorOpcode = XRandr.SetCrtcConfig)
+                assertError(socket.getInputStream(), error = XRandr.BadMode, badValue = 0x0102_0304, sequence = 8, minorOpcode = XRandr.SetCrtcConfig)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = 0x0102_0304, sequence = 9, minorOpcode = XRandr.SetCrtcConfig)
+                assertError(socket.getInputStream(), error = 8, badValue = 0, sequence = 10, minorOpcode = XRandr.SetCrtcConfig)
+
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 11, status = XRandr.Failed)
+                assertSetCrtcConfigReply(readReply(socket.getInputStream()), sequence = 12, status = XRandr.Success)
+
+                val crtcInfo = readReply(socket.getInputStream())
+                assertEquals(13, u16le(crtcInfo, 2))
+                assertEquals(XRandr.Success, crtcInfo[1].toInt() and 0xff)
+                assertEquals(0, u16le(crtcInfo, 12))
+                assertEquals(0, u16le(crtcInfo, 14))
+                assertEquals(120, u16le(crtcInfo, 16))
+                assertEquals(90, u16le(crtcInfo, 18))
+                assertEquals(XRandr.ModeId, u32le(crtcInfo, 20))
+                assertEquals(XRandr.OutputId, u32le(crtcInfo, 32))
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(14, u16le(recovered, 2))
                 assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
                 assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
             }
@@ -885,6 +943,28 @@ class XRandrProtocolTest {
         return request(XRandr.MajorOpcode, XRandr.SetCrtcGamma, body)
     }
 
+    private fun setCrtcConfigRequest(
+        crtc: Int = XRandr.CrtcId,
+        timestamp: Int = 0,
+        configTimestamp: Int = XRandr.ConfigTimestamp,
+        x: Int = 0,
+        y: Int = 0,
+        mode: Int = XRandr.ModeId,
+        rotation: Int = XRandr.Rotate0,
+        outputs: IntArray = intArrayOf(XRandr.OutputId),
+    ): ByteArray {
+        val body = ByteArray(24 + outputs.size * 4)
+        put32le(body, 0, crtc)
+        put32le(body, 4, timestamp)
+        put32le(body, 8, configTimestamp)
+        put16le(body, 12, x)
+        put16le(body, 14, y)
+        put32le(body, 16, mode)
+        put16le(body, 20, rotation)
+        outputs.forEachIndexed { index, output -> put32le(body, 24 + index * 4, output) }
+        return request(XRandr.MajorOpcode, XRandr.SetCrtcConfig, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -1134,6 +1214,13 @@ class XRandrProtocolTest {
         assertEquals(90, u16le(bytes, 22))
         assertEquals(0, u16le(bytes, 24))
         assertEquals(0, bytes[26].toInt() and 0xff)
+    }
+
+    private fun assertSetCrtcConfigReply(bytes: ByteArray, sequence: Int, status: Int) {
+        assertEquals(1, bytes[0].toInt() and 0xff)
+        assertEquals(status, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(0, u32le(bytes, 4))
     }
 
     private fun assertMonitorReply(reply: ByteArray, sequence: Int, primary: Int) {
