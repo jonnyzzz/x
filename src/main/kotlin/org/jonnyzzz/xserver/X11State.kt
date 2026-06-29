@@ -66,6 +66,7 @@ internal class X11State(
     private val xfixesSelectionInputs = linkedMapOf<XEventSink, LinkedHashMap<XXFixesSelectionInputKey, Int>>()
     private val xfixesCursorInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val shapeInputs = linkedMapOf<XEventSink, LinkedHashSet<Int>>()
+    private val randrInputs = linkedMapOf<XEventSink, LinkedHashMap<Int, Int>>()
     private val screenSaverInputs = linkedMapOf<XEventSink, Int>()
     private val windowOwners = linkedMapOf<Int, XEventSink>()
     private val resourceOwners = linkedMapOf<Int, XEventSink>()
@@ -117,6 +118,7 @@ internal class X11State(
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
+    private val randrOutputProperties = linkedMapOf<Int, XRandrOutputProperty>()
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -315,6 +317,8 @@ internal class X11State(
         xfixesCursorInputs.entries.removeIf { it.value.isEmpty() }
         shapeInputs.values.forEach { windows -> windows.removeAll(removed) }
         shapeInputs.entries.removeIf { it.value.isEmpty() }
+        randrInputs.values.forEach { windows -> removed.forEach { windows.remove(it) } }
+        randrInputs.entries.removeIf { it.value.isEmpty() }
         saveSets.values.forEach { saveSet -> removed.forEach { saveSet.remove(it) } }
         saveSets.entries.removeIf { it.value.isEmpty() }
         removeEventSelections(removed)
@@ -500,6 +504,16 @@ internal class X11State(
             if (xfixesCursorInputs[owner]?.isEmpty() == true) xfixesCursorInputs.remove(owner)
         } else {
             xfixesCursorInputs.getOrPut(owner) { linkedMapOf() }[windowId] = eventMask
+        }
+    }
+
+    @Synchronized
+    fun selectRandrInput(owner: XEventSink, windowId: Int, eventMask: Int) {
+        if (eventMask == 0) {
+            randrInputs[owner]?.remove(windowId)
+            if (randrInputs[owner]?.isEmpty() == true) randrInputs.remove(owner)
+        } else {
+            randrInputs.getOrPut(owner) { linkedMapOf() }[windowId] = eventMask
         }
     }
 
@@ -1675,6 +1689,7 @@ internal class X11State(
         xfixesSelectionInputs.remove(sink)
         xfixesCursorInputs.remove(sink)
         shapeInputs.remove(sink)
+        randrInputs.remove(sink)
         screenSaverInputs.remove(sink)
         if (screenSaverAttributes?.owner == sink) screenSaverAttributes = null
         screenSaverSuspensions.remove(sink)
@@ -6441,6 +6456,34 @@ internal class X11State(
     fun atomName(id: Int): String? = atomNames[id]
 
     @Synchronized
+    fun randrOutputPropertyNames(): List<Int> = randrOutputProperties.keys.toList()
+
+    @Synchronized
+    fun randrOutputProperty(property: Int): XRandrOutputProperty? = randrOutputProperties[property]
+
+    @Synchronized
+    fun putRandrOutputProperty(property: Int, value: XRandrOutputProperty) {
+        randrOutputProperties[property] = value
+    }
+
+    @Synchronized
+    fun removeRandrOutputProperty(property: Int): Boolean =
+        randrOutputProperties.remove(property) != null
+
+    @Synchronized
+    fun configureRandrOutputProperty(property: Int, config: XRandrOutputPropertyConfig) {
+        randrOutputProperties[property] = (randrOutputProperties[property] ?: XRandrOutputProperty.Empty).copy(config = config)
+    }
+
+    @Synchronized
+    fun randrOutputPropertyNotifySinks(): List<XRandrOutputPropertyNotifyDispatch> =
+        randrInputs.flatMap { (sink, selections) ->
+            selections
+                .filter { (_, eventMask) -> (eventMask and XRandr.OutputPropertyNotifyMask) != 0 }
+                .map { (windowId) -> XRandrOutputPropertyNotifyDispatch(sink = sink, windowId = windowId) }
+        }
+
+    @Synchronized
     fun setSelectionOwner(selection: Int, owner: Int, sink: XEventSink, time: Int): XSelectionOwnerUpdate? {
         val current = selectionOwners[selection]
         val lastChangeTime = selectionLastChangeTimes[selection] ?: 0
@@ -7892,6 +7935,23 @@ internal data class XProperty(
     val type: Int,
     val format: Int,
     val data: ByteArray,
+)
+
+internal data class XRandrOutputProperty(
+    val config: XRandrOutputPropertyConfig = XRandrOutputPropertyConfig(),
+    val current: XProperty? = null,
+    val pending: XProperty? = null,
+) {
+    companion object {
+        private val EmptyValue = XProperty(type = 0, format = 0, data = ByteArray(0))
+        val Empty = XRandrOutputProperty(current = EmptyValue, pending = EmptyValue)
+    }
+}
+
+internal data class XRandrOutputPropertyConfig(
+    val pending: Boolean = false,
+    val range: Boolean = false,
+    val validValues: ByteArray = ByteArray(0),
 )
 
 internal data class XExtension(

@@ -6826,6 +6826,11 @@ internal class X11Connection(
             XRandr.GetScreenResourcesCurrent -> randrGetScreenResources(body, majorOpcode, XRandr.GetScreenResourcesCurrent)
             XRandr.GetOutputInfo -> randrGetOutputInfo(body, majorOpcode)
             XRandr.ListOutputProperties -> randrListOutputProperties(body, majorOpcode)
+            XRandr.QueryOutputProperty -> randrQueryOutputProperty(body, majorOpcode)
+            XRandr.ConfigureOutputProperty -> randrConfigureOutputProperty(body, majorOpcode)
+            XRandr.ChangeOutputProperty -> randrChangeOutputProperty(body, majorOpcode)
+            XRandr.DeleteOutputProperty -> randrDeleteOutputProperty(body, majorOpcode)
+            XRandr.GetOutputProperty -> randrGetOutputProperty(body, majorOpcode)
             XRandr.GetCrtcInfo -> randrGetCrtcInfo(body, majorOpcode)
             XRandr.GetCrtcGammaSize -> randrGetCrtcGammaSize(body, majorOpcode)
             XRandr.GetCrtcGamma -> randrGetCrtcGamma(body, majorOpcode)
@@ -6882,6 +6887,7 @@ internal class X11Connection(
         if ((enable and XRandr.EventMask.inv()) != 0) {
             return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SelectInput, badValue = enable)
         }
+        state.selectRandrInput(this, window, enable)
     }
 
     private fun randrGetScreenSizeRange(body: ByteArray, majorOpcode: Int) {
@@ -6948,7 +6954,178 @@ internal class X11Connection(
         if (output != XRandr.OutputId) {
             return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.ListOutputProperties, badValue = output)
         }
-        write(reply(extra = 0, payloadUnits = 0))
+        val properties = state.randrOutputPropertyNames()
+        val reply = reply(extra = 0, payloadUnits = properties.size)
+        byteOrder.put16(reply, 8, properties.size)
+        var offset = 32
+        for (property in properties) {
+            byteOrder.put32(reply, offset, property)
+            offset += 4
+        }
+        write(reply)
+    }
+
+    private fun randrQueryOutputProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.QueryOutputProperty, badValue = 0)
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.QueryOutputProperty, badValue = output)
+        }
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.QueryOutputProperty, badValue = property)
+        val propertyState = state.randrOutputProperty(property)
+            ?: return writeError(error = 15, opcode = majorOpcode, minorOpcode = XRandr.QueryOutputProperty, badValue = property)
+        val config = propertyState.config
+        val validValues = config.validValues
+        val reply = reply(extra = 0, payloadUnits = validValues.size / 4)
+        reply[8] = if (config.pending) 1 else 0
+        reply[9] = if (config.range) 1 else 0
+        propertyDataForClientOrder(32, validValues).copyInto(reply, 32)
+        write(reply)
+    }
+
+    private fun randrConfigureOutputProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 12 || (body.size - 12) % 4 != 0) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = 0)
+        }
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = output)
+        }
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = property)
+        val pending = body[8].toInt() and 0xff
+        val range = body[9].toInt() and 0xff
+        if (pending !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = pending)
+        if (range !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = range)
+        if (range != 0 && body.size != 20) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ConfigureOutputProperty, badValue = range)
+        }
+        state.configureRandrOutputProperty(
+            property,
+            XRandrOutputPropertyConfig(
+                pending = pending != 0,
+                range = range != 0,
+                validValues = propertyDataToServerOrder(32, body, 12, body.size - 12),
+            ),
+        )
+    }
+
+    private fun randrChangeOutputProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 20) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = 0)
+        val mode = body[13].toInt() and 0xff
+        if (mode !in XPropertyMode.Replace..XPropertyMode.Append) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = mode)
+        val format = body[12].toInt() and 0xff
+        if (format !in XPropertyFormat.ValidFormats) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = format)
+        val unitCount = Integer.toUnsignedLong(byteOrder.u32(body, 16))
+        val byteLength = unitCount * (format / 8)
+        val expectedSize = 20L + paddedLength(byteLength)
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = 0)
+        }
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = output)
+        }
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = property)
+        val type = byteOrder.u32(body, 8)
+        if (state.atomName(type) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = type)
+        val data = propertyDataToServerOrder(format, body, 20, byteLength.toInt())
+        val propertyState = state.randrOutputProperty(property) ?: XRandrOutputProperty()
+        val existing = if (propertyState.config.pending) propertyState.pending else propertyState.current
+        val hasEmptyNoneValue = existing?.type == 0 && existing.format == 0 && existing.data.isEmpty()
+        if (mode != XPropertyMode.Replace && existing != null && !hasEmptyNoneValue && (existing.type != type || existing.format != format)) {
+            return writeError(error = 8, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = 0)
+        }
+        val base = if (hasEmptyNoneValue) XProperty(type = type, format = format, data = ByteArray(0)) else existing ?: XProperty(type = type, format = format, data = ByteArray(0))
+        val updated = when (mode) {
+            XPropertyMode.Prepend -> base.copy(data = data + base.data)
+            XPropertyMode.Append -> base.copy(data = base.data + data)
+            else -> XProperty(type = type, format = format, data = data)
+        }
+        val invalidValue = randrOutputPropertyInvalidValue(updated, propertyState.config)
+        if (invalidValue != null) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.ChangeOutputProperty, badValue = invalidValue)
+        }
+        state.putRandrOutputProperty(
+            property,
+            if (propertyState.config.pending) {
+                propertyState.copy(pending = updated)
+            } else {
+                propertyState.copy(current = updated, pending = updated)
+            },
+        )
+        sendRandrOutputPropertyNotify(property, XRandr.PropertyNewValue)
+    }
+
+    private fun randrDeleteOutputProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.DeleteOutputProperty, badValue = 0)
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.DeleteOutputProperty, badValue = output)
+        }
+        val property = byteOrder.u32(body, 4)
+        if (state.atomName(property) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.DeleteOutputProperty, badValue = property)
+        if (state.removeRandrOutputProperty(property)) {
+            sendRandrOutputPropertyNotify(property, XRandr.PropertyDeleted)
+        }
+    }
+
+    private fun randrGetOutputProperty(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 24) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = 0)
+        val delete = body[20].toInt() and 0xff
+        if (delete !in XPropertyDelete.False..XPropertyDelete.True) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = delete)
+        }
+        val pending = body[21].toInt() and 0xff
+        if (pending !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = pending)
+        val output = byteOrder.u32(body, 0)
+        if (output != XRandr.OutputId) {
+            return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = output)
+        }
+        val propertyId = byteOrder.u32(body, 4)
+        if (state.atomName(propertyId) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = propertyId)
+        val requestedType = byteOrder.u32(body, 8)
+        if (requestedType != XPropertyType.Any && state.atomName(requestedType) == null) {
+            return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = requestedType)
+        }
+        val longOffsetUnits = byteOrder.u32(body, 12)
+        val longOffset = Integer.toUnsignedLong(longOffsetUnits).saturatingTimes4()
+        val longLength = Integer.toUnsignedLong(byteOrder.u32(body, 16)).saturatingTimes4()
+        val property = state.randrOutputProperty(propertyId)
+        val selected = if (pending != 0 && property?.pending != null) property.pending else property?.current
+        if (selected == null) {
+            val reply = reply(extra = 0, payloadUnits = 0)
+            byteOrder.put32(reply, 8, 0)
+            byteOrder.put32(reply, 12, 0)
+            byteOrder.put32(reply, 16, 0)
+            return write(reply)
+        }
+        if (requestedType != XPropertyType.Any && requestedType != selected.type) {
+            val reply = reply(extra = selected.format, payloadUnits = 0)
+            byteOrder.put32(reply, 8, selected.type)
+            byteOrder.put32(reply, 12, selected.data.size)
+            byteOrder.put32(reply, 16, 0)
+            return write(reply)
+        }
+        if (longOffset > selected.data.size.toLong()) {
+            return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetOutputProperty, badValue = longOffsetUnits)
+        }
+        val available = selected.data.drop(longOffset.toInt()).toByteArray()
+        val value = available.take(longLength.coerceAtMost(available.size.toLong()).toInt()).toByteArray()
+        val bytesAfter = (available.size - value.size).coerceAtLeast(0)
+        val reply = reply(extra = selected.format, payloadUnits = paddedLength(value.size) / 4)
+        byteOrder.put32(reply, 8, selected.type)
+        byteOrder.put32(reply, 12, bytesAfter)
+        byteOrder.put32(reply, 16, if (selected.format == 0) 0 else value.size / (selected.format / 8))
+        propertyDataForClientOrder(selected.format, value).copyInto(reply, 32)
+        val shouldDelete = delete != 0 && bytesAfter == 0
+        if (shouldDelete) state.removeRandrOutputProperty(propertyId)
+        write(reply)
+        if (shouldDelete) {
+            sendRandrOutputPropertyNotify(propertyId, XRandr.PropertyDeleted)
+        }
     }
 
     private fun randrGetCrtcInfo(body: ByteArray, majorOpcode: Int) {
@@ -8739,6 +8916,19 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = (XRandr.FirstEvent + XRandr.Notify).toByte()
+        bytes[1] = XRandr.NotifyOutputProperty.toByte()
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put32(bytes, 8, event.output)
+        byteOrder.put32(bytes, 12, event.atom)
+        byteOrder.put32(bytes, 16, event.timestamp)
+        bytes[20] = event.state.toByte()
+        write(bytes)
+    }
+
     override fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent) {
         val bytes = ByteArray(32)
         bytes[0] = (XSync.FirstEvent + 0).toByte()
@@ -9831,6 +10021,33 @@ internal class X11Connection(
     private fun propertyDataForClientOrder(format: Int, data: ByteArray): ByteArray =
         if (format == 8 || byteOrder == ByteOrder.LsbFirst) data else data.withSwappedPropertyElements(format)
 
+    private fun randrOutputPropertyInvalidValue(property: XProperty, config: XRandrOutputPropertyConfig): Int? {
+        if (config.validValues.isEmpty()) return null
+        if (property.format != 32) return property.format
+        if (property.data.isEmpty()) return null
+        if (config.range) {
+            val min = serverOrderI32(config.validValues, 0)
+            val max = serverOrderI32(config.validValues, 4)
+            for (offset in property.data.indices step 4) {
+                val value = serverOrderI32(property.data, offset)
+                if (value < min || value > max) return value
+            }
+            return null
+        }
+        val allowed = config.validValues.indices
+            .step(4)
+            .map { offset -> serverOrderI32(config.validValues, offset) }
+            .toSet()
+        for (offset in property.data.indices step 4) {
+            val value = serverOrderI32(property.data, offset)
+            if (value !in allowed) return value
+        }
+        return null
+    }
+
+    private fun serverOrderI32(bytes: ByteArray, offset: Int): Int =
+        ByteOrder.LsbFirst.u32(bytes, offset)
+
     private fun ByteArray.withSwappedPropertyElements(format: Int): ByteArray {
         val swapped = copyOf()
         when (format) {
@@ -9906,6 +10123,23 @@ internal class X11Connection(
     private fun sendShapeNotify(notifications: List<XShapeNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendShapeNotifyEvent(notification.event) }
+        }
+    }
+
+    private fun sendRandrOutputPropertyNotify(atom: Int, propertyState: Int) {
+        val timestamp = state.syncServerTime()
+        for (notification in state.randrOutputPropertyNotifySinks()) {
+            runCatching {
+                notification.sink.sendRandrOutputPropertyNotifyEvent(
+                    XRandrOutputPropertyNotifyEvent(
+                        windowId = notification.windowId,
+                        output = XRandr.OutputId,
+                        atom = atom,
+                        timestamp = timestamp,
+                        state = propertyState,
+                    ),
+                )
+            }
         }
     }
 

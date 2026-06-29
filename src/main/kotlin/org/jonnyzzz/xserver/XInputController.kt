@@ -178,6 +178,7 @@ internal interface XEventSink {
     fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
     fun sendXFixesCursorNotifyEvent(event: XXFixesCursorNotifyEvent)
     fun sendShapeNotifyEvent(event: XShapeNotifyEvent)
+    fun sendRandrOutputPropertyNotifyEvent(event: XRandrOutputPropertyNotifyEvent)
     fun sendSyncCounterNotifyEvent(event: XSyncCounterNotifyEvent)
     fun sendSyncAlarmNotifyEvent(event: XSyncAlarmNotifyEvent)
     fun sendSyntheticEvent(event: XSyntheticEvent)
@@ -490,6 +491,19 @@ internal data class XShapeNotifyEvent(
 internal data class XShapeNotifyDispatch(
     val sink: XEventSink,
     val event: XShapeNotifyEvent,
+)
+
+internal data class XRandrOutputPropertyNotifyEvent(
+    val windowId: Int,
+    val output: Int,
+    val atom: Int,
+    val timestamp: Int,
+    val state: Int,
+)
+
+internal data class XRandrOutputPropertyNotifyDispatch(
+    val sink: XEventSink,
+    val windowId: Int,
 )
 
 internal data class XSyntheticEvent(

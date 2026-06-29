@@ -8,6 +8,12 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 
 class XRandrProtocolTest {
+    private companion object {
+        const val PrimaryAtom = 1
+        const val AtomAtom = 4
+        const val StringAtom = 31
+    }
+
     @Test
     fun `RANDR reports read-only single screen resources and recovers after errors`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
@@ -229,6 +235,241 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR output properties store values and report property metadata`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 0, range = 0))
+                out.write(queryOutputPropertyRequest(XRandr.OutputId, PrimaryAtom))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, mode = 0, data = "hello".encodeToByteArray()))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, mode = 1, data = "pre-".encodeToByteArray()))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, mode = 2, data = "-post".encodeToByteArray()))
+                out.write(u32Request(XRandr.ListOutputProperties, XRandr.OutputId))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, longLength = 4))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, AtomAtom, longLength = 4))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, delete = 1, longLength = 4))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, longLength = 4))
+                out.write(u32Request(XRandr.ListOutputProperties, XRandr.OutputId))
+                out.write(queryOutputPropertyRequest(XRandr.OutputId, PrimaryAtom))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                val query = readReply(socket.getInputStream())
+                assertEquals(2, u16le(query, 2))
+                assertEquals(0, u32le(query, 4))
+                assertEquals(0, query[8].toInt() and 0xff)
+                assertEquals(0, query[9].toInt() and 0xff)
+                assertEquals(0, query[10].toInt() and 0xff)
+
+                val properties = readReply(socket.getInputStream())
+                assertEquals(6, u16le(properties, 2))
+                assertEquals(1, u32le(properties, 4))
+                assertEquals(1, u16le(properties, 8))
+                assertEquals(PrimaryAtom, u32le(properties, 32))
+
+                val full = readReply(socket.getInputStream())
+                assertOutputPropertyReply(full, sequence = 7, format = 8, type = StringAtom, bytesAfter = 0, items = 14)
+                assertEquals("pre-hello-post", full.copyOfRange(32, 46).decodeToString())
+
+                val mismatch = readReply(socket.getInputStream())
+                assertOutputPropertyReply(mismatch, sequence = 8, format = 8, type = StringAtom, bytesAfter = 14, items = 0)
+
+                val deleted = readReply(socket.getInputStream())
+                assertOutputPropertyReply(deleted, sequence = 9, format = 8, type = StringAtom, bytesAfter = 0, items = 14)
+                assertEquals("pre-hello-post", deleted.copyOfRange(32, 46).decodeToString())
+
+                val absent = readReply(socket.getInputStream())
+                assertOutputPropertyReply(absent, sequence = 10, format = 0, type = 0, bytesAfter = 0, items = 0)
+
+                val emptyProperties = readReply(socket.getInputStream())
+                assertEquals(11, u16le(emptyProperties, 2))
+                assertEquals(0, u32le(emptyProperties, 4))
+                assertEquals(0, u16le(emptyProperties, 8))
+
+                assertError(socket.getInputStream(), error = 15, badValue = PrimaryAtom, sequence = 12, minorOpcode = XRandr.QueryOutputProperty)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(13, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR pending output properties do not replace current value until requested`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 1, range = 0))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, data = "pending".encodeToByteArray()))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, 0, longLength = 4, pending = 0))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, 0, longLength = 4, pending = 1))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                val current = readReply(socket.getInputStream())
+                assertOutputPropertyReply(current, sequence = 3, format = 0, type = 0, bytesAfter = 0, items = 0)
+
+                val pending = readReply(socket.getInputStream())
+                assertOutputPropertyReply(pending, sequence = 4, format = 8, type = StringAtom, bytesAfter = 0, items = 7)
+                assertEquals("pending", pending.copyOfRange(32, 39).decodeToString())
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(5, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR output property requests validate resources atoms values and lengths`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = 0x0102_0304
+                out.write(queryOutputPropertyRequest(missing, PrimaryAtom))
+                out.write(queryOutputPropertyRequest(XRandr.OutputId, missing))
+                out.write(queryOutputPropertyRequest(XRandr.OutputId, StringAtom))
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 2, range = 0))
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 0, range = 1, validValues = intArrayOf(1)))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 7, data = "x".encodeToByteArray()))
+                out.write(changeOutputPropertyRequest(missing, PrimaryAtom, StringAtom, format = 8, data = "x".encodeToByteArray()))
+                out.write(deleteOutputPropertyRequest(missing, PrimaryAtom))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, delete = 2))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, missing, StringAtom))
+                out.write(request(XRandr.MajorOpcode, XRandr.GetOutputProperty, ByteArray(20)))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = missing, sequence = 1, minorOpcode = XRandr.QueryOutputProperty)
+                assertError(socket.getInputStream(), error = 5, badValue = missing, sequence = 2, minorOpcode = XRandr.QueryOutputProperty)
+                assertError(socket.getInputStream(), error = 15, badValue = StringAtom, sequence = 3, minorOpcode = XRandr.QueryOutputProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 2, sequence = 4, minorOpcode = XRandr.ConfigureOutputProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 1, sequence = 5, minorOpcode = XRandr.ConfigureOutputProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 7, sequence = 6, minorOpcode = XRandr.ChangeOutputProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = missing, sequence = 7, minorOpcode = XRandr.ChangeOutputProperty)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = missing, sequence = 8, minorOpcode = XRandr.DeleteOutputProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 2, sequence = 9, minorOpcode = XRandr.GetOutputProperty)
+                assertError(socket.getInputStream(), error = 5, badValue = missing, sequence = 10, minorOpcode = XRandr.GetOutputProperty)
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 11, minorOpcode = XRandr.GetOutputProperty)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(12, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR output property configured values are enforced`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 0, range = 0, validValues = intArrayOf(3, 7)))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 32, data = int32le(3, 7)))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 32, data = int32le(3, 4)))
+                out.write(configureOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, pending = 0, range = 1, validValues = intArrayOf(10, 20)))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 32, data = int32le(15)))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 32, data = int32le(21)))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 2, badValue = 4, sequence = 3, minorOpcode = XRandr.ChangeOutputProperty)
+                assertError(socket.getInputStream(), error = 2, badValue = 21, sequence = 6, minorOpcode = XRandr.ChangeOutputProperty)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(7, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR output property notify events are delivered for changes and deletes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(selectInputRequest(X11Ids.RootWindow, XRandr.OutputPropertyNotifyMask))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, data = "one".encodeToByteArray()))
+                out.write(deleteOutputPropertyRequest(XRandr.OutputId, PrimaryAtom))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, data = "two".encodeToByteArray()))
+                out.write(getOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, 0, delete = 1, longLength = 1))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertOutputPropertyNotify(socket.getInputStream().readExactly(32), sequence = 2, atom = PrimaryAtom, state = XRandr.PropertyNewValue)
+                assertOutputPropertyNotify(socket.getInputStream().readExactly(32), sequence = 3, atom = PrimaryAtom, state = XRandr.PropertyDeleted)
+                assertOutputPropertyNotify(socket.getInputStream().readExactly(32), sequence = 4, atom = PrimaryAtom, state = XRandr.PropertyNewValue)
+
+                val deleted = readReply(socket.getInputStream())
+                assertOutputPropertyReply(deleted, sequence = 5, format = 8, type = StringAtom, bytesAfter = 0, items = 3)
+                assertEquals("two", deleted.copyOfRange(32, 35).decodeToString())
+                assertOutputPropertyNotify(socket.getInputStream().readExactly(32), sequence = 5, atom = PrimaryAtom, state = XRandr.PropertyDeleted)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(6, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RANDR output property notify selection is removed with destroyed window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val child = 0x0020_0101
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(child))
+                out.write(selectInputRequest(child, XRandr.OutputPropertyNotifyMask))
+                out.write(destroyWindowRequest(child))
+                out.write(changeOutputPropertyRequest(XRandr.OutputId, PrimaryAtom, StringAtom, format = 8, data = "quiet".encodeToByteArray()))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(5, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR swaps replies for big endian clients`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -241,6 +482,10 @@ class XRandrProtocolTest {
                 out.write(outputInfoRequestBe(XRandr.OutputId))
                 out.write(crtcInfoRequestBe(XRandr.CrtcId))
                 out.write(getMonitorsRequestBe(X11Ids.RootWindow, 1))
+                out.write(configureOutputPropertyRequestBe(XRandr.OutputId, StringAtom, pending = 0, range = 0, validValues = intArrayOf(0x0102_0304, 0x0a0b_0c0d)))
+                out.write(queryOutputPropertyRequestBe(XRandr.OutputId, StringAtom))
+                out.write(changeOutputPropertyRequestBe(XRandr.OutputId, PrimaryAtom, AtomAtom, format = 16, data = byteArrayOf(0x11, 0x22, 0x33, 0x44)))
+                out.write(getOutputPropertyRequestBe(XRandr.OutputId, PrimaryAtom, AtomAtom, longLength = 1))
                 out.flush()
 
                 val version = readReply(socket.getInputStream())
@@ -285,6 +530,26 @@ class XRandrProtocolTest {
                 assertEquals(32, u32be(monitors, 48))
                 assertEquals(24, u32be(monitors, 52))
                 assertEquals(XRandr.OutputId, u32be(monitors, 56))
+
+                val query = readReplyBe(socket.getInputStream())
+                assertEquals(7, u16be(query, 2))
+                assertEquals(2, u32be(query, 4))
+                assertEquals(0, query[8].toInt() and 0xff)
+                assertEquals(0, query[9].toInt() and 0xff)
+                assertEquals(0x0102_0304, u32be(query, 32))
+                assertEquals(0x0a0b_0c0d, u32be(query, 36))
+
+                val property = readReplyBe(socket.getInputStream())
+                assertEquals(9, u16be(property, 2))
+                assertEquals(1, u32be(property, 4))
+                assertEquals(16, property[1].toInt() and 0xff)
+                assertEquals(AtomAtom, u32be(property, 8))
+                assertEquals(0, u32be(property, 12))
+                assertEquals(2, u32be(property, 16))
+                assertEquals(0x11, property[32].toInt() and 0xff)
+                assertEquals(0x22, property[33].toInt() and 0xff)
+                assertEquals(0x33, property[34].toInt() and 0xff)
+                assertEquals(0x44, property[35].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
@@ -414,6 +679,170 @@ class XRandrProtocolTest {
         return requestBe(XRandr.MajorOpcode, XRandr.GetMonitors, body)
     }
 
+    private fun selectInputRequest(window: Int, eventMask: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put16le(body, 4, eventMask)
+        return request(XRandr.MajorOpcode, XRandr.SelectInput, body)
+    }
+
+    private fun createWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(28)
+        put32le(body, 0, id)
+        put32le(body, 4, X11Ids.RootWindow)
+        put16le(body, 12, 20)
+        put16le(body, 14, 10)
+        put16le(body, 18, 1)
+        put32le(body, 20, X11Ids.RootVisual)
+        return request(1, 24, body)
+    }
+
+    private fun destroyWindowRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(4, 0, body)
+    }
+
+    private fun queryOutputPropertyRequest(output: Int, property: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, output)
+        put32le(body, 4, property)
+        return request(XRandr.MajorOpcode, XRandr.QueryOutputProperty, body)
+    }
+
+    private fun queryOutputPropertyRequestBe(output: Int, property: Int): ByteArray {
+        val body = ByteArray(8)
+        put32be(body, 0, output)
+        put32be(body, 4, property)
+        return requestBe(XRandr.MajorOpcode, XRandr.QueryOutputProperty, body)
+    }
+
+    private fun configureOutputPropertyRequest(
+        output: Int,
+        property: Int,
+        pending: Int,
+        range: Int,
+        validValues: IntArray = intArrayOf(),
+    ): ByteArray {
+        val body = ByteArray(12 + validValues.size * 4)
+        put32le(body, 0, output)
+        put32le(body, 4, property)
+        body[8] = pending.toByte()
+        body[9] = range.toByte()
+        validValues.forEachIndexed { index, value -> put32le(body, 12 + index * 4, value) }
+        return request(XRandr.MajorOpcode, XRandr.ConfigureOutputProperty, body)
+    }
+
+    private fun configureOutputPropertyRequestBe(
+        output: Int,
+        property: Int,
+        pending: Int,
+        range: Int,
+        validValues: IntArray = intArrayOf(),
+    ): ByteArray {
+        val body = ByteArray(12 + validValues.size * 4)
+        put32be(body, 0, output)
+        put32be(body, 4, property)
+        body[8] = pending.toByte()
+        body[9] = range.toByte()
+        validValues.forEachIndexed { index, value -> put32be(body, 12 + index * 4, value) }
+        return requestBe(XRandr.MajorOpcode, XRandr.ConfigureOutputProperty, body)
+    }
+
+    private fun changeOutputPropertyRequest(
+        output: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        mode: Int = 0,
+        data: ByteArray,
+    ): ByteArray {
+        val padded = (data.size + 3) and -4
+        val body = ByteArray(20 + padded)
+        put32le(body, 0, output)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        body[12] = format.toByte()
+        body[13] = mode.toByte()
+        put32le(body, 16, data.size / propertyUnitSize(format))
+        data.copyInto(body, 20)
+        return request(XRandr.MajorOpcode, XRandr.ChangeOutputProperty, body)
+    }
+
+    private fun changeOutputPropertyRequestBe(
+        output: Int,
+        property: Int,
+        type: Int,
+        format: Int,
+        mode: Int = 0,
+        data: ByteArray,
+    ): ByteArray {
+        val padded = (data.size + 3) and -4
+        val body = ByteArray(20 + padded)
+        put32be(body, 0, output)
+        put32be(body, 4, property)
+        put32be(body, 8, type)
+        body[12] = format.toByte()
+        body[13] = mode.toByte()
+        put32be(body, 16, data.size / propertyUnitSize(format))
+        data.copyInto(body, 20)
+        return requestBe(XRandr.MajorOpcode, XRandr.ChangeOutputProperty, body)
+    }
+
+    private fun propertyUnitSize(format: Int): Int =
+        when (format) {
+            16 -> 2
+            32 -> 4
+            else -> 1
+        }
+
+    private fun deleteOutputPropertyRequest(output: Int, property: Int): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, output)
+        put32le(body, 4, property)
+        return request(XRandr.MajorOpcode, XRandr.DeleteOutputProperty, body)
+    }
+
+    private fun getOutputPropertyRequest(
+        output: Int,
+        property: Int,
+        type: Int,
+        longOffset: Int = 0,
+        longLength: Int = 0,
+        delete: Int = 0,
+        pending: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(24)
+        put32le(body, 0, output)
+        put32le(body, 4, property)
+        put32le(body, 8, type)
+        put32le(body, 12, longOffset)
+        put32le(body, 16, longLength)
+        body[20] = delete.toByte()
+        body[21] = pending.toByte()
+        return request(XRandr.MajorOpcode, XRandr.GetOutputProperty, body)
+    }
+
+    private fun getOutputPropertyRequestBe(
+        output: Int,
+        property: Int,
+        type: Int,
+        longOffset: Int = 0,
+        longLength: Int = 0,
+        delete: Int = 0,
+        pending: Int = 0,
+    ): ByteArray {
+        val body = ByteArray(24)
+        put32be(body, 0, output)
+        put32be(body, 4, property)
+        put32be(body, 8, type)
+        put32be(body, 12, longOffset)
+        put32be(body, 16, longLength)
+        body[20] = delete.toByte()
+        body[21] = pending.toByte()
+        return requestBe(XRandr.MajorOpcode, XRandr.GetOutputProperty, body)
+    }
+
     private fun queryPointerRequest(): ByteArray {
         val body = ByteArray(4)
         put32le(body, 0, X11Ids.RootWindow)
@@ -446,6 +875,24 @@ class XRandrProtocolTest {
         assertEquals(badValue, u32le(bytes, 4))
         assertEquals(minorOpcode, u16le(bytes, 8))
         assertEquals(XRandr.MajorOpcode, bytes[10].toInt() and 0xff)
+    }
+
+    private fun assertOutputPropertyReply(reply: ByteArray, sequence: Int, format: Int, type: Int, bytesAfter: Int, items: Int) {
+        assertEquals(sequence, u16le(reply, 2))
+        assertEquals(format, reply[1].toInt() and 0xff)
+        assertEquals(type, u32le(reply, 8))
+        assertEquals(bytesAfter, u32le(reply, 12))
+        assertEquals(items, u32le(reply, 16))
+    }
+
+    private fun assertOutputPropertyNotify(bytes: ByteArray, sequence: Int, atom: Int, state: Int) {
+        assertEquals(XRandr.FirstEvent + XRandr.Notify, bytes[0].toInt() and 0xff)
+        assertEquals(XRandr.NotifyOutputProperty, bytes[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(bytes, 2))
+        assertEquals(X11Ids.RootWindow, u32le(bytes, 4))
+        assertEquals(XRandr.OutputId, u32le(bytes, 8))
+        assertEquals(atom, u32le(bytes, 12))
+        assertEquals(state, bytes[20].toInt() and 0xff)
     }
 
     private fun readReply(input: InputStream): ByteArray {
@@ -503,6 +950,12 @@ class XRandrProtocolTest {
     private fun put32be(bytes: ByteArray, offset: Int, value: Int) {
         put16be(bytes, offset, value ushr 16)
         put16be(bytes, offset + 2, value)
+    }
+
+    private fun int32le(vararg values: Int): ByteArray {
+        val bytes = ByteArray(values.size * 4)
+        values.forEachIndexed { index, value -> put32le(bytes, index * 4, value) }
+        return bytes
     }
 
     private fun u16le(bytes: ByteArray, offset: Int): Int =

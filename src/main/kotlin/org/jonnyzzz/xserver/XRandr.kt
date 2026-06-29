@@ -21,6 +21,11 @@ internal object XRandr {
     const val GetScreenResources = 8
     const val GetOutputInfo = 9
     const val ListOutputProperties = 10
+    const val QueryOutputProperty = 11
+    const val ConfigureOutputProperty = 12
+    const val ChangeOutputProperty = 13
+    const val DeleteOutputProperty = 14
+    const val GetOutputProperty = 15
     const val GetCrtcInfo = 20
     const val GetCrtcGammaSize = 22
     const val GetCrtcGamma = 23
@@ -33,6 +38,10 @@ internal object XRandr {
     const val Connected = 0
     const val SubPixelUnknown = 0
     const val Success = 0
+    const val Notify = 1
+    const val NotifyOutputProperty = 2
+    const val PropertyNewValue = 0
+    const val PropertyDeleted = 1
 
     const val ScreenChangeNotifyMask = 1 shl 0
     const val CrtcChangeNotifyMask = 1 shl 1
@@ -68,6 +77,11 @@ internal object XRandr {
             GetScreenResources -> "GetScreenResources"
             GetOutputInfo -> "GetOutputInfo"
             ListOutputProperties -> "ListOutputProperties"
+            QueryOutputProperty -> "QueryOutputProperty"
+            ConfigureOutputProperty -> "ConfigureOutputProperty"
+            ChangeOutputProperty -> "ChangeOutputProperty"
+            DeleteOutputProperty -> "DeleteOutputProperty"
+            GetOutputProperty -> "GetOutputProperty"
             GetCrtcInfo -> "GetCrtcInfo"
             GetCrtcGammaSize -> "GetCrtcGammaSize"
             GetCrtcGamma -> "GetCrtcGamma"
