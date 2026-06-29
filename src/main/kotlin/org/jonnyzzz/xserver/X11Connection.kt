@@ -6854,6 +6854,8 @@ internal class X11Connection(
             XRandr.DeleteProviderProperty -> randrDeleteProviderProperty(body, majorOpcode)
             XRandr.GetProviderProperty -> randrGetProviderProperty(body, majorOpcode)
             XRandr.GetMonitors -> randrGetMonitors(body, majorOpcode)
+            XRandr.SetMonitor -> randrSetMonitor(body, majorOpcode)
+            XRandr.DeleteMonitor -> randrDeleteMonitor(body, majorOpcode)
             else -> unsupportedRequest(majorOpcode, minorOpcode, "RANDR.${XRandr.operationName(minorOpcode)}")
         }
     }
@@ -7470,22 +7472,102 @@ internal class X11Connection(
         val getActive = body[4].toInt() and 0xff
         if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.GetMonitors, badValue = window)
         if (getActive !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.GetMonitors, badValue = getActive)
-        val reply = reply(extra = XRandr.Success, payloadUnits = 7)
-        byteOrder.put32(reply, 8, state.syncServerTime())
-        byteOrder.put32(reply, 12, 1)
-        byteOrder.put32(reply, 16, 1)
-        byteOrder.put32(reply, 32, 0)
-        reply[36] = if (state.randrPrimaryOutput() == XRandr.OutputId) 1 else 0
-        reply[37] = 1
-        byteOrder.put16(reply, 38, 1)
-        byteOrder.put16(reply, 40, 0)
-        byteOrder.put16(reply, 42, 0)
-        byteOrder.put16(reply, 44, state.width)
-        byteOrder.put16(reply, 46, state.height)
-        byteOrder.put32(reply, 48, state.widthMillimeters)
-        byteOrder.put32(reply, 52, state.heightMillimeters)
-        byteOrder.put32(reply, 56, XRandr.OutputId)
+        val snapshot = state.randrMonitorSnapshot()
+        val monitors = snapshot.monitors
+        val outputCount = monitors.sumOf { it.outputs.size }
+        val reply = reply(extra = XRandr.Success, payloadUnits = monitors.size * 6 + outputCount)
+        byteOrder.put32(reply, 8, snapshot.timestamp)
+        byteOrder.put32(reply, 12, monitors.size)
+        byteOrder.put32(reply, 16, outputCount)
+        var offset = 32
+        for (monitor in monitors) {
+            byteOrder.put32(reply, offset, monitor.name)
+            reply[offset + 4] = if (monitor.primary) 1 else 0
+            reply[offset + 5] = if (monitor.automatic) 1 else 0
+            byteOrder.put16(reply, offset + 6, monitor.outputs.size)
+            byteOrder.put16(reply, offset + 8, monitor.x)
+            byteOrder.put16(reply, offset + 10, monitor.y)
+            byteOrder.put16(reply, offset + 12, monitor.width)
+            byteOrder.put16(reply, offset + 14, monitor.height)
+            byteOrder.put32(reply, offset + 16, monitor.widthMillimeters)
+            byteOrder.put32(reply, offset + 20, monitor.heightMillimeters)
+            offset += 24
+            for (output in monitor.outputs) {
+                byteOrder.put32(reply, offset, output)
+                offset += 4
+            }
+        }
         write(reply)
+    }
+
+    private fun randrSetMonitor(body: ByteArray, majorOpcode: Int) {
+        if (body.size < 28) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = 0)
+        val noutput = byteOrder.u16(body, 10)
+        val expectedSize = 28L + noutput.toLong() * 4L
+        if (expectedSize > Int.MAX_VALUE || body.size != expectedSize.toInt()) {
+            return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = 0)
+        }
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = window)
+        val name = byteOrder.u32(body, 4)
+        val atomName = state.atomName(name) ?: return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = name)
+        if (atomName == XRandr.OutputName) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = name)
+        val primary = body[8].toInt() and 0xff
+        if (primary !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = primary)
+        val automatic = body[9].toInt() and 0xff
+        if (automatic !in 0..1) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = automatic)
+        val requestedOutputs = (0 until noutput).map { index -> byteOrder.u32(body, 28 + index * 4) }
+        val invalidOutput = requestedOutputs.firstOrNull { it != XRandr.OutputId }
+        if (invalidOutput != null) return writeError(error = XRandr.BadOutput, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = invalidOutput)
+
+        val rawX = byteOrder.i16(body, 12)
+        val rawY = byteOrder.i16(body, 14)
+        val rawWidth = byteOrder.u16(body, 16)
+        val rawHeight = byteOrder.u16(body, 18)
+        val rawWidthMillimeters = byteOrder.u32(body, 20)
+        val rawHeightMillimeters = byteOrder.u32(body, 24)
+        val dynamicGeometry = requestedOutputs.isNotEmpty() && rawX == 0 && rawY == 0 && rawWidth == 0 && rawHeight == 0
+        val monitor = if (dynamicGeometry) {
+            XRandrMonitor(
+                name = name,
+                primary = primary != 0,
+                automatic = automatic != 0,
+                x = 0,
+                y = 0,
+                width = state.width,
+                height = state.height,
+                widthMillimeters = if (rawWidthMillimeters == 0) state.widthMillimeters else rawWidthMillimeters,
+                heightMillimeters = if (rawHeightMillimeters == 0) state.heightMillimeters else rawHeightMillimeters,
+                outputs = requestedOutputs,
+            )
+        } else {
+            if (rawWidth == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = rawWidth)
+            if (rawHeight == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetMonitor, badValue = rawHeight)
+            XRandrMonitor(
+                name = name,
+                primary = primary != 0,
+                automatic = automatic != 0,
+                x = rawX,
+                y = rawY,
+                width = rawWidth,
+                height = rawHeight,
+                widthMillimeters = rawWidthMillimeters,
+                heightMillimeters = rawHeightMillimeters,
+                outputs = requestedOutputs,
+            )
+        }
+        sendRandrMonitorChange(state.setRandrMonitor(monitor))
+    }
+
+    private fun randrDeleteMonitor(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.DeleteMonitor, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.DeleteMonitor, badValue = window)
+        val name = byteOrder.u32(body, 4)
+        if (state.atomName(name) == null) return writeError(error = 5, opcode = majorOpcode, minorOpcode = XRandr.DeleteMonitor, badValue = name)
+        val monitorChange = state.deleteRandrMonitor(name)
+            ?: return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.DeleteMonitor, badValue = name)
+        sendRandrMonitorChange(monitorChange)
     }
 
     private fun putRandrModeInfo(bytes: ByteArray, offset: Int, nameLength: Int) {
@@ -10474,6 +10556,11 @@ internal class X11Connection(
     }
 
     private fun sendRandrScreenSizeChange(change: XRandrScreenSizeChange) {
+        sendConfigureNotify(change.configureNotifyDispatches)
+        sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
+    }
+
+    private fun sendRandrMonitorChange(change: XRandrMonitorChange) {
         sendConfigureNotify(change.configureNotifyDispatches)
         sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
     }

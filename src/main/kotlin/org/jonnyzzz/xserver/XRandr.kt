@@ -49,6 +49,8 @@ internal object XRandr {
     const val DeleteProviderProperty = 40
     const val GetProviderProperty = 41
     const val GetMonitors = 42
+    const val SetMonitor = 43
+    const val DeleteMonitor = 44
 
     const val Rotate0 = 1
     const val Connected = 0
@@ -128,6 +130,8 @@ internal object XRandr {
             DeleteProviderProperty -> "DeleteProviderProperty"
             GetProviderProperty -> "GetProviderProperty"
             GetMonitors -> "GetMonitors"
+            SetMonitor -> "SetMonitor"
+            DeleteMonitor -> "DeleteMonitor"
             else -> "Unknown"
         }
 }

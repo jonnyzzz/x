@@ -305,6 +305,127 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR monitor requests store user monitors emit configure events and recover`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val missing = 0x0102_0304
+                out.write(selectInputRequest(X11Ids.RootWindow, XRandr.ScreenChangeNotifyMask))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.StructureNotify))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetMonitor, ByteArray(24)))
+                out.write(setMonitorRequest(window = missing, name = PrimaryAtom, width = 50, height = 40, outputs = intArrayOf()))
+                out.write(setMonitorRequest(name = missing, width = 50, height = 40, outputs = intArrayOf()))
+                out.write(setMonitorRequest(name = PrimaryAtom, outputs = intArrayOf(missing)))
+                out.write(setMonitorRequest(name = PrimaryAtom, height = 40, outputs = intArrayOf()))
+                out.write(setMonitorRequest(name = PrimaryAtom, primary = 1, x = 10, y = 20, width = 50, height = 40, widthMm = 300, heightMm = 200, outputs = intArrayOf(XRandr.OutputId)))
+                out.write(getMonitorsRequest(X11Ids.RootWindow, 1))
+                out.write(setMonitorRequest(name = StringAtom, primary = 1, outputs = intArrayOf(XRandr.OutputId)))
+                out.write(getMonitorsRequest(X11Ids.RootWindow, 1))
+                out.write(request(XRandr.MajorOpcode, XRandr.DeleteMonitor, ByteArray(4)))
+                out.write(deleteMonitorRequest(window = missing, name = PrimaryAtom))
+                out.write(deleteMonitorRequest(name = missing))
+                out.write(deleteMonitorRequest(name = AtomAtom))
+                out.write(deleteMonitorRequest(name = PrimaryAtom))
+                out.write(deleteMonitorRequest(name = StringAtom))
+                out.write(getMonitorsRequest(X11Ids.RootWindow, 1))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 3, minorOpcode = XRandr.SetMonitor)
+                assertError(socket.getInputStream(), error = 3, badValue = missing, sequence = 4, minorOpcode = XRandr.SetMonitor)
+                assertError(socket.getInputStream(), error = 5, badValue = missing, sequence = 5, minorOpcode = XRandr.SetMonitor)
+                assertError(socket.getInputStream(), error = XRandr.BadOutput, badValue = missing, sequence = 6, minorOpcode = XRandr.SetMonitor)
+                assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 7, minorOpcode = XRandr.SetMonitor)
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 8)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 8)
+
+                val explicit = readReply(socket.getInputStream())
+                assertEquals(9, u16le(explicit, 2))
+                assertEquals(7, u32le(explicit, 4))
+                assertEquals(1, u32le(explicit, 12))
+                assertEquals(1, u32le(explicit, 16))
+                assertMonitorInfo(
+                    explicit,
+                    offset = 32,
+                    name = PrimaryAtom,
+                    primary = 1,
+                    automatic = 0,
+                    noutput = 1,
+                    x = 10,
+                    y = 20,
+                    width = 50,
+                    height = 40,
+                    widthMm = 300,
+                    heightMm = 200,
+                )
+                assertEquals(XRandr.OutputId, u32le(explicit, 56))
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 10)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 10)
+
+                val dynamic = readReply(socket.getInputStream())
+                assertEquals(11, u16le(dynamic, 2))
+                assertEquals(14, u32le(dynamic, 4))
+                assertEquals(2, u32le(dynamic, 12))
+                assertEquals(2, u32le(dynamic, 16))
+                assertMonitorInfo(
+                    dynamic,
+                    offset = 32,
+                    name = PrimaryAtom,
+                    primary = 0,
+                    automatic = 0,
+                    noutput = 1,
+                    x = 10,
+                    y = 20,
+                    width = 50,
+                    height = 40,
+                    widthMm = 300,
+                    heightMm = 200,
+                )
+                assertMonitorInfo(
+                    dynamic,
+                    offset = 60,
+                    name = StringAtom,
+                    primary = 1,
+                    automatic = 0,
+                    noutput = 1,
+                    x = 0,
+                    y = 0,
+                    width = 120,
+                    height = 90,
+                    widthMm = 32,
+                    heightMm = 24,
+                )
+                assertEquals(XRandr.OutputId, u32le(dynamic, 56))
+                assertEquals(XRandr.OutputId, u32le(dynamic, 84))
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 12, minorOpcode = XRandr.DeleteMonitor)
+                assertError(socket.getInputStream(), error = 3, badValue = missing, sequence = 13, minorOpcode = XRandr.DeleteMonitor)
+                assertError(socket.getInputStream(), error = 5, badValue = missing, sequence = 14, minorOpcode = XRandr.DeleteMonitor)
+                assertError(socket.getInputStream(), error = 2, badValue = AtomAtom, sequence = 15, minorOpcode = XRandr.DeleteMonitor)
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 16)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 16)
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 17)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 17)
+
+                assertMonitorReply(readReply(socket.getInputStream()), sequence = 18, primary = 0)
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(19, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR SetCrtcGamma validates fixed zero gamma ramp and recovers`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1301,6 +1422,45 @@ class XRandrProtocolTest {
         return request(XRandr.MajorOpcode, XRandr.GetProviderProperty, body)
     }
 
+    private fun setMonitorRequest(
+        window: Int = X11Ids.RootWindow,
+        name: Int,
+        primary: Int = 0,
+        automatic: Int = 0,
+        x: Int = 0,
+        y: Int = 0,
+        width: Int = 0,
+        height: Int = 0,
+        widthMm: Int = 0,
+        heightMm: Int = 0,
+        outputs: IntArray = intArrayOf(XRandr.OutputId),
+    ): ByteArray {
+        val body = ByteArray(28 + outputs.size * 4)
+        put32le(body, 0, window)
+        put32le(body, 4, name)
+        body[8] = primary.toByte()
+        body[9] = automatic.toByte()
+        put16le(body, 10, outputs.size)
+        put16le(body, 12, x)
+        put16le(body, 14, y)
+        put16le(body, 16, width)
+        put16le(body, 18, height)
+        put32le(body, 20, widthMm)
+        put32le(body, 24, heightMm)
+        outputs.forEachIndexed { index, output -> put32le(body, 28 + index * 4, output) }
+        return request(XRandr.MajorOpcode, XRandr.SetMonitor, body)
+    }
+
+    private fun deleteMonitorRequest(
+        window: Int = X11Ids.RootWindow,
+        name: Int,
+    ): ByteArray {
+        val body = ByteArray(8)
+        put32le(body, 0, window)
+        put32le(body, 4, name)
+        return request(XRandr.MajorOpcode, XRandr.DeleteMonitor, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -1665,6 +1825,32 @@ class XRandrProtocolTest {
         assertEquals(XRandr.OutputId, u32le(reply, 56))
     }
 
+    private fun assertMonitorInfo(
+        reply: ByteArray,
+        offset: Int,
+        name: Int,
+        primary: Int,
+        automatic: Int,
+        noutput: Int,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        widthMm: Int,
+        heightMm: Int,
+    ) {
+        assertEquals(name, u32le(reply, offset))
+        assertEquals(primary, reply[offset + 4].toInt() and 0xff)
+        assertEquals(automatic, reply[offset + 5].toInt() and 0xff)
+        assertEquals(noutput, u16le(reply, offset + 6))
+        assertEquals(x, i16le(reply, offset + 8))
+        assertEquals(y, i16le(reply, offset + 10))
+        assertEquals(width, u16le(reply, offset + 12))
+        assertEquals(height, u16le(reply, offset + 14))
+        assertEquals(widthMm, u32le(reply, offset + 16))
+        assertEquals(heightMm, u32le(reply, offset + 20))
+    }
+
     private fun readReply(input: InputStream): ByteArray {
         val header = input.readExactly(32)
         assertEquals(1, header[0].toInt() and 0xff)
@@ -1733,6 +1919,9 @@ class XRandrProtocolTest {
 
     private fun u16be(bytes: ByteArray, offset: Int): Int =
         ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
+
+    private fun i16le(bytes: ByteArray, offset: Int): Int =
+        u16le(bytes, offset).toShort().toInt()
 
     private fun u32le(bytes: ByteArray, offset: Int): Int =
         u16le(bytes, offset) or (u16le(bytes, offset + 2) shl 16)

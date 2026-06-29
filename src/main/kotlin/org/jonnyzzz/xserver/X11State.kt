@@ -126,6 +126,8 @@ internal class X11State(
     private var randrPendingCrtcTransform = XRandrCrtcTransform.Identity
     private var randrCurrentCrtcTransform = XRandrCrtcTransform.Identity
     private var randrLastPanningTime = XRandr.ConfigTimestamp
+    private var randrLastMonitorChangeTime = XRandr.ConfigTimestamp
+    private val randrUserMonitors = linkedMapOf<Int, XRandrMonitor>()
     private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
@@ -6540,6 +6542,55 @@ internal class X11State(
     }
 
     @Synchronized
+    fun randrMonitorSnapshot(): XRandrMonitorSnapshot {
+        val monitors = if (randrUserMonitors.isEmpty()) {
+            listOf(
+                XRandrMonitor(
+                    name = 0,
+                    primary = randrPrimaryOutput == XRandr.OutputId,
+                    automatic = true,
+                    x = 0,
+                    y = 0,
+                    width = width,
+                    height = height,
+                    widthMillimeters = widthMillimeters,
+                    heightMillimeters = heightMillimeters,
+                    outputs = listOf(XRandr.OutputId),
+                ),
+            )
+        } else {
+            randrUserMonitors.values.map { it.snapshot() }
+        }
+        return XRandrMonitorSnapshot(timestamp = randrLastMonitorChangeTime, monitors = monitors)
+    }
+
+    @Synchronized
+    fun setRandrMonitor(monitor: XRandrMonitor): XRandrMonitorChange {
+        val stored = monitor.snapshot()
+        if (stored.primary) {
+            randrUserMonitors.replaceAll { _, existing -> existing.copy(primary = false) }
+        }
+        randrUserMonitors[stored.name] = stored
+        val timestamp = syncServerTime()
+        randrLastMonitorChangeTime = timestamp
+        return XRandrMonitorChange(
+            configureNotifyDispatches = rootConfigureNotifySinks(),
+            screenChangeNotifyDispatches = randrScreenChangeNotifySinks(timestamp),
+        )
+    }
+
+    @Synchronized
+    fun deleteRandrMonitor(name: Int): XRandrMonitorChange? {
+        randrUserMonitors.remove(name) ?: return null
+        val timestamp = syncServerTime()
+        randrLastMonitorChangeTime = timestamp
+        return XRandrMonitorChange(
+            configureNotifyDispatches = rootConfigureNotifySinks(),
+            screenChangeNotifyDispatches = randrScreenChangeNotifySinks(timestamp),
+        )
+    }
+
+    @Synchronized
     fun setRandrScreenSize(widthMillimeters: Int, heightMillimeters: Int): XRandrScreenSizeChange {
         if (this.widthMillimeters == widthMillimeters && this.heightMillimeters == heightMillimeters) {
             return XRandrScreenSizeChange.Empty
@@ -8117,6 +8168,31 @@ internal data class XRandrOutputPropertyConfig(
     val pending: Boolean = false,
     val range: Boolean = false,
     val validValues: ByteArray = ByteArray(0),
+)
+
+internal data class XRandrMonitor(
+    val name: Int,
+    val primary: Boolean,
+    val automatic: Boolean,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val widthMillimeters: Int,
+    val heightMillimeters: Int,
+    val outputs: List<Int>,
+) {
+    fun snapshot(): XRandrMonitor = copy(outputs = outputs.toList())
+}
+
+internal data class XRandrMonitorSnapshot(
+    val timestamp: Int,
+    val monitors: List<XRandrMonitor>,
+)
+
+internal data class XRandrMonitorChange(
+    val configureNotifyDispatches: List<XConfigureNotifyDispatch>,
+    val screenChangeNotifyDispatches: List<XRandrScreenChangeNotifyDispatch>,
 )
 
 internal data class XExtension(
