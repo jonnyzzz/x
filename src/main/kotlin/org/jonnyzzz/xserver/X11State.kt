@@ -46,8 +46,10 @@ internal class X11State(
     val height: Int,
     val dpi: Int = 96,
 ) {
-    val widthMillimeters: Int = pixelsToMillimeters(width, dpi)
-    val heightMillimeters: Int = pixelsToMillimeters(height, dpi)
+    var widthMillimeters: Int = pixelsToMillimeters(width, dpi)
+        private set
+    var heightMillimeters: Int = pixelsToMillimeters(height, dpi)
+        private set
     private val windows = linkedMapOf<Int, XWindow>()
     private val pixmaps = linkedMapOf<Int, XPixmap>()
     private val gcs = linkedMapOf<Int, XGraphicsContext>()
@@ -6486,6 +6488,20 @@ internal class X11State(
 
     @Synchronized
     fun randrPrimaryOutput(): Int = randrPrimaryOutput
+
+    @Synchronized
+    fun setRandrScreenSize(widthMillimeters: Int, heightMillimeters: Int): XRandrScreenSizeChange {
+        if (this.widthMillimeters == widthMillimeters && this.heightMillimeters == heightMillimeters) {
+            return XRandrScreenSizeChange.Empty
+        }
+        this.widthMillimeters = widthMillimeters
+        this.heightMillimeters = heightMillimeters
+        val timestamp = syncServerTime()
+        return XRandrScreenSizeChange(
+            configureNotifyDispatches = rootConfigureNotifySinks(),
+            screenChangeNotifyDispatches = randrScreenChangeNotifySinks(timestamp),
+        )
+    }
 
     @Synchronized
     fun setRandrPrimaryOutput(output: Int): XRandrPrimaryOutputChange {

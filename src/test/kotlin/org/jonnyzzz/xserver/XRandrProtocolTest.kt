@@ -533,6 +533,65 @@ class XRandrProtocolTest {
     }
 
     @Test
+    fun `RANDR SetScreenSize validates and updates physical size metadata`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(selectInputRequest(X11Ids.RootWindow, XRandr.ScreenChangeNotifyMask))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.StructureNotify))
+                out.write(request(XRandr.MajorOpcode, XRandr.SetScreenSize, ByteArray(12)))
+                out.write(setScreenSizeRequest(0x0102_0304, width = 120, height = 90, widthMm = 300, heightMm = 200))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 119, height = 90, widthMm = 300, heightMm = 200))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 120, height = 91, widthMm = 300, heightMm = 200))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 120, height = 90, widthMm = 0, heightMm = 200))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 120, height = 90, widthMm = 300, heightMm = 0))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 120, height = 90, widthMm = 300, heightMm = 200))
+                out.write(u32Request(XRandr.GetScreenInfo, X11Ids.RootWindow))
+                out.write(outputInfoRequest(XRandr.OutputId))
+                out.write(setScreenSizeRequest(X11Ids.RootWindow, width = 120, height = 90, widthMm = 300, heightMm = 200))
+                out.write(u32Request(XRandr.GetScreenInfo, X11Ids.RootWindow))
+                out.write(randrQueryVersionRequest(1, 6))
+                out.flush()
+
+                assertError(socket.getInputStream(), error = 16, badValue = 0, sequence = 3, minorOpcode = XRandr.SetScreenSize)
+                assertError(socket.getInputStream(), error = 3, badValue = 0x0102_0304, sequence = 4, minorOpcode = XRandr.SetScreenSize)
+                assertError(socket.getInputStream(), error = 2, badValue = 119, sequence = 5, minorOpcode = XRandr.SetScreenSize)
+                assertError(socket.getInputStream(), error = 2, badValue = 91, sequence = 6, minorOpcode = XRandr.SetScreenSize)
+                assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 7, minorOpcode = XRandr.SetScreenSize)
+                assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 8, minorOpcode = XRandr.SetScreenSize)
+
+                assertConfigureNotify(socket.getInputStream().readExactly(32), sequence = 9)
+                assertScreenChangeNotify(socket.getInputStream().readExactly(32), sequence = 9, widthMm = 300, heightMm = 200)
+
+                val screenInfo = readReply(socket.getInputStream())
+                assertEquals(10, u16le(screenInfo, 2))
+                assertEquals(300, u16le(screenInfo, 36))
+                assertEquals(200, u16le(screenInfo, 38))
+
+                val outputInfo = readReply(socket.getInputStream())
+                assertEquals(11, u16le(outputInfo, 2))
+                assertEquals(300, u32le(outputInfo, 16))
+                assertEquals(200, u32le(outputInfo, 20))
+
+                val unchangedScreenInfo = readReply(socket.getInputStream())
+                assertEquals(13, u16le(unchangedScreenInfo, 2))
+                assertEquals(300, u16le(unchangedScreenInfo, 36))
+                assertEquals(200, u16le(unchangedScreenInfo, 38))
+
+                val recovered = readReply(socket.getInputStream())
+                assertEquals(14, u16le(recovered, 2))
+                assertEquals(XRandr.MajorVersion, u32le(recovered, 8))
+                assertEquals(XRandr.MinorVersion, u32le(recovered, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RANDR swaps replies for big endian clients`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -764,6 +823,16 @@ class XRandrProtocolTest {
         return request(XRandr.MajorOpcode, XRandr.SetOutputPrimary, body)
     }
 
+    private fun setScreenSizeRequest(window: Int, width: Int, height: Int, widthMm: Int, heightMm: Int): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, window)
+        put16le(body, 4, width)
+        put16le(body, 6, height)
+        put32le(body, 8, widthMm)
+        put32le(body, 12, heightMm)
+        return request(XRandr.MajorOpcode, XRandr.SetScreenSize, body)
+    }
+
     private fun createWindowRequest(id: Int): ByteArray {
         val body = ByteArray(28)
         put32le(body, 0, id)
@@ -986,7 +1055,7 @@ class XRandrProtocolTest {
         assertEquals(XRandr.SubPixelUnknown, bytes[31].toInt() and 0xff)
     }
 
-    private fun assertScreenChangeNotify(bytes: ByteArray, sequence: Int) {
+    private fun assertScreenChangeNotify(bytes: ByteArray, sequence: Int, widthMm: Int = 32, heightMm: Int = 24) {
         assertEquals(XRandr.FirstEvent + XRandr.ScreenChangeNotify, bytes[0].toInt() and 0xff)
         assertEquals(XRandr.Rotate0, bytes[1].toInt() and 0xff)
         assertEquals(sequence, u16le(bytes, 2))
@@ -996,8 +1065,8 @@ class XRandrProtocolTest {
         assertEquals(XRandr.SubPixelUnknown, u16le(bytes, 22))
         assertEquals(120, u16le(bytes, 24))
         assertEquals(90, u16le(bytes, 26))
-        assertEquals(32, u16le(bytes, 28))
-        assertEquals(24, u16le(bytes, 30))
+        assertEquals(widthMm, u16le(bytes, 28))
+        assertEquals(heightMm, u16le(bytes, 30))
     }
 
     private fun assertConfigureNotify(bytes: ByteArray, sequence: Int) {

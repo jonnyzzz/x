@@ -556,6 +556,18 @@ internal data class XRandrPrimaryOutputChange(
     }
 }
 
+internal data class XRandrScreenSizeChange(
+    val configureNotifyDispatches: List<XConfigureNotifyDispatch>,
+    val screenChangeNotifyDispatches: List<XRandrScreenChangeNotifyDispatch>,
+) {
+    companion object {
+        val Empty = XRandrScreenSizeChange(
+            configureNotifyDispatches = emptyList(),
+            screenChangeNotifyDispatches = emptyList(),
+        )
+    }
+}
+
 internal data class XSyntheticEvent(
     val bytes: ByteArray,
     val sourceByteOrder: ByteOrder,

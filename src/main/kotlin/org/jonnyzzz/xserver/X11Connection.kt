@@ -6822,6 +6822,7 @@ internal class X11Connection(
             XRandr.GetScreenInfo -> randrGetScreenInfo(body, majorOpcode)
             XRandr.SelectInput -> randrSelectInput(body, majorOpcode)
             XRandr.GetScreenSizeRange -> randrGetScreenSizeRange(body, majorOpcode)
+            XRandr.SetScreenSize -> randrSetScreenSize(body, majorOpcode)
             XRandr.GetScreenResources -> randrGetScreenResources(body, majorOpcode, XRandr.GetScreenResources)
             XRandr.GetScreenResourcesCurrent -> randrGetScreenResources(body, majorOpcode, XRandr.GetScreenResourcesCurrent)
             XRandr.GetOutputInfo -> randrGetOutputInfo(body, majorOpcode)
@@ -6901,6 +6902,21 @@ internal class X11Connection(
         byteOrder.put16(reply, 12, state.width)
         byteOrder.put16(reply, 14, state.height)
         write(reply)
+    }
+
+    private fun randrSetScreenSize(body: ByteArray, majorOpcode: Int) {
+        if (body.size != 16) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = 0)
+        val window = byteOrder.u32(body, 0)
+        if (state.window(window) == null) return writeError(error = 3, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = window)
+        val width = byteOrder.u16(body, 4)
+        val height = byteOrder.u16(body, 6)
+        val widthMillimeters = byteOrder.u32(body, 8)
+        val heightMillimeters = byteOrder.u32(body, 12)
+        if (width != state.width) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = width)
+        if (height != state.height) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = height)
+        if (widthMillimeters == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = 0)
+        if (heightMillimeters == 0) return writeError(error = 2, opcode = majorOpcode, minorOpcode = XRandr.SetScreenSize, badValue = 0)
+        sendRandrScreenSizeChange(state.setRandrScreenSize(widthMillimeters, heightMillimeters))
     }
 
     private fun randrGetScreenResources(body: ByteArray, majorOpcode: Int, minorOpcode: Int) {
@@ -10206,6 +10222,11 @@ internal class X11Connection(
         sendConfigureNotify(change.configureNotifyDispatches)
         sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
         sendRandrOutputChangeNotify(change.outputChangeNotifyDispatches)
+    }
+
+    private fun sendRandrScreenSizeChange(change: XRandrScreenSizeChange) {
+        sendConfigureNotify(change.configureNotifyDispatches)
+        sendRandrScreenChangeNotify(change.screenChangeNotifyDispatches)
     }
 
     private fun sendResourceRemoval(removal: XResourceRemoval) {
