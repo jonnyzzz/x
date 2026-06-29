@@ -117,6 +117,7 @@ internal class X11State(
     private var fontPath: List<String> = emptyList()
     private var pointerControl = XPointerControlSettings()
     private var pointerMapping = XPointerMapping.Default
+    private val xkbButtonActions = linkedMapOf<Int, ByteArray>()
     private var modifierMapping = XModifierMapping.Default
     private var keyboardMapping = XKeyboardMapping.Default
     private var keyboardControl = XKeyboardControlSettings.Default
@@ -704,6 +705,23 @@ internal class X11State(
 
     @Synchronized
     fun pointerMapping(): List<Int> = pointerMapping.toList()
+
+    @Synchronized
+    fun xkbButtonActions(firstButton: Int, count: Int): List<ByteArray> =
+        List(count) { index ->
+            xkbButtonActions[firstButton + index]?.copyOf() ?: ByteArray(8)
+        }
+
+    @Synchronized
+    fun setXkbButtonActions(firstButton: Int, actions: List<ByteArray>) {
+        val totalButtons = pointerMapping.size
+        actions.forEachIndexed { index, action ->
+            val button = firstButton + index
+            if (button in 1..totalButtons) {
+                xkbButtonActions[button] = action.copyOf(8)
+            }
+        }
+    }
 
     @Synchronized
     fun setPointerMappingIfIdle(mapping: List<Int>): Boolean {

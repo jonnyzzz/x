@@ -2111,19 +2111,52 @@ internal class X11Connection(
 
     private fun xkbGetDeviceInfo(body: ByteArray, majorOpcode: Int) {
         if (body.size != 12) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.GetDeviceInfo, badValue = 0)
+        val deviceSpec = byteOrder.u16(body, 0)
         val wanted = byteOrder.u16(body, 2)
+        val allButtons = body[4].toInt() != 0
         val firstButton = body[5].toInt() and 0xff
         val buttonCount = body[6].toInt() and 0xff
-        val reply = reply(extra = 0, payloadUnits = 1)
-        byteOrder.put16(reply, 12, wanted)
+        val totalButtons = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) state.pointerMapping().size else 0
+        val supported = if (deviceSpec == XXkb.DeviceSpecUseCorePointer) XXkb.XiFeatureButtonActions else 0
+        val present = wanted and supported
+        val unsupported = wanted and supported.inv()
+        val firstButtonReturned = if ((present and XXkb.XiFeatureButtonActions) != 0) {
+            if (allButtons) 1 else firstButton.takeIf { it in 1..totalButtons } ?: 0
+        } else {
+            0
+        }
+        val buttonsReturned = if ((present and XXkb.XiFeatureButtonActions) != 0) {
+            if (allButtons) {
+                totalButtons
+            } else if (firstButtonReturned == 0) {
+                0
+            } else {
+                minOf(buttonCount, totalButtons - firstButtonReturned + 1)
+            }
+        } else {
+            0
+        }
+        val payload = ByteArray(4 + buttonsReturned * 8)
+        state.xkbButtonActions(firstButtonReturned, buttonsReturned).forEachIndexed { index, action ->
+            action.copyInto(payload, 4 + index * 8)
+        }
+        val reply = reply(extra = 0, payloadUnits = payload.size / 4)
+        byteOrder.put16(reply, 8, present)
+        byteOrder.put16(reply, 10, supported)
+        byteOrder.put16(reply, 12, unsupported)
         reply[16] = firstButton.toByte()
         reply[17] = buttonCount.toByte()
-        reply[20] = state.pointerMapping().size.toByte()
+        reply[18] = firstButtonReturned.toByte()
+        reply[19] = buttonsReturned.toByte()
+        reply[20] = totalButtons.toByte()
+        payload.copyInto(reply, 32)
         write(reply)
     }
 
     private fun xkbSetDeviceInfo(body: ByteArray, majorOpcode: Int) {
         if (body.size < 8) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+        val deviceSpec = byteOrder.u16(body, 0)
+        val firstButton = body[2].toInt() and 0xff
         val change = byteOrder.u16(body, 4)
         val nButtons = body[3].toInt() and 0xff
         val nDeviceLedFeedbacks = byteOrder.u16(body, 6)
@@ -2131,6 +2164,12 @@ internal class X11Connection(
         if (change and XXkb.XiFeatureButtonActions != 0) {
             val nextOffset = offset + nButtons * 8
             if (nextOffset > body.size) return writeError(error = 16, opcode = majorOpcode, minorOpcode = XXkb.SetDeviceInfo, badValue = 0)
+            if (deviceSpec == XXkb.DeviceSpecUseCorePointer) {
+                state.setXkbButtonActions(
+                    firstButton,
+                    List(nButtons) { index -> body.copyOfRange(offset + index * 8, offset + (index + 1) * 8) },
+                )
+            }
             offset = nextOffset
         }
         if (change and XXkb.XiFeatureIndicators != 0) {

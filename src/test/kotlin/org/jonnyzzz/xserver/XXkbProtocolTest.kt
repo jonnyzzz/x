@@ -1442,20 +1442,50 @@ class XXkbProtocolTest {
             assertEquals(1, reply[0].toInt())
             assertEquals(0, reply[1].toInt() and 0xff)
             assertEquals(1, u16le(reply, 2))
-            assertEquals(1, u32le(reply, 4))
-            assertEquals(0, u16le(reply, 8))
-            assertEquals(0, u16le(reply, 10))
-            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(511, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(wanted and XXkb.XiFeatureButtonActions.inv(), u16le(reply, 12))
             assertEquals(0, u16le(reply, 14))
             assertEquals(1, reply[16].toInt() and 0xff)
             assertEquals(3, reply[17].toInt() and 0xff)
-            assertEquals(0, reply[18].toInt() and 0xff)
-            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(1, reply[18].toInt() and 0xff)
+            assertEquals(255, reply[19].toInt() and 0xff)
             assertEquals(255, reply[20].toInt() and 0xff)
             assertEquals(0, reply[21].toInt() and 0xff)
             assertEquals(0, u16le(reply, 22))
             assertEquals(0, u16le(reply, 24))
             assertEquals(0, u32le(reply, 28))
+            assertEquals(0, u16le(reply, 32))
+            assertEquals(true, reply.copyOfRange(36, reply.size).all { it == 0.toByte() })
+            assertEquals(2076, reply.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetDeviceInfo only reports button actions for core pointer device`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                getDeviceInfoRequest(
+                    wanted = XXkb.XiFeatureButtonActions,
+                    allButtons = false,
+                    firstButton = 1,
+                    nButtons = 1,
+                    deviceSpec = XXkb.DeviceSpecUseCoreKeyboard,
+                ),
+            )
+            out.flush()
+
+            val reply = readReply(socket.getInputStream())
+            assertEquals(1, u16le(reply, 2))
+            assertEquals(1, u32le(reply, 4))
+            assertEquals(0, u16le(reply, 8))
+            assertEquals(0, u16le(reply, 10))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(0, reply[18].toInt() and 0xff)
+            assertEquals(0, reply[19].toInt() and 0xff)
+            assertEquals(0, reply[20].toInt() and 0xff)
             assertEquals(0, u16le(reply, 32))
             assertEquals(36, reply.size)
         }
@@ -1472,12 +1502,18 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 1, minorOpcode = XXkb.GetDeviceInfo)
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
-            assertEquals(1, u32le(reply, 4))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(3, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
+            assertEquals(2, reply[18].toInt() and 0xff)
+            assertEquals(1, reply[19].toInt() and 0xff)
             assertEquals(255, reply[20].toInt() and 0xff)
-            assertEquals(36, reply.size)
+            assertEquals(0, u16le(reply, 32))
+            assertEquals(true, reply.copyOfRange(36, reply.size).all { it == 0.toByte() })
+            assertEquals(44, reply.size)
         }
     }
 
@@ -1492,12 +1528,21 @@ class XXkbProtocolTest {
 
             val reply = readReply(socket.getInputStream())
             assertEquals(2, u16le(reply, 2))
-            assertEquals(1, u32le(reply, 4))
-            assertEquals(wanted, u16le(reply, 12))
+            assertEquals(5, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(wanted and XXkb.XiFeatureButtonActions.inv(), u16le(reply, 12))
             assertEquals(1, reply[16].toInt() and 0xff)
             assertEquals(2, reply[17].toInt() and 0xff)
+            assertEquals(1, reply[18].toInt() and 0xff)
+            assertEquals(2, reply[19].toInt() and 0xff)
             assertEquals(255, reply[20].toInt() and 0xff)
-            assertEquals(36, reply.size)
+            assertEquals(0, u16le(reply, 32))
+            assertEquals(1, reply[36].toInt() and 0xff)
+            assertEquals(true, reply.copyOfRange(37, 44).all { it == 0.toByte() })
+            assertEquals(1, reply[44].toInt() and 0xff)
+            assertEquals(true, reply.copyOfRange(45, 52).all { it == 0.toByte() })
+            assertEquals(52, reply.size)
         }
     }
 
@@ -1517,12 +1562,18 @@ class XXkbProtocolTest {
             assertError(socket.getInputStream(), error = 16, opcode = XXkb.MajorOpcode, badValue = 0, sequence = 3, minorOpcode = XXkb.SetDeviceInfo)
             val reply = readReply(socket.getInputStream())
             assertEquals(5, u16le(reply, 2))
-            assertEquals(1, u32le(reply, 4))
-            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 12))
+            assertEquals(3, u32le(reply, 4))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 8))
+            assertEquals(XXkb.XiFeatureButtonActions, u16le(reply, 10))
+            assertEquals(0, u16le(reply, 12))
             assertEquals(2, reply[16].toInt() and 0xff)
             assertEquals(1, reply[17].toInt() and 0xff)
+            assertEquals(2, reply[18].toInt() and 0xff)
+            assertEquals(1, reply[19].toInt() and 0xff)
             assertEquals(255, reply[20].toInt() and 0xff)
-            assertEquals(36, reply.size)
+            assertEquals(0, u16le(reply, 32))
+            assertEquals(true, reply.copyOfRange(36, reply.size).all { it == 0.toByte() })
+            assertEquals(44, reply.size)
         }
     }
 
@@ -2177,9 +2228,10 @@ class XXkbProtocolTest {
         nButtons: Int,
         ledClass: Int = 0,
         ledId: Int = 0,
+        deviceSpec: Int = XXkb.DeviceSpecUseCorePointer,
     ): ByteArray {
         val body = ByteArray(12)
-        put16le(body, 0, 0x0100)
+        put16le(body, 0, deviceSpec)
         put16le(body, 2, wanted)
         body[4] = if (allButtons) 1 else 0
         body[5] = firstButton.toByte()
@@ -2196,9 +2248,10 @@ class XXkbProtocolTest {
         ledNamesPresent: Int = 0x0000_0001,
         ledMapsPresent: Int = 0x0000_0001,
         bodySize: Int = setDeviceInfoBodySize(nButtons, nDeviceLedFeedbacks, change, ledNamesPresent, ledMapsPresent),
+        deviceSpec: Int = XXkb.DeviceSpecUseCorePointer,
     ): ByteArray {
         val body = ByteArray(bodySize)
-        put16le(body, 0, 0x0100)
+        put16le(body, 0, deviceSpec)
         if (body.size > 2) body[2] = 1
         if (body.size > 3) body[3] = nButtons.toByte()
         if (body.size >= 6) put16le(body, 4, change)

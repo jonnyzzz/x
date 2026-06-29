@@ -105,6 +105,8 @@ internal object XXkb {
     const val XiFeatureIndicatorMaps = 1 shl 3
     const val XiFeatureIndicatorState = 1 shl 4
     const val XiFeatureIndicators = XiFeatureIndicatorNames or XiFeatureIndicatorMaps or XiFeatureIndicatorState
+    const val DeviceSpecUseCoreKeyboard = 0x0100
+    const val DeviceSpecUseCorePointer = 0x0200
     const val DefaultMouseKeysButton = 1
     const val DefaultGroupCount = 1
     const val DefaultRepeatDelay = 660
