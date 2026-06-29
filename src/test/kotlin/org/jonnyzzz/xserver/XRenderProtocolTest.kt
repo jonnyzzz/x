@@ -11296,6 +11296,7 @@ class XRenderProtocolTest {
             Socket("127.0.0.1", server.localPort).use { socket ->
                 setup(socket)
                 val out = socket.getOutputStream()
+                val input = socket.getInputStream()
                 out.write(createWindowRequest(WindowId))
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 24, height = 12, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
@@ -11330,10 +11331,18 @@ class XRenderProtocolTest {
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 24, height = 12))
                 out.flush()
 
-                val image = readReply(socket.getInputStream())
+                val image = readReply(input)
                 assertEquals(0xffcc_0033.toInt(), pixelAt(image, imageWidth = 24, x = 4, y = 3))
                 assertEquals(0xff80_0080.toInt(), pixelAt(image, imageWidth = 24, x = 10, y = 3))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 24, x = 3, y = 3))
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+                val expose = input.readExactly(32)
+                assertEquals(12, expose[0].toInt() and 0xff)
+                assertEquals(WindowId, u32le(expose, 4))
+                val svg = httpGet(server.localPort, "/screen.svg")
+                assertContains(svg, """class="framebuffer-image"""")
+                assertFalse(svg.contains("RENDER.CompositeGlyphs32"), "Framebuffer-backed glyph rendering must not be double-rendered as a synthetic SVG text overlay")
                 assertContains(httpGet(server.localPort, "/text.txt"), "CompositeGlyphs32")
             }
             server.close()

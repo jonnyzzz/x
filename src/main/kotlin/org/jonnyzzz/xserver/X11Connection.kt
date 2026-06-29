@@ -2750,8 +2750,9 @@ internal class X11Connection(
         }
         val placementsByGlyphSet = parseResult.placements
         val origin = placementsByGlyphSet.values.firstOrNull()?.firstOrNull() ?: return
+        var painted = false
         for ((glyphSetId, placements) in placementsByGlyphSet) {
-            state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements)
+            painted = state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements) || painted
         }
         state.draw(
             XDrawingCommand(
@@ -2760,6 +2761,7 @@ internal class X11Connection(
                 foreground = 0,
                 points = listOf(XPoint(byteOrder.i16(body, 20), byteOrder.i16(body, 22))),
                 text = "RENDER.${XRender.operationName(minorOpcode)} glyphs=${body.size - 24}",
+                framebufferBacked = painted,
             ),
         )
     }
