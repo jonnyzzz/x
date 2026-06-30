@@ -5098,7 +5098,7 @@ internal class X11Connection(
         if ((eventMask and XEventMasks.ValidCoreMask.inv()) != 0) return writeError(error = 2, opcode = 25, badValue = eventMask)
         val event = body.copyOfRange(8, 40)
         val eventCode = event[0].toInt() and 0x7f
-        if (!validEventCode(eventCode)) return writeError(error = 2, opcode = 25, badValue = eventCode)
+        if (!validSyntheticEvent(event)) return writeError(error = 2, opcode = 25, badValue = eventCode)
         val destinationWindow = when (destination) {
             0 -> state.pointerWindowId() ?: return
             1 -> state.sendEventInputFocusWindowId() ?: return
@@ -5112,8 +5112,26 @@ internal class X11Connection(
         }
     }
 
-    private fun validEventCode(eventCode: Int): Boolean =
-        eventCode in 2..34
+    private fun validSyntheticEvent(event: ByteArray): Boolean =
+        when (event[0].toInt() and 0x7f) {
+            in 2..34,
+            XFixes.FirstEvent + XFixes.SelectionNotify,
+            XFixes.FirstEvent + XFixes.CursorNotify,
+            XShape.FirstEvent + XShape.Notify,
+            XSync.FirstEvent,
+            XSync.FirstEvent + 1,
+            XRandr.FirstEvent + XRandr.ScreenChangeNotify,
+            -> true
+            // RANDR Notify is subtype-discriminated; accept only layouts we model and byte-swap.
+            XRandr.FirstEvent + XRandr.Notify ->
+                when (event[1].toInt() and 0xff) {
+                    XRandr.NotifyOutputChange,
+                    XRandr.NotifyOutputProperty,
+                    -> true
+                    else -> false
+                }
+            else -> false
+        }
 
     private fun queryPointer(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 38, badValue = 0)
@@ -9664,6 +9682,75 @@ internal class X11Connection(
                 when (bytes[1].toInt() and 0xff) {
                     16 -> for (offset in 12 until 32 step 2) word16(offset)
                     32 -> for (offset in 12 until 32 step 4) word32(offset)
+                }
+            }
+            XFixes.FirstEvent + XFixes.SelectionNotify -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word32(20)
+            }
+            XFixes.FirstEvent + XFixes.CursorNotify -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+            }
+            XShape.FirstEvent + XShape.Notify -> {
+                word32(4)
+                word16(8)
+                word16(10)
+                word16(12)
+                word16(14)
+                word32(16)
+            }
+            XSync.FirstEvent -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word32(20)
+                word32(24)
+                word16(28)
+            }
+            XSync.FirstEvent + 1 -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word32(20)
+                word32(24)
+            }
+            XRandr.FirstEvent + XRandr.ScreenChangeNotify -> {
+                word32(4)
+                word32(8)
+                word32(12)
+                word32(16)
+                word16(20)
+                word16(22)
+                word16(24)
+                word16(26)
+                word16(28)
+                word16(30)
+            }
+            XRandr.FirstEvent + XRandr.Notify -> {
+                when (bytes[1].toInt() and 0xff) {
+                    XRandr.NotifyOutputChange -> {
+                        word32(4)
+                        word32(8)
+                        word32(12)
+                        word32(16)
+                        word32(20)
+                        word32(24)
+                        word16(28)
+                    }
+                    XRandr.NotifyOutputProperty -> {
+                        word32(4)
+                        word32(8)
+                        word32(12)
+                        word32(16)
+                    }
                 }
             }
         }

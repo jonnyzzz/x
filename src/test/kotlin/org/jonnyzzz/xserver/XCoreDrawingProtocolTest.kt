@@ -14491,6 +14491,101 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SendEvent accepts synthetic XFixes SelectionNotify for advertised extension event code`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket)
+                    val recipient = WindowId + 3
+                    recipientSocket.getOutputStream().write(createWindowRequest(recipient))
+                    recipientSocket.getOutputStream().flush()
+
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = recipient,
+                            event = xfixesSelectionNotifyEvent(
+                                window = recipient,
+                                owner = WindowId + 4,
+                                selection = PrimaryAtom,
+                                timestamp = 77,
+                                selectionTimestamp = 66,
+                            ),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or (XFixes.FirstEvent + XFixes.SelectionNotify), event[0].toInt() and 0xff)
+                    assertEquals(XFixes.SetSelectionOwnerNotify, event[1].toInt() and 0xff)
+                    assertEquals(1, u16le(event, 2))
+                    assertEquals(recipient, u32le(event, 4))
+                    assertEquals(WindowId + 4, u32le(event, 8))
+                    assertEquals(PrimaryAtom, u32le(event, 12))
+                    assertEquals(77, u32le(event, 16))
+                    assertEquals(66, u32le(event, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SendEvent swaps synthetic XFixes SelectionNotify fields for big endian destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket, byteOrderByte = 0x42)
+                    val recipient = WindowId + 5
+                    recipientSocket.getOutputStream().write(createWindowRequestBigEndian(recipient, width = 31, height = 17))
+                    recipientSocket.getOutputStream().write(getGeometryRequestBigEndian(recipient))
+                    recipientSocket.getOutputStream().flush()
+
+                    val geometry = readReply(recipientSocket.getInputStream(), byteOrderByte = 0x42)
+                    assertEquals(1, geometry[0].toInt())
+                    assertEquals(2, u16be(geometry, 2))
+                    assertEquals(31, u16be(geometry, 16))
+                    assertEquals(17, u16be(geometry, 18))
+
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = recipient,
+                            event = xfixesSelectionNotifyEvent(
+                                window = recipient,
+                                owner = WindowId + 6,
+                                selection = PrimaryAtom,
+                                timestamp = 77,
+                                selectionTimestamp = 66,
+                            ),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val event = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or (XFixes.FirstEvent + XFixes.SelectionNotify), event[0].toInt() and 0xff)
+                    assertEquals(XFixes.SetSelectionOwnerNotify, event[1].toInt() and 0xff)
+                    assertEquals(2, u16be(event, 2))
+                    assertEquals(recipient, u32be(event, 4))
+                    assertEquals(WindowId + 6, u32be(event, 8))
+                    assertEquals(PrimaryAtom, u32be(event, 12))
+                    assertEquals(77, u32be(event, 16))
+                    assertEquals(66, u32be(event, 20))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SendEvent swaps synthetic CreateNotify fields for big endian destination owner`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -14800,6 +14895,17 @@ class XCoreDrawingProtocolTest {
                 assertEquals(2, extensionError[1].toInt() and 0xff)
                 assertEquals(64, u32le(extensionError, 4))
                 assertEquals(25, extensionError[10].toInt() and 0xff)
+
+                val unmodeledRandrNotify = ByteArray(32)
+                unmodeledRandrNotify[0] = (XRandr.FirstEvent + XRandr.Notify).toByte()
+                unmodeledRandrNotify[1] = 0
+                socket.getOutputStream().write(sendEventRequest(WindowId, unmodeledRandrNotify))
+                socket.getOutputStream().flush()
+                val randrSubtypeError = socket.getInputStream().readExactly(32)
+                assertEquals(0, randrSubtypeError[0].toInt())
+                assertEquals(2, randrSubtypeError[1].toInt() and 0xff)
+                assertEquals(XRandr.FirstEvent + XRandr.Notify, u32le(randrSubtypeError, 4))
+                assertEquals(25, randrSubtypeError[10].toInt() and 0xff)
 
                 socket.getOutputStream().write(
                     sendEventRequest(
@@ -15908,6 +16014,18 @@ class XCoreDrawingProtocolTest {
         put32le(event, 12, selection)
         put32le(event, 16, target)
         put32le(event, 20, property)
+        return event
+    }
+
+    private fun xfixesSelectionNotifyEvent(window: Int, owner: Int, selection: Int, timestamp: Int, selectionTimestamp: Int): ByteArray {
+        val event = ByteArray(32)
+        event[0] = (XFixes.FirstEvent + XFixes.SelectionNotify).toByte()
+        event[1] = XFixes.SetSelectionOwnerNotify.toByte()
+        put32le(event, 4, window)
+        put32le(event, 8, owner)
+        put32le(event, 12, selection)
+        put32le(event, 16, timestamp)
+        put32le(event, 20, selectionTimestamp)
         return event
     }
 
