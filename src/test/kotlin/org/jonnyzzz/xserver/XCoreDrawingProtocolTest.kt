@@ -3881,6 +3881,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `LineOnOffDash leaves prior pixels visible when PolyRectangle repaints same outline`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val rectangle = XRectangleCommand(2, 2, 8, 4)
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(changeGcLineStyleRequest(GcId + 1, lineStyle = 1))
+                out.write(setDashesRequest(GcId + 1, dashOffset = 0, dashes = listOf(1, 1)))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(rectangle)))
+                out.write(polyRectangleRequest(WindowId, GcId + 1, rectangles = listOf(rectangle)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 14, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 14, 10, 0xffff_0000.toInt()) > 0)
+                assertTrue(countPixels(image, 14, 10, 0xff00_00ff.toInt()) > 0)
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 2, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 14, 3, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 4, 2))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 14, 5, 2))
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"kind":"Rectangle"""")
+                assertContains(stateJson, """"background":"0xffffff"""")
+                assertContains(stateJson, """"lineStyle":1""")
+                assertContains(stateJson, """"dashes":[1,1]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `LineDoubleDash paints GC background into off dashes`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -3904,6 +3941,72 @@ class XCoreDrawingProtocolTest {
                 assertEquals(0xffff_0000.toInt(), pixelAt(image, 8, 5, 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 6, 0))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 7, 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `LineDoubleDash paints PolyRectangle off dashes with GC background`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createGcRequest(GcId, foreground = Blue, background = Green))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 2))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(1, 1)))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(2, 2, 8, 4))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 14, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 14, 10, 0xff00_00ff.toInt()) > 0)
+                assertTrue(countPixels(image, 14, 10, 0xff00_ff00.toInt()) > 0)
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 2, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 3, 2))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 14, 4, 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 14, 5, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `LineOnOffDash PolyRectangle uses tiled fill source for on dashes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = 0x00aa_00aa))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 1)))
+                out.write(polyRectangleRequest(WindowId, GcId, rectangles = listOf(XRectangleCommand(1, 1, 4, 3))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 7))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 8, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 3, 1))
             }
             server.close()
             serverThread.join(1_000)

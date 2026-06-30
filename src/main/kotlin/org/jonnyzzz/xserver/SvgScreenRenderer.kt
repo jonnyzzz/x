@@ -790,7 +790,7 @@ internal object SvgScreenRenderer {
                     }
                     XDrawingKind.CopyArea -> renderImages(this, drawing)
                     XDrawingKind.CopyPlane -> renderImages(this, drawing)
-                    XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground))
+                    XDrawingKind.Rectangle -> renderOutlinedRectangles(this, drawing, pixelColor(drawing.foreground), dash = dashArray(drawing))
                     XDrawingKind.FillPoly -> renderPolygon(this, drawing)
                     XDrawingKind.Arc -> renderArcs(this, drawing, filled = false)
                     XDrawingKind.FillArc -> renderArcs(this, drawing, filled = true)
@@ -905,6 +905,7 @@ internal object SvgScreenRenderer {
                 "stroke-width" to drawing.lineWidth.coerceAtLeast(1),
                 "stroke-linejoin" to strokeLineJoin(drawing.joinStyle),
                 "stroke-dasharray" to dash,
+                "stroke-dashoffset" to dashOffset(drawing),
             )
         }
     }

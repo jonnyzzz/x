@@ -23,6 +23,7 @@ internal data class XCopyResult(
 }
 
 internal typealias XClipMask = (x: Int, y: Int) -> Boolean
+internal typealias XStrokeSource = (x: Int, y: Int, dashPixel: Int) -> Int?
 
 internal class XFramebuffer(
     width: Int,
@@ -182,6 +183,8 @@ internal class XFramebuffer(
         planeMask: Int = -1,
         dashPattern: XDashPattern? = null,
         includeFirstPoint: Boolean = true,
+        includeLastPoint: Boolean = true,
+        strokeSource: XStrokeSource? = null,
     ): Boolean {
         var x = x1
         var y = y1
@@ -194,10 +197,15 @@ internal class XFramebuffer(
 
         while (true) {
             val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
-            if ((includeFirstPoint || x != x1 || y != y1) && dashPixel != null) {
-                painted = drawPoint(x, y, dashPixel, lineWidth, clipRectangles, function, planeMask) || painted
+            val isFirstPoint = x == x1 && y == y1
+            val isLastPoint = x == x2 && y == y2
+            if ((includeFirstPoint || !isFirstPoint) && (includeLastPoint || !isLastPoint) && dashPixel != null) {
+                val sourcePixel = if (strokeSource == null) dashPixel else strokeSource(x, y, dashPixel)
+                if (sourcePixel != null) {
+                    painted = drawPoint(x, y, sourcePixel, lineWidth, clipRectangles, function, planeMask) || painted
+                }
             }
-            if (x == x2 && y == y2) break
+            if (isLastPoint) break
             val twiceError = error * 2
             if (twiceError > -dy) {
                 error -= dy
@@ -218,21 +226,77 @@ internal class XFramebuffer(
         width: Int,
         height: Int,
         pixel: Int,
+        background: Int,
         lineWidth: Int = 1,
+        lineStyle: Int = XGraphicsContext.LineSolid,
+        dashOffset: Int = 0,
+        dashes: List<Int> = emptyList(),
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        strokeSource: XStrokeSource? = null,
     ): Boolean {
         if (width < 0 || height < 0) return false
-        var painted = false
         val right = x + width
         val bottom = y + height
-        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
-        if (height > 0) painted = drawLine(x, bottom, right, bottom, pixel, lineWidth, clipRectangles, function, planeMask) || painted
-        if (height > 1) {
-            painted = drawLine(x, y + 1, x, bottom - 1, pixel, lineWidth, clipRectangles, function, planeMask) || painted
-            if (width > 0) painted = drawLine(right, y + 1, right, bottom - 1, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
+        if (width == 0 && height == 0) {
+            val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
+            val sourcePixel = dashPixel?.let { if (strokeSource == null) it else strokeSource(x, y, it) }
+            return sourcePixel?.let { drawPoint(x, y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
         }
+        if (width == 0) {
+            return drawLine(x, y, x, bottom, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource)
+        }
+        if (height == 0) {
+            return drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource)
+        }
+
+        var painted = false
+        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource) || painted
+        painted = drawLine(
+            right,
+            y,
+            right,
+            bottom,
+            pixel,
+            lineWidth,
+            clipRectangles,
+            function,
+            planeMask,
+            dashPattern,
+            includeFirstPoint = false,
+            strokeSource = strokeSource,
+        ) || painted
+        painted = drawLine(
+            right,
+            bottom,
+            x,
+            bottom,
+            pixel,
+            lineWidth,
+            clipRectangles,
+            function,
+            planeMask,
+            dashPattern,
+            includeFirstPoint = false,
+            strokeSource = strokeSource,
+        ) || painted
+        painted = drawLine(
+            x,
+            bottom,
+            x,
+            y,
+            pixel,
+            lineWidth,
+            clipRectangles,
+            function,
+            planeMask,
+            dashPattern,
+            includeFirstPoint = false,
+            includeLastPoint = false,
+            strokeSource = strokeSource,
+        ) || painted
         return painted
     }
 

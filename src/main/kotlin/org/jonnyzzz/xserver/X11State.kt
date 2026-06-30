@@ -5710,8 +5710,17 @@ internal class X11State(
     fun drawRectangleOutlines(
         drawableId: Int,
         pixel: Int,
+        background: Int,
         rectangles: List<XRectangleCommand>,
         lineWidth: Int,
+        lineStyle: Int,
+        dashOffset: Int,
+        dashes: List<Int>,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
         clipRectangles: List<XRectangleCommand>? = null,
         subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
@@ -5719,11 +5728,49 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
+        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
         var painted = false
         for (rectangle in rectangles) {
-            painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, effectiveClip, function, planeMask) || painted
+            painted = framebuffer.drawRectangleOutline(
+                rectangle.x,
+                rectangle.y,
+                rectangle.width,
+                rectangle.height,
+                pixel,
+                background,
+                lineWidth,
+                lineStyle,
+                dashOffset,
+                dashes,
+                effectiveClip,
+                function,
+                planeMask,
+                strokeSource,
+            ) || painted
         }
         return painted
+    }
+
+    private fun strokeSource(
+        fillStyle: Int,
+        foreground: Int,
+        background: Int,
+        tilePixmap: XImagePixels?,
+        stipplePixmap: XImagePixels?,
+        tileStippleXOrigin: Int,
+        tileStippleYOrigin: Int,
+    ): XStrokeSource? {
+        val pattern = fillPattern(fillStyle, foreground, background, tilePixmap, stipplePixmap) ?: return null
+        return { x, y, dashPixel ->
+            if (dashPixel != foreground) {
+                dashPixel
+            } else {
+                pattern.pixelAt(
+                    (x - tileStippleXOrigin).floorMod(pattern.width),
+                    (y - tileStippleYOrigin).floorMod(pattern.height),
+                )
+            }
+        }
     }
 
     @Synchronized
@@ -8464,6 +8511,11 @@ private data class XFillPattern(
 
     private fun patternBit(pixel: Int): Boolean =
         ((pixel ushr 24) and 0xff) != 0 || (pixel and 0x00ff_ffff) != 0
+}
+
+private fun Int.floorMod(modulus: Int): Int {
+    val result = this % modulus
+    return if (result < 0) result + modulus else result
 }
 
 internal data class XGraphicsContext(
