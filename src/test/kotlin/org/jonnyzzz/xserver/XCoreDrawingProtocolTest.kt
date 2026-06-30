@@ -13378,6 +13378,111 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow exposes topmost lower owner when lowering highest child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val bottom = WindowId + 117
+                val middle = WindowId + 118
+                val top = WindowId + 119
+
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.Exposure))
+                out.write(createWindowRequest(bottom, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(middle, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(bottom))
+                out.write(mapWindowRequest(middle))
+                out.write(mapWindowRequest(top))
+                out.write(circulateWindowRequest(XCirculateResult.LowerHighest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, bottom)
+                assertMapAndExpose(input, middle)
+                assertMapAndExpose(input, top)
+                assertExpose(input.readExactly(32), middle, sequence = 8, width = 20, height = 20, count = 0)
+                assertEquals(listOf(top, bottom, middle), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow exposes descendants uncovered by lowered highest child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val lower = WindowId + 120
+                val lowerChild = WindowId + 121
+                val top = WindowId + 122
+
+                out.write(createWindowRequest(lower, x = 0, y = 0, width = 40, height = 40, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(lowerChild, parent = lower, x = 15, y = 15, width = 10, height = 10, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, x = 10, y = 10, width = 30, height = 30))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(lowerChild))
+                out.write(mapWindowRequest(top))
+                out.write(circulateWindowRequest(XCirculateResult.LowerHighest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, lower)
+                assertMapAndExpose(input, lowerChild)
+                assertMapAndExpose(input, top)
+                assertExpose(input.readExactly(32), lower, sequence = 7, width = 40, height = 40, count = 0)
+                assertExpose(input.readExactly(32), lowerChild, sequence = 7, width = 10, height = 10, count = 0)
+                assertEquals(listOf(top, lower), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `CirculateWindow exposes descendants of raised lowest child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val first = WindowId + 123
+                val child = WindowId + 124
+                val second = WindowId + 125
+
+                out.write(createWindowRequest(first, x = 0, y = 0, width = 40, height = 40, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(child, parent = first, x = 15, y = 15, width = 10, height = 10, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 30, height = 30))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(child))
+                out.write(mapWindowRequest(second))
+                out.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                out.write(queryTreeRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, child)
+                assertMapAndExpose(input, second)
+                assertExpose(input.readExactly(32), first, sequence = 7, width = 40, height = 40, count = 0)
+                assertExpose(input.readExactly(32), child, sequence = 7, width = 10, height = 10, count = 0)
+                assertEquals(listOf(second, first), treeChildren(readReply(input)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CirculateWindow does not expose siblings when lowered highest child is InputOnly`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

@@ -690,15 +690,10 @@ internal class X11State(
     fun circulateExposeWindows(result: XCirculateResult): List<XWindow> {
         val target = windows[result.window.id] ?: return emptyList()
         if (!target.mapped || target.windowClass != XWindowClass.InputOutput || !windowIsViewable(target.id)) return emptyList()
+        val siblings = childrenOf(result.parentId)
         return when (result.place) {
-            XCirculateResult.Top -> listOf(target)
-            XCirculateResult.Bottom -> childrenOf(result.parentId).filter { child ->
-                child.id != target.id &&
-                    child.mapped &&
-                    child.windowClass == XWindowClass.InputOutput &&
-                    windowIsViewable(child.id) &&
-                    windowsOverlap(target, child)
-            }
+            XCirculateResult.Top -> exposedWindowsInSubtree(target, circulateRaiseExposedRootRegions(target, siblings))
+            XCirculateResult.Bottom -> exposedLowerSiblingSubtrees(target, circulateLowerExposedRootRegions(target, siblings), siblings)
             else -> emptyList()
         }
     }
@@ -712,22 +707,16 @@ internal class X11State(
         val parent = windows[target.parentId]?.takeIf {
             it.windowClass == XWindowClass.InputOutput && windowIsViewable(it.id)
         }
-        var parentRegions = exposedRegions
-        val lowerSiblingSubtrees = mutableListOf<XWindow>()
-        for (sibling in childrenBefore(childrenOf(target.parentId), target).asReversed()) {
-            if (!sibling.mapped || sibling.windowClass != XWindowClass.InputOutput || !windowIsViewable(sibling.id)) continue
-            val siblingBounds = windowBoundsInRoot(sibling)
-            val siblingRegions = intersectClipLists(parentRegions, listOf(siblingBounds))
-            if (siblingRegions.isEmpty()) continue
-            parentRegions = subtractClips(parentRegions, listOf(siblingBounds))
-            lowerSiblingSubtrees += exposedWindowsInSubtree(sibling, siblingRegions)
-        }
+        val (parentRegions, lowerSiblingSubtrees) = lowerSiblingExposureAssignment(target, exposedRegions, childrenOf(target.parentId))
         return listOfNotNull(parent?.takeIf { parentRegions.isNotEmpty() }) + lowerSiblingSubtrees
     }
 
-    private fun unmapExposedRootRegions(target: XWindow): List<XRectangleCommand> {
+    private fun unmapExposedRootRegions(target: XWindow): List<XRectangleCommand> =
+        circulateLowerExposedRootRegions(target, childrenOf(target.parentId))
+
+    private fun circulateLowerExposedRootRegions(target: XWindow, siblings: List<XWindow>): List<XRectangleCommand> {
         val targetBounds = windowBoundsInRoot(target)
-        val higherSiblingBounds = childrenAfter(childrenOf(target.parentId), target)
+        val higherSiblingBounds = childrenAfter(siblings, target)
             .filter { child ->
                 child.mapped &&
                     child.windowClass == XWindowClass.InputOutput &&
@@ -736,6 +725,43 @@ internal class X11State(
             }
             .map { windowBoundsInRoot(it) }
         return subtractClips(listOf(targetBounds), higherSiblingBounds)
+    }
+
+    private fun circulateRaiseExposedRootRegions(target: XWindow, siblings: List<XWindow>): List<XRectangleCommand> {
+        val targetBounds = windowBoundsInRoot(target)
+        return childrenAfter(siblings, target)
+            .filter { child ->
+                child.mapped &&
+                    child.windowClass == XWindowClass.InputOutput &&
+                    windowIsViewable(child.id) &&
+                    windowsOverlap(child, target)
+            }
+            .flatMap { child -> intersectClipLists(listOf(targetBounds), listOf(windowBoundsInRoot(child))) }
+    }
+
+    private fun exposedLowerSiblingSubtrees(
+        target: XWindow,
+        regions: List<XRectangleCommand>,
+        siblings: List<XWindow>,
+    ): List<XWindow> =
+        lowerSiblingExposureAssignment(target, regions, siblings).second
+
+    private fun lowerSiblingExposureAssignment(
+        target: XWindow,
+        regions: List<XRectangleCommand>,
+        siblings: List<XWindow>,
+    ): Pair<List<XRectangleCommand>, List<XWindow>> {
+        var remainingRegions = regions
+        val lowerSiblingSubtrees = mutableListOf<XWindow>()
+        for (sibling in childrenBefore(siblings, target).asReversed()) {
+            if (!sibling.mapped || sibling.windowClass != XWindowClass.InputOutput || !windowIsViewable(sibling.id)) continue
+            val siblingBounds = windowBoundsInRoot(sibling)
+            val siblingRegions = intersectClipLists(remainingRegions, listOf(siblingBounds))
+            if (siblingRegions.isEmpty()) continue
+            remainingRegions = subtractClips(remainingRegions, listOf(siblingBounds))
+            lowerSiblingSubtrees += exposedWindowsInSubtree(sibling, siblingRegions)
+        }
+        return remainingRegions to lowerSiblingSubtrees
     }
 
     private fun exposedWindowsInSubtree(window: XWindow, regions: List<XRectangleCommand>): List<XWindow> {
