@@ -261,6 +261,22 @@ run_bounded() {
   fi
 }
 
+descendant_pids() {
+  local frontier="$1"
+  local children pid
+  while [ -n "$frontier" ]; do
+    children=""
+    for pid in $frontier; do
+      children="$children $(pgrep -P "$pid" 2>/dev/null || true)"
+    done
+    # shellcheck disable=SC2086
+    set -- $children
+    [ "$#" -gt 0 ] || break
+    printf '%s\n' "$@"
+    frontier="$*"
+  done
+}
+
 dump_diagnostics() {
   local reason="$1"
   local safe_reason diag_file
@@ -302,7 +318,18 @@ dump_diagnostics() {
     echo
     echo "== java thread dumps =="
     if command -v jps >/dev/null 2>&1; then
-      java_pids="$(run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" jps -q 2>/dev/null | head -"$RUN_AGENT_THREAD_DUMP_MAX_JVMS" || true)"
+      java_pids=""
+      for descendant_pid in $(descendant_pids "$AGENT_PID"); do
+        descendant_command="$(ps -p "$descendant_pid" -o comm= 2>/dev/null || true)"
+        case "$descendant_command" in
+          *java*) java_pids="${java_pids:+$java_pids }$descendant_pid" ;;
+        esac
+      done
+      if [ -z "$java_pids" ]; then
+        java_pids="$(run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" jps -q 2>/dev/null | head -"$RUN_AGENT_THREAD_DUMP_MAX_JVMS" || true)"
+      else
+        java_pids="$(printf '%s\n' $java_pids | head -"$RUN_AGENT_THREAD_DUMP_MAX_JVMS" || true)"
+      fi
       for java_pid in $java_pids; do
         [ -n "$java_pid" ] || continue
         echo "-- pid $java_pid --"
