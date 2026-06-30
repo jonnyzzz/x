@@ -11132,6 +11132,100 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Transform accepts bilinear filter id`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(0 to 0, 1 to 0, 1 to 1, 0 to 1),
+                        filter = 1,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Transform accepts advertised filter alias ids`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 4, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(0 to 0, 1 to 0, 1 to 1, 0 to 1),
+                        filter = 2,
+                    ),
+                )
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(1 to 0, 2 to 0, 2 to 1, 1 to 1),
+                        filter = 3,
+                    ),
+                )
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(2 to 0, 3 to 0, 3 to 1, 2 to 1),
+                        filter = 4,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 4, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 4, x = 0, y = 0))
+                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 0))
+                assertEquals(0xff80_8080.toInt(), pixelAt(image, imageWidth = 4, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 4, x = 3, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Transform validates framing operator and pictures`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11151,7 +11245,7 @@ class XRenderProtocolTest {
                 out.write(renderTransformRaw(renderTransformBody(SolidPictureId, PictureId, operation = XRender.OpBlendMaximum + 1)))
                 out.write(renderTransformRaw(renderTransformBody(missingSource, PictureId)))
                 out.write(renderTransformRaw(renderTransformBody(SolidPictureId, missingDestination)))
-                out.write(renderTransformRaw(renderTransformBody(SolidPictureId, PictureId, filter = 1)))
+                out.write(renderTransformRaw(renderTransformBody(SolidPictureId, PictureId, filter = 5)))
                 out.write(
                     renderTransformRaw(
                         renderTransformBody(
@@ -11170,7 +11264,7 @@ class XRenderProtocolTest {
                 assertError(socket.getInputStream(), error = 2, badValue = XRender.OpBlendMaximum + 1, sequence = 7, minorOpcode = 16)
                 assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingSource, sequence = 8, minorOpcode = 16)
                 assertError(socket.getInputStream(), error = XRender.PictureError, badValue = missingDestination, sequence = 9, minorOpcode = 16)
-                assertError(socket.getInputStream(), error = 2, badValue = 1, sequence = 10, minorOpcode = 16)
+                assertError(socket.getInputStream(), error = 2, badValue = 5, sequence = 10, minorOpcode = 16)
                 assertError(socket.getInputStream(), error = 2, badValue = 0, sequence = 11, minorOpcode = 16)
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 3))

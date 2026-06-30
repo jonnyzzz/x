@@ -3046,9 +3046,8 @@ internal class X11Connection(
         val sourceQuad = fixedQuad(body, 12)
         val destinationQuad = fixedQuad(body, 44)
         val filter = byteOrder.u32(body, 76)
-        if (filter != XRender.LegacyTransformFilterNearest) {
-            return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = filter)
-        }
+        val filterName = legacyTransformFilterName(filter)
+            ?: return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = filter)
         if (!isSupportedTransformQuad(sourceQuad) || !isSupportedTransformQuad(destinationQuad)) {
             return writeError(error = 2, opcode = XRender.MajorOpcode, minorOpcode = 16, badValue = 0)
         }
@@ -3058,7 +3057,7 @@ internal class X11Connection(
             destination = destination,
             sourceQuad = sourceQuad,
             destinationQuad = destinationQuad,
-            filterName = XRender.FilterNearest,
+            filterName = filterName,
         )
         if (!painted) return
         state.draw(
@@ -3074,6 +3073,16 @@ internal class X11Connection(
             ),
         )
     }
+
+    private fun legacyTransformFilterName(filter: Int): String? =
+        when (filter) {
+            XRender.LegacyTransformFilterNearest -> XRender.FilterNearest
+            XRender.LegacyTransformFilterBilinear -> XRender.FilterBilinear
+            XRender.LegacyTransformFilterFast -> XRender.FilterNearest
+            XRender.LegacyTransformFilterGood,
+            XRender.LegacyTransformFilterBest -> XRender.FilterBilinear
+            else -> null
+        }
 
     private fun renderCreateGlyphSet(body: ByteArray) {
         if (body.size != 8) return writeError(error = 16, opcode = XRender.MajorOpcode, minorOpcode = 17, badValue = 0)

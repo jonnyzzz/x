@@ -104,7 +104,12 @@ internal object XRender {
     const val PolyModeImprecise = 1
     const val DefaultPolyMode = PolyModePrecise
     const val LegacyTransformFilterNearest = 0
+    const val LegacyTransformFilterBilinear = 1
+    const val LegacyTransformFilterFast = 2
+    const val LegacyTransformFilterGood = 3
+    const val LegacyTransformFilterBest = 4
     const val FilterNearest = "nearest"
+    const val FilterBilinear = "bilinear"
 
     fun operationName(minorOpcode: Int): String =
         when (minorOpcode) {
