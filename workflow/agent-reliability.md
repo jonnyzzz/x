@@ -36,6 +36,8 @@ The 2026-06-30 20:39Z recurrence was another orchestration stall, not an X serve
 
 Root cause: read-only run-agent research prompts inherited "use MCP Steroid where possible" guidance and could enter an MCP/stdin wait that is invisible as useful progress to the outer runner. For run-agent scouts and reviews, prefer shell/read-only source searches (`rg`, `sed`, `git`, bounded Gradle only when requested). Use MCP Steroid from a run-agent only when the prompt explicitly needs IDE semantic APIs, and then keep the wall-clock timeout plus no-output diagnostics enabled.
 
+`run-agent.sh` now prepends a short reliability override to copied prompts when this file is present. That override supersedes older broad "prefer MCP Steroid" role prompts for run-agent work, while still allowing explicit IDE-semantic tasks to opt into MCP Steroid. Set `RUN_AGENT_RELIABILITY_PREAMBLE=0` only for an intentionally isolated run that must receive the prompt byte-for-byte.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.

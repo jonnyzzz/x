@@ -86,6 +86,9 @@ Configuration (env variables):
                       Timeout for each JVM thread dump in diagnostics (default: 5)
   RUN_AGENT_THREAD_DUMP_MAX_JVMS
                       Maximum JVMs to thread-dump during agent diagnostics (default: 5)
+  RUN_AGENT_RELIABILITY_PREAMBLE
+                      Prepend local workflow/agent-reliability.md guidance to prompts
+                      when present (default: 1, set 0 to disable)
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -213,6 +216,38 @@ PID_FILE="$RUN_DIR/pid.txt"
 RUN_INFO_FILE="$RUN_DIR/run-info.txt"
 
 cp "$PROMPT_FILE" "$PROMPT"
+
+RUN_AGENT_RELIABILITY_PREAMBLE="${RUN_AGENT_RELIABILITY_PREAMBLE:-1}"
+if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ]; then
+  RELIABILITY_FILE=""
+  if [ -f "$CWD/workflow/agent-reliability.md" ]; then
+    RELIABILITY_FILE="$CWD/workflow/agent-reliability.md"
+  elif [ -f "$BASE_DIR/workflow/agent-reliability.md" ]; then
+    RELIABILITY_FILE="$BASE_DIR/workflow/agent-reliability.md"
+  fi
+  if [ -n "$RELIABILITY_FILE" ]; then
+    PROMPT_WITH_RELIABILITY="$RUN_DIR/prompt-with-reliability.md"
+    {
+      cat <<EOF
+# Local Agent Reliability Override
+
+Read and follow $RELIABILITY_FILE before choosing tools.
+
+- Prefer shell/source inspection for run-agent research and review work.
+- Use MCP Steroid only when the prompt explicitly requires IDE semantic APIs.
+- Do not spawn nested review quorums or unbounded subagents.
+- Use bounded tests/builds and collect jps/jcmd/jstack diagnostics before terminating suspected JVM hangs.
+
+This override supersedes older broad "prefer MCP Steroid" prompt text when they conflict.
+
+--- Original Prompt ---
+
+EOF
+      cat "$PROMPT"
+    } > "$PROMPT_WITH_RELIABILITY"
+    mv "$PROMPT_WITH_RELIABILITY" "$PROMPT"
+  fi
+fi
 
 CMDLINE="${_quoted_cmd}< $(printf '%q' "$PROMPT")"
 
@@ -406,6 +441,10 @@ TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
 NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
 EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS"
+if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ] && [ -n "${RELIABILITY_FILE:-}" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+RELIABILITY_PREAMBLE=$RELIABILITY_FILE"
+fi
 if [ -n "$NO_OUTPUT_TIMEOUT_NOTE" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 NO_OUTPUT_TIMEOUT_NOTE=$NO_OUTPUT_TIMEOUT_NOTE"
