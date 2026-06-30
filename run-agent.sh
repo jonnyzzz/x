@@ -82,8 +82,8 @@ Configuration (env variables):
                       Run claude with --safe-mode to disable MCP/plugins/hooks
                       for bounded run-agent jobs (default: 1, set 0 to disable)
   RUN_AGENT_CODEX_ISOLATED
-                      Run codex with user provider/auth config, but clear
-                      mcp_servers/plugins and disable hooks for bounded
+                      Run codex with an isolated CODEX_HOME containing only
+                      model/provider/project trust config for bounded
                       run-agent jobs (default: 1, set 0 to disable)
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
@@ -212,6 +212,46 @@ RUN_ID="run_$(date -u +%Y%m%d-%H%M%S)-$$"
 RUN_DIR="$RUNS_DIR/$RUN_ID"
 mkdir -p "$RUN_DIR"
 cp "$BASE_DIR/run-agent.sh" "$RUN_DIR/run-agent.sh"
+
+CODEX_HOME_OVERRIDE=""
+if [ "$AGENT" = "codex" ] && [ "$RUN_AGENT_CODEX_ISOLATED" != "0" ]; then
+  CODEX_SOURCE_HOME="${CODEX_HOME:-$HOME/.codex}"
+  CODEX_SOURCE_CONFIG="$CODEX_SOURCE_HOME/config.toml"
+  CODEX_HOME_OVERRIDE="$RUN_DIR/codex-home"
+  mkdir -p "$CODEX_HOME_OVERRIDE"
+  if [ -f "$CODEX_SOURCE_CONFIG" ]; then
+    # Keep provider/auth routing and project trust, but drop MCP, plugins and hooks.
+    awk '
+      function keep_section(name) {
+        return name == "model_providers" || name ~ /^model_providers\./ || name == "projects" || name ~ /^projects\./
+      }
+      /^\[/ {
+        section = $0
+        gsub(/^\[/, "", section)
+        gsub(/\]$/, "", section)
+        keep = keep_section(section)
+        if (keep) print
+        next
+      }
+      section == "" {
+        if ($0 ~ /^(model|model_provider|model_reasoning_effort)[[:space:]]*=/) print
+        next
+      }
+      keep { print }
+    ' "$CODEX_SOURCE_CONFIG" > "$CODEX_HOME_OVERRIDE/config.toml"
+    {
+      echo
+      echo "[features]"
+      echo "hooks = false"
+      echo
+      echo "[mcp_servers]"
+      echo
+      echo "[plugins]"
+    } >> "$CODEX_HOME_OVERRIDE/config.toml"
+  else
+    touch "$CODEX_HOME_OVERRIDE/config.toml"
+  fi
+fi
 
 # Compose a CMD= field that can be pasted into a shell verbatim.
 # printf %q quotes each token so spaces / shell metacharacters in $CWD
@@ -425,8 +465,7 @@ AGENT_PID=""
 on_signal() {
   local sig="$1" code="$2"
   if [ -n "$AGENT_PID" ]; then
-    kill -TERM "$AGENT_PID" 2>/dev/null || true
-    wait "$AGENT_PID" 2>/dev/null || true
+    terminate_agent_tree
   fi
   rm -f "$PID_FILE" 2>/dev/null || true
   { printf 'EXIT_CODE=%s\nSIGNAL=%s\n' "$code" "$sig" >> "$RUN_INFO_FILE"; } || true
@@ -436,8 +475,24 @@ trap 'on_signal INT  130' INT
 trap 'on_signal TERM 143' TERM
 trap 'on_signal HUP  129' HUP
 
+terminate_agent_tree() {
+  [ -n "$AGENT_PID" ] || return
+  local pids
+  pids="$(descendant_pids "$AGENT_PID" | awk 'NF { print }' || true)"
+  # shellcheck disable=SC2086
+  kill -TERM $pids "$AGENT_PID" 2>/dev/null || true
+  sleep 5
+  pids="$(descendant_pids "$AGENT_PID" | awk 'NF { print }' || true)"
+  # shellcheck disable=SC2086
+  kill -KILL $pids "$AGENT_PID" 2>/dev/null || true
+  wait "$AGENT_PID" 2>/dev/null || true
+}
+
 (
   cd "$CWD"
+  if [ -n "$CODEX_HOME_OVERRIDE" ]; then
+    export CODEX_HOME="$CODEX_HOME_OVERRIDE"
+  fi
   exec "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
 ) &
 AGENT_PID=$!
@@ -460,6 +515,10 @@ NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
 EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS
 CLAUDE_SAFE_MODE=$RUN_AGENT_CLAUDE_SAFE_MODE
 CODEX_ISOLATED=$RUN_AGENT_CODEX_ISOLATED"
+if [ -n "$CODEX_HOME_OVERRIDE" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+CODEX_HOME=$CODEX_HOME_OVERRIDE"
+fi
 if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ] && [ -n "${RELIABILITY_FILE:-}" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 RELIABILITY_PREAMBLE=$RELIABILITY_FILE"
@@ -506,10 +565,7 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
       TIMEOUT_FIRED=true
       TIMEOUT_REASON="no-output-timeout-${EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS}s"
       dump_diagnostics "$TIMEOUT_REASON"
-      kill -TERM "$AGENT_PID" 2>/dev/null || true
-      sleep 5
-      kill -KILL "$AGENT_PID" 2>/dev/null || true
-      wait "$AGENT_PID" 2>/dev/null || true
+      terminate_agent_tree
       EXIT_CODE=124
       break
     fi
@@ -519,10 +575,7 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
       TIMEOUT_FIRED=true
       TIMEOUT_REASON="timeout-${RUN_AGENT_TIMEOUT_SECONDS}s"
       dump_diagnostics "$TIMEOUT_REASON"
-      kill -TERM "$AGENT_PID" 2>/dev/null || true
-      sleep 5
-      kill -KILL "$AGENT_PID" 2>/dev/null || true
-      wait "$AGENT_PID" 2>/dev/null || true
+      terminate_agent_tree
       EXIT_CODE=124
       break
     fi

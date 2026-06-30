@@ -42,6 +42,10 @@ Claude run-agents also default to `--safe-mode` (`RUN_AGENT_CLAUDE_SAFE_MODE=1`)
 
 Codex run-agents also default to an isolated config overlay (`RUN_AGENT_CODEX_ISOLATED=1`): the runner keeps the configured provider/auth path, but passes `-c 'mcp_servers={}' -c 'features.hooks=false' -c 'plugins={}'`. A 2026-06-30 bounded read-only scout reproduced the MCP/stdin wait pattern with plain `codex exec`: despite prompt text forbidding MCP use, the Codex process loaded configured MCP servers and spawned an MCP Steroid Java child that sat in `McpStdioServer.readChunk` waiting on stdin until the runner wall-clock timeout fired. `--ignore-user-config` avoided MCP but broke this local provider/auth setup with 401s, so use the narrower overlay. Disable config isolation only for a run that explicitly needs user-level Codex MCP/plugins/hooks.
 
+The overlay alone was still insufficient in this local Codex CLI configuration: a 2026-06-30 read-only Codex scout launched `mcp-steroid` even with `-c mcp_servers={}` and then hit the 120-second wall-clock timeout. `run-agent.sh` now creates a per-run isolated `CODEX_HOME` for Codex jobs, copying only top-level model settings, `[model_providers]`, and `[projects]` trust entries from the user config. It intentionally omits MCP servers, plugins, hooks, and bundled marketplaces. The runner still passes the old `-c` disables as a belt-and-braces guard.
+
+Timeout and stale-agent recovery also terminate the full descendant process tree now. Earlier versions killed only the top-level agent PID, so helper JVMs or MCP stdio children could survive the parent timeout and make later "stuck" diagnosis noisier.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.

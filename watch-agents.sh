@@ -172,10 +172,15 @@ diagnose_run() {
 terminate_run() {
   local run_dir="$1"
   local pid="$2"
+  local pids
   echo "  terminating stale PID $pid for $run_dir" | tee -a "$LOG"
-  kill -TERM "$pid" 2>/dev/null || true
+  pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
+  # shellcheck disable=SC2086
+  kill -TERM $pids "$pid" 2>/dev/null || true
   sleep 5
-  kill -KILL "$pid" 2>/dev/null || true
+  pids="$(descendant_pids "$pid" | awk 'NF { print }' || true)"
+  # shellcheck disable=SC2086
+  kill -KILL $pids "$pid" 2>/dev/null || true
   rm -f "$run_dir/pid.txt" 2>/dev/null || true
 }
 
