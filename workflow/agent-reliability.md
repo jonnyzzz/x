@@ -40,6 +40,8 @@ Root cause: read-only run-agent research prompts inherited "use MCP Steroid wher
 
 Claude run-agents also default to `--safe-mode` (`RUN_AGENT_CLAUDE_SAFE_MODE=1`), because `claude -p --tools default` can spawn configured MCP stdio servers before the prompt text has any effect. Disable safe mode only for a run that explicitly needs Claude plugins/hooks/MCP configuration and keep the usual wall-clock plus no-output diagnostics.
 
+Codex run-agents also default to an isolated config overlay (`RUN_AGENT_CODEX_ISOLATED=1`): the runner keeps the configured provider/auth path, but passes `-c 'mcp_servers={}' -c 'features.hooks=false' -c 'plugins={}'`. A 2026-06-30 bounded read-only scout reproduced the MCP/stdin wait pattern with plain `codex exec`: despite prompt text forbidding MCP use, the Codex process loaded configured MCP servers and spawned an MCP Steroid Java child that sat in `McpStdioServer.readChunk` waiting on stdin until the runner wall-clock timeout fired. `--ignore-user-config` avoided MCP but broke this local provider/auth setup with 401s, so use the narrower overlay. Disable config isolation only for a run that explicitly needs user-level Codex MCP/plugins/hooks.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.

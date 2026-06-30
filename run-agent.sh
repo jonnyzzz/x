@@ -81,6 +81,10 @@ Configuration (env variables):
   RUN_AGENT_CLAUDE_SAFE_MODE
                       Run claude with --safe-mode to disable MCP/plugins/hooks
                       for bounded run-agent jobs (default: 1, set 0 to disable)
+  RUN_AGENT_CODEX_ISOLATED
+                      Run codex with user provider/auth config, but clear
+                      mcp_servers/plugins and disable hooks for bounded
+                      run-agent jobs (default: 1, set 0 to disable)
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
   RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS
@@ -175,13 +179,18 @@ CWD="$(cd "$CWD" && pwd)"
 unset CLAUDECODE
 
 RUN_AGENT_CLAUDE_SAFE_MODE="${RUN_AGENT_CLAUDE_SAFE_MODE:-1}"
+RUN_AGENT_CODEX_ISOLATED="${RUN_AGENT_CODEX_ISOLATED:-1}"
 
 # Build agent command array — properly quoted, no eval needed.
 # To add a new agent, add a case entry here and update BUILTIN_AGENTS above.
 AGENT_CMD=()
 case "$AGENT" in
   codex)
-    AGENT_CMD=(codex exec --dangerously-bypass-approvals-and-sandbox -C "$CWD" -)
+    AGENT_CMD=(codex exec --dangerously-bypass-approvals-and-sandbox)
+    if [ "$RUN_AGENT_CODEX_ISOLATED" != "0" ]; then
+      AGENT_CMD+=(-c 'mcp_servers={}' -c 'features.hooks=false' -c 'plugins={}')
+    fi
+    AGENT_CMD+=(-C "$CWD" -)
     ;;
   claude)
     AGENT_CMD=(claude -p --input-format text --output-format text --tools default --permission-mode bypassPermissions)
@@ -449,7 +458,8 @@ TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
 NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
 EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS
-CLAUDE_SAFE_MODE=$RUN_AGENT_CLAUDE_SAFE_MODE"
+CLAUDE_SAFE_MODE=$RUN_AGENT_CLAUDE_SAFE_MODE
+CODEX_ISOLATED=$RUN_AGENT_CODEX_ISOLATED"
 if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ] && [ -n "${RELIABILITY_FILE:-}" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 RELIABILITY_PREAMBLE=$RELIABILITY_FILE"
