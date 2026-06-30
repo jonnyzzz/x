@@ -519,6 +519,98 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg paints each window layer in stacking order`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val lower = 0x0020_0001
+                val upper = 0x0020_0002
+                out.write(createWindowRequest(lower, x = 10, y = 20, width = 80, height = 70))
+                out.write(changePropertyRequest(lower, "lower framebuffer"))
+                out.write(createGcRequest(0x0020_1001, lower))
+                out.write(putImageRequest(lower, 0x0020_1001))
+                out.write(createWindowRequest(upper, x = 30, y = 40, width = 80, height = 70))
+                out.write(changePropertyRequest(upper, "upper background"))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                val lowerFramebuffer = svg.indexOf("""data-window-id="0x200001"""", svg.indexOf("""class="framebuffer-image""""))
+                val upperBackground = svg.indexOf("""<rect data-window-id="0x200002"""")
+                assertContains(svg, "lower framebuffer")
+                assertContains(svg, "upper background")
+                assertEquals(true, lowerFramebuffer >= 0, "Lower window framebuffer image must be present")
+                assertEquals(true, upperBackground >= 0, "Upper window background must be present")
+                assertEquals(
+                    true,
+                    lowerFramebuffer < upperBackground,
+                    "Lower window framebuffer must be emitted before the upper overlapping window background",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `window preview svg paints each child window layer in stacking order`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0010
+                val lower = 0x0020_0011
+                val upper = 0x0020_0012
+                out.write(createWindowRequest(parent, x = 5, y = 5, width = 120, height = 100))
+                out.write(changePropertyRequest(parent, "parent preview"))
+                out.write(createWindowRequest(lower, x = 10, y = 10, width = 60, height = 50, parent = parent))
+                out.write(changePropertyRequest(lower, "lower preview framebuffer"))
+                out.write(createGcRequest(0x0020_1011, lower))
+                out.write(putImageRequest(lower, 0x0020_1011))
+                out.write(createWindowRequest(upper, x = 20, y = 20, width = 60, height = 50, parent = parent))
+                out.write(changePropertyRequest(upper, "upper preview background"))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(upper))
+                out.flush()
+                Thread.sleep(100)
+
+                val html = httpGet(server.localPort, "/").body
+                val labelIndex = html.indexOf("""aria-label="parent preview"""")
+                assertEquals(true, labelIndex >= 0, "Parent window preview SVG must be present")
+                val previewStart = html.lastIndexOf("<svg", labelIndex)
+                val previewEnd = html.indexOf("</svg>", labelIndex)
+                assertEquals(true, previewStart >= 0 && previewEnd > previewStart, "Parent preview SVG must be extractable")
+                val preview = html.substring(previewStart, previewEnd)
+                val lowerFramebuffer = preview.indexOf("""data-window-id="0x200011"""", preview.indexOf("""class="framebuffer-image""""))
+                assertContains(preview, "0x200011")
+                assertContains(preview, "0x200012")
+                assertEquals(true, lowerFramebuffer >= 0, "Lower child framebuffer image must be present in parent preview")
+                val upperBackground = preview.indexOf("""class="window-background"""", lowerFramebuffer)
+                assertEquals(true, upperBackground >= 0, "Upper child background must be present in parent preview")
+                assertEquals(
+                    true,
+                    lowerFramebuffer < upperBackground,
+                    "Lower child framebuffer must be emitted before the upper overlapping child background in the parent preview",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `text report includes request diagnostics`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

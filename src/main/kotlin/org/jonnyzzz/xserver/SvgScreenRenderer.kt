@@ -426,11 +426,8 @@ internal object SvgScreenRenderer {
                         "stroke" to color,
                         "stroke-width" to strokeWidth,
                     )
-                }
-                renderFramebuffers(this, snapshot, visibleWindows, originX = 0, originY = 0, clipPrefix = "screen")
-                renderDrawings(this, snapshot, clipPrefix = "screen")
-                visibleWindows.forEachIndexed { index, window ->
-                    val color = palette[index % palette.size]
+                    renderFramebuffers(this, snapshot, listOf(window), originX = 0, originY = 0, clipPrefix = "screen")
+                    renderDrawings(this, snapshot, clipPrefix = "screen", drawableIds = setOf(window.id))
                     svgElement(
                         "rect",
                         "x" to window.visibleX,
@@ -675,16 +672,16 @@ internal object SvgScreenRenderer {
                         "fill" to fill,
                     )
                 }
+                renderFramebuffers(this, snapshot, listOf(window), originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
+                renderDrawings(
+                    this,
+                    snapshot,
+                    clipPrefix = clipPrefix,
+                    originX = rootWindow.x,
+                    originY = rootWindow.y,
+                    drawableIds = setOf(window.id),
+                )
             }
-            renderFramebuffers(this, snapshot, subtree, originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
-            renderDrawings(
-                this,
-                snapshot,
-                clipPrefix = clipPrefix,
-                originX = rootWindow.x,
-                originY = rootWindow.y,
-                drawableIds = subtree.map { it.id }.toSet(),
-            )
             svgElement(
                 "text",
                 "x" to rootWindow.width - 6,
