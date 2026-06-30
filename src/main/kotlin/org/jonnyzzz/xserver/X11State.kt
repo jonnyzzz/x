@@ -2497,7 +2497,12 @@ internal class X11State(
                 cursorId = window.cursorId,
             )
         }
-        val pixmapSnapshots = pixmaps.values.map { pixmap ->
+        fun matchingWindowIds(width: Int, height: Int): List<Int> =
+            windowSnapshots
+                .filter { it.mapped && it.width == width && it.height == height }
+                .map { it.id }
+
+        val livePixmapSnapshots = pixmaps.values.map { pixmap ->
             XPixmapSnapshot(
                 id = pixmap.id,
                 width = pixmap.width,
@@ -2506,13 +2511,31 @@ internal class X11State(
                 painted = pixmap.framebuffer.hasPaintedContent(),
                 framebufferDataUri = pixmap.framebuffer.toDataUri(),
                 pictureIds = pictures.values
-                    .filter { it.drawableId == pixmap.id }
+                    .filter { picture ->
+                        picture.drawableId == pixmap.id &&
+                            (picture.retainedDrawableFramebuffer == null || picture.retainedDrawableFramebuffer === pixmap.framebuffer)
+                    }
                     .map { it.id },
-                matchingWindowIds = windowSnapshots
-                    .filter { it.mapped && it.width == pixmap.width && it.height == pixmap.height }
-                    .map { it.id },
+                matchingWindowIds = matchingWindowIds(pixmap.width, pixmap.height),
             )
         }
+        val retainedPictureSurfaceSnapshots = pictures.values.mapNotNull { picture ->
+            val drawableId = picture.drawableId ?: return@mapNotNull null
+            val framebuffer = picture.retainedDrawableFramebuffer ?: return@mapNotNull null
+            if (pixmaps[drawableId]?.framebuffer === framebuffer) return@mapNotNull null
+            XPixmapSnapshot(
+                id = drawableId,
+                width = framebuffer.width,
+                height = framebuffer.height,
+                depth = picture.retainedDrawableDepth ?: (XRender.formatDepth(picture.format) ?: 0),
+                painted = framebuffer.hasPaintedContent(),
+                framebufferDataUri = framebuffer.toDataUri(),
+                pictureIds = listOf(picture.id),
+                matchingWindowIds = matchingWindowIds(framebuffer.width, framebuffer.height),
+                retainedPictureId = picture.id,
+            )
+        }
+        val pixmapSnapshots = livePixmapSnapshots + retainedPictureSurfaceSnapshots
         return XScreenSnapshot(
             width = width,
             height = height,
@@ -8293,6 +8316,7 @@ internal data class XPicture(
     var filterName: String? = null,
     var filterValues: List<Int> = emptyList(),
     var retainedDrawableFramebuffer: XFramebuffer? = null,
+    var retainedDrawableDepth: Int? = null,
 ) {
     var alphaMapPicture: XPicture? = null
 }
@@ -9094,10 +9118,13 @@ internal data class XPixmapSnapshot(
     val framebufferDataUri: String?,
     val pictureIds: List<Int>,
     val matchingWindowIds: List<Int>,
+    val retainedPictureId: Int? = null,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val pictureIdHexes: List<String> get() = pictureIds.map { "0x${it.toUInt().toString(16)}" }
     val matchingWindowIdHexes: List<String> get() = matchingWindowIds.map { "0x${it.toUInt().toString(16)}" }
+    val retained: Boolean get() = retainedPictureId != null
+    val retainedPictureIdHex: String? get() = retainedPictureId?.let { "0x${it.toUInt().toString(16)}" }
 }
 
 internal data class XCursor(

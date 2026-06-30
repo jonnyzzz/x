@@ -114,7 +114,9 @@ internal object SvgScreenRenderer {
                     if (windowIndex > 0) append(',')
                     append('"').append(windowId).append('"')
                 }
-                append("""]}""")
+                append("""],"retainedPicture":""")
+                pixmap.retainedPictureIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append('}')
             }
             append("""],"cursors":[""")
             snapshot.cursors.forEachIndexed { index, cursor ->
@@ -514,7 +516,11 @@ internal object SvgScreenRenderer {
             element("header") {
                 element("strong") { text("Best painted surface") }
                 text(" ")
-                text("pixmap=${pixmap.idHex} ${pixmap.width}x${pixmap.height}")
+                if (pixmap.retained) {
+                    text("retained-picture=${pixmap.retainedPictureIdHex} drawable=${pixmap.idHex} ${pixmap.width}x${pixmap.height}")
+                } else {
+                    text("pixmap=${pixmap.idHex} ${pixmap.width}x${pixmap.height}")
+                }
                 if (pixmap.pictureIdHexes.isNotEmpty()) {
                     text(" pictures=${pixmap.pictureIdHexes.joinToString(",")}")
                 }
@@ -551,6 +557,7 @@ internal object SvgScreenRenderer {
                 compareByDescending<XPixmapSnapshot> { it.width * it.height }
                     // If the bounded drawing log no longer contains a pixmap paint, fall back to stable id ordering.
                     .thenByDescending { recentPaintByDrawable[it.id] ?: -1 }
+                    .thenBy { it.retained }
                     .thenBy { it.id },
             )
     }
@@ -558,7 +565,18 @@ internal object SvgScreenRenderer {
     private fun renderPixmapArticle(builder: XmlDom, pixmap: XPixmapSnapshot) {
         builder.element("article", "class" to "surface") {
             element("header") {
-                element("strong") { text("Pixmap ${pixmap.idHex}") }
+                element("strong") {
+                    text(
+                        if (pixmap.retained) {
+                            "Retained picture ${pixmap.retainedPictureIdHex}"
+                        } else {
+                            "Pixmap ${pixmap.idHex}"
+                        },
+                    )
+                }
+                if (pixmap.retained) {
+                    text(" drawable=${pixmap.idHex}")
+                }
                 text(" ${pixmap.width}x${pixmap.height} depth=${pixmap.depth}")
                 if (pixmap.pictureIdHexes.isNotEmpty()) {
                     text(" pictures=${pixmap.pictureIdHexes.joinToString(",")}")
@@ -695,6 +713,8 @@ internal object SvgScreenRenderer {
                     "image",
                     "class" to "pixmap-framebuffer-image",
                     "data-pixmap-id" to pixmap.idHex,
+                    "data-picture-id" to pixmap.retainedPictureIdHex,
+                    "data-source" to if (pixmap.retained) "retained-picture" else "pixmap",
                     "x" to 0,
                     "y" to 0,
                     "width" to pixmap.width,
@@ -802,6 +822,7 @@ internal object SvgScreenRenderer {
                     "class" to surface.cssClass,
                     "data-window-id" to window.idHex,
                     "data-pixmap-id" to surface.pixmapIdHex,
+                    "data-picture-id" to surface.pictureIdHex,
                     "data-source" to surface.source,
                     "x" to window.x - originX,
                     "y" to window.y - originY,
@@ -833,9 +854,10 @@ internal object SvgScreenRenderer {
         val href = pixmap.framebufferDataUri ?: return null
         return XDisplaySurface(
             href = href,
-            source = "matching-pixmap",
+            source = if (pixmap.retained) "retained-picture" else "matching-pixmap",
             cssClass = "framebuffer-image backing-pixmap-image",
             pixmapIdHex = pixmap.idHex,
+            pictureIdHex = pixmap.retainedPictureIdHex,
         )
     }
 
@@ -1056,6 +1078,7 @@ internal object SvgScreenRenderer {
         val source: String,
         val cssClass: String,
         val pixmapIdHex: String? = null,
+        val pictureIdHex: String? = null,
     )
 
     private val palette = listOf(

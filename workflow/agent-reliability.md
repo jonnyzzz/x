@@ -31,9 +31,31 @@ The latest repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIM
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
 - Before killing a suspected stuck JVM workload, collect `jps -lm` plus `jcmd <pid> Thread.print` or `jstack <pid>`.
 - Before restarting a silent run-agent, inspect its `heartbeat.txt`, `run-info.txt`, any `DIAGNOSTICS=...` entries, and stdout/stderr sizes.
+- To answer "ping agents" without entering an unbounded monitor loop, run:
+
+  ```bash
+  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_WATCH_LIMIT=20 ./watch-agents.sh
+  ```
+
+- To diagnose stale active agents, including JVM thread dumps, without killing them, run:
+
+  ```bash
+  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 ./watch-agents.sh
+  ```
+
+- To restart genuinely stale active agents, diagnose first and keep termination/restart opt-in:
+
+  ```bash
+  RUN_AGENT_WATCH_ONCE=1 RUN_AGENT_DIAGNOSE_STALE=1 \
+  RUN_AGENT_TERMINATE_STALE=1 RUN_AGENT_RESTART_STALE=1 ./watch-agents.sh
+  ```
+
+  Destructive recovery flags intentionally require `RUN_AGENT_WATCH_ONCE=1`; do not run terminate/restart in the periodic watcher loop.
+
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
 - Do not let run-agents spawn additional unbounded review subagents. Quorum reviews should be scheduled by the root agent with explicit timeouts, or replaced by a bounded local review for trivial changes.
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying.
+- On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
 
 ## Runner Timeout Knobs

@@ -98,6 +98,10 @@ internal object TextScreenRenderer {
                     append(pixmap.width).append('x').append(pixmap.height)
                     append(" depth=").append(pixmap.depth)
                     append(" painted=").append(pixmap.painted)
+                    if (pixmap.retainedPictureIdHex != null) {
+                        append(" retained-picture=")
+                        append(pixmap.retainedPictureIdHex)
+                    }
                     if (pixmap.pictureIdHexes.isNotEmpty()) {
                         append(" pictures=")
                         append(pixmap.pictureIdHexes.joinToString(","))

@@ -327,6 +327,101 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `screen svg presents retained render picture surface after FreePixmap`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "retained picture target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(0x0020_0200, 0x0020_0100, XRender.Rgb24Format))
+                out.write(renderFillRectanglesRequest(0x0020_0200))
+                out.write(freePixmapRequest(0x0020_0100))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "retained picture target")
+                assertContains(svg, """class="framebuffer-image backing-pixmap-image"""")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-picture-id="0x200200"""")
+                assertContains(svg, """data-source="retained-picture"""")
+
+                val html = httpGet(server.localPort, "/").body
+                assertContains(html, "Retained picture 0x200200")
+                assertContains(html, """data-source="retained-picture"""")
+
+                val text = httpGet(server.localPort, "/text.txt").body
+                assertContains(
+                    text,
+                    "0x200100 geometry=64x64 depth=24 painted=true retained-picture=0x200200 pictures=0x200200 candidate-for=0x200001",
+                )
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(
+                    json,
+                    """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `screen svg prefers live pixmap over retained render picture after pixmap id reuse`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                out.write(createWindowRequest(0x0020_0001, 10, 20, 64, 64))
+                out.write(changePropertyRequest(0x0020_0001, "reused pixmap target"))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(renderCreatePictureRequest(0x0020_0200, 0x0020_0100, XRender.Rgb24Format))
+                out.write(renderFillRectanglesRequest(0x0020_0200))
+                out.write(freePixmapRequest(0x0020_0100))
+                out.write(createPixmapRequest(0x0020_0100, width = 64, height = 64))
+                out.write(createGcRequest(0x0020_1001, 0x0020_0100))
+                out.write(putImageRequest(0x0020_0100, 0x0020_1001))
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                assertContains(svg, "reused pixmap target")
+                assertContains(svg, """data-window-id="0x200001"""")
+                assertContains(svg, """data-pixmap-id="0x200100"""")
+                assertContains(svg, """data-source="matching-pixmap"""")
+                assertFalse(
+                    Regex("""<image\b(?=[^>]*\bdata-window-id="0x200001")(?=[^>]*\bdata-source="retained-picture")""").containsMatchIn(svg),
+                    "Live reused pixmap should stay ahead of the stale retained picture surface",
+                )
+
+                val html = httpGet(server.localPort, "/").body
+                assertContains(html, "Retained picture 0x200200")
+                assertContains(html, "Pixmap 0x200100")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":[],"matchingWindows":["0x200001"],"retainedPicture":null""")
+                assertContains(json, """"id":"0x200100","width":64,"height":64,"depth":24,"painted":true,"pictures":["0x200200"],"matchingWindows":["0x200001"],"retainedPicture":"0x200200"""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `unsupported copy area does not draw diagnostic rectangle artifacts`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -576,6 +671,43 @@ class HttpRenderingTest {
         put32le(bytes, 8, X11Ids.RootWindow)
         put16le(bytes, 12, width)
         put16le(bytes, 14, height)
+        return bytes
+    }
+
+    private fun freePixmapRequest(id: Int): ByteArray {
+        val bytes = ByteArray(8)
+        bytes[0] = 54
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, id)
+        return bytes
+    }
+
+    private fun renderCreatePictureRequest(picture: Int, drawable: Int, format: Int): ByteArray {
+        val bytes = ByteArray(20)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 4
+        put16le(bytes, 2, bytes.size / 4)
+        put32le(bytes, 4, picture)
+        put32le(bytes, 8, drawable)
+        put32le(bytes, 12, format)
+        return bytes
+    }
+
+    private fun renderFillRectanglesRequest(picture: Int): ByteArray {
+        val bytes = ByteArray(28)
+        bytes[0] = XRender.MajorOpcode.toByte()
+        bytes[1] = 26
+        put16le(bytes, 2, bytes.size / 4)
+        bytes[4] = XRender.OpSrc.toByte()
+        put32le(bytes, 8, picture)
+        put16le(bytes, 12, 0xffff)
+        put16le(bytes, 14, 0)
+        put16le(bytes, 16, 0)
+        put16le(bytes, 18, 0xffff)
+        put16le(bytes, 20, 0)
+        put16le(bytes, 22, 0)
+        put16le(bytes, 24, 64)
+        put16le(bytes, 26, 64)
         return bytes
     }
 

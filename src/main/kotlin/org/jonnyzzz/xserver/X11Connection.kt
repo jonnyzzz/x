@@ -2499,6 +2499,7 @@ internal class X11Connection(
                 dither = attributes.dither ?: 0,
                 componentAlpha = attributes.componentAlpha?.toXBool() ?: false,
                 retainedDrawableFramebuffer = state.pixmap(drawable)?.framebuffer,
+                retainedDrawableDepth = state.pixmap(drawable)?.depth,
             ).also { picture ->
                 picture.alphaMapPicture = attributes.alphaMap
                     ?.takeIf { it != 0 }
