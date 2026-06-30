@@ -5755,7 +5755,7 @@ internal class X11Connection(
         val clipRectangles = gc.effectiveClipRectangles()
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
-        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles)
+        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles, gc.subwindowMode)
         val sourceX = byteOrder.i16(body, 12)
         val sourceY = byteOrder.i16(body, 14)
         val destinationX = byteOrder.i16(body, 16)
@@ -5770,6 +5770,7 @@ internal class X11Connection(
         if (gc.drawableRootId != destination.rootId || gc.drawableDepth != destination.depth) {
             return writeError(error = 8, opcode = 62, badValue = gcId)
         }
+        val sourceClipRectangles = state.effectiveDrawableClip(sourceDrawable, null, gc.subwindowMode)
         val copy = state.copyArea(
             sourceDrawableId = sourceDrawable,
             destinationDrawableId = destinationDrawable,
@@ -5780,6 +5781,8 @@ internal class X11Connection(
             width = width,
             height = height,
             clipRectangles = clipRectangles,
+            subwindowMode = gc.subwindowMode,
+            sourceClipRectangles = sourceClipRectangles,
             function = gc.function,
             planeMask = gc.planeMask,
         )
@@ -5815,6 +5818,7 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
+            sourceClipRectangles = sourceClipRectangles,
             clipRectangles = destinationClipRectangles,
         )
         paintCopyExposureBackground(destinationDrawable, exposureRectangles)
@@ -5835,7 +5839,7 @@ internal class X11Connection(
         val clipRectangles = gc.effectiveClipRectangles()
         val sourceDrawable = byteOrder.u32(body, 0)
         val destinationDrawable = byteOrder.u32(body, 4)
-        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles)
+        val destinationClipRectangles = state.effectiveDrawableClip(destinationDrawable, clipRectangles, gc.subwindowMode)
         val sourceX = byteOrder.i16(body, 12)
         val sourceY = byteOrder.i16(body, 14)
         val destinationX = byteOrder.i16(body, 16)
@@ -5857,6 +5861,7 @@ internal class X11Connection(
         if (bitPlane.countTrailingZeroBits() >= source.depth) {
             return writeError(error = 2, opcode = 63, badValue = bitPlane)
         }
+        val sourceClipRectangles = state.effectiveDrawableClip(sourceDrawable, null, gc.subwindowMode)
         val copy = state.copyPlane(
             sourceDrawableId = sourceDrawable,
             destinationDrawableId = destinationDrawable,
@@ -5870,6 +5875,8 @@ internal class X11Connection(
             foreground = gc.foreground,
             background = gc.background,
             clipRectangles = clipRectangles,
+            subwindowMode = gc.subwindowMode,
+            sourceClipRectangles = sourceClipRectangles,
             function = gc.function,
             planeMask = gc.planeMask,
         )
@@ -5905,6 +5912,7 @@ internal class X11Connection(
             destinationY = destinationY,
             width = width,
             height = height,
+            sourceClipRectangles = sourceClipRectangles,
             clipRectangles = destinationClipRectangles,
         )
         paintCopyExposureBackground(destinationDrawable, exposureRectangles)
@@ -5927,7 +5935,16 @@ internal class X11Connection(
         val drawable = coreDrawable(opcode = 64, drawableId = drawableId) ?: return
         if (!validateDrawableGc(opcode = 64, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
-        state.drawPoints(drawableId, gc.foreground, points, lineWidth = 1, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
+        state.drawPoints(
+            drawableId = drawableId,
+            pixel = gc.foreground,
+            points = points,
+            lineWidth = 1,
+            clipRectangles = gc.effectiveClipRectangles(),
+            subwindowMode = gc.subwindowMode,
+            function = gc.function,
+            planeMask = gc.planeMask,
+        )
         state.draw(
             XDrawingCommand(
                 drawableId = drawableId,
@@ -5959,6 +5976,7 @@ internal class X11Connection(
             gc.dashOffset,
             gc.dashes,
             gc.effectiveClipRectangles(),
+            gc.subwindowMode,
             gc.function,
             gc.planeMask,
         )
@@ -6005,6 +6023,7 @@ internal class X11Connection(
             gc.dashOffset,
             gc.dashes,
             gc.effectiveClipRectangles(),
+            gc.subwindowMode,
             gc.function,
             gc.planeMask,
         )
@@ -6050,8 +6069,18 @@ internal class X11Connection(
                 stipplePixmap = gc.stipplePixmap,
                 tileStippleXOrigin = gc.tileStippleXOrigin,
                 tileStippleYOrigin = gc.tileStippleYOrigin,
+                subwindowMode = gc.subwindowMode,
             )
-            XDrawingKind.Rectangle -> state.drawRectangleOutlines(drawableId, gc.foreground, rectangles, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+            XDrawingKind.Rectangle -> state.drawRectangleOutlines(
+                drawableId = drawableId,
+                pixel = gc.foreground,
+                rectangles = rectangles,
+                lineWidth = gc.lineWidth,
+                clipRectangles = gc.effectiveClipRectangles(),
+                subwindowMode = gc.subwindowMode,
+                function = gc.function,
+                planeMask = gc.planeMask,
+            )
             else -> Unit
         }
         state.draw(
@@ -6093,9 +6122,19 @@ internal class X11Connection(
                 stipplePixmap = gc.stipplePixmap,
                 tileStippleXOrigin = gc.tileStippleXOrigin,
                 tileStippleYOrigin = gc.tileStippleYOrigin,
+                subwindowMode = gc.subwindowMode,
             )
         } else {
-            state.drawArcs(drawableId, gc.foreground, arcs, gc.lineWidth, gc.effectiveClipRectangles(), gc.function, gc.planeMask)
+            state.drawArcs(
+                drawableId = drawableId,
+                pixel = gc.foreground,
+                arcs = arcs,
+                lineWidth = gc.lineWidth,
+                clipRectangles = gc.effectiveClipRectangles(),
+                subwindowMode = gc.subwindowMode,
+                function = gc.function,
+                planeMask = gc.planeMask,
+            )
         }
         state.draw(
             XDrawingCommand(
@@ -6138,6 +6177,7 @@ internal class X11Connection(
             stipplePixmap = gc.stipplePixmap,
             tileStippleXOrigin = gc.tileStippleXOrigin,
             tileStippleYOrigin = gc.tileStippleYOrigin,
+            subwindowMode = gc.subwindowMode,
         )
         state.draw(
             XDrawingCommand(
@@ -6184,7 +6224,16 @@ internal class X11Connection(
         )
         val imageDataUri = image?.let { XFramebuffer.imageDataUri(it) }
         if (image != null) {
-            state.putImage(drawableId, x, y, image, clipRectangles = gc.effectiveClipRectangles(), function = gc.function, planeMask = gc.planeMask)
+            state.putImage(
+                drawableId = drawableId,
+                x = x,
+                y = y,
+                image = image,
+                clipRectangles = gc.effectiveClipRectangles(),
+                subwindowMode = gc.subwindowMode,
+                function = gc.function,
+                planeMask = gc.planeMask,
+            )
         }
         state.draw(
             XDrawingCommand(
@@ -6229,6 +6278,7 @@ internal class X11Connection(
                 text = run.text,
                 foreground = gc.foreground,
                 clipRectangles = gc.effectiveClipRectangles(),
+                subwindowMode = gc.subwindowMode,
                 function = gc.function,
                 planeMask = gc.planeMask,
             )
@@ -6270,6 +6320,7 @@ internal class X11Connection(
             foreground = gc.foreground,
             background = gc.background,
             clipRectangles = gc.effectiveClipRectangles(),
+            subwindowMode = gc.subwindowMode,
             function = XGraphicsContext.GXcopy,
             planeMask = gc.planeMask,
         )
@@ -9198,6 +9249,7 @@ internal class X11Connection(
         destinationY: Int,
         width: Int,
         height: Int,
+        sourceClipRectangles: List<XRectangleCommand>? = null,
         clipRectangles: List<XRectangleCommand>?,
     ): List<XRectangleCommand> {
         if (width <= 0 || height <= 0) return emptyList()
@@ -9213,7 +9265,25 @@ internal class X11Connection(
         } else {
             null
         }
-        return requested.minus(valid).clipTo(clipRectangles)
+        val validRectangles = if (valid == null) {
+            emptyList()
+        } else if (sourceClipRectangles == null) {
+            listOf(valid)
+        } else {
+            sourceClipRectangles.mapNotNull { sourceClip ->
+                XRectangleCommand(
+                    x = destinationX + sourceClip.x - sourceX,
+                    y = destinationY + sourceClip.y - sourceY,
+                    width = sourceClip.width,
+                    height = sourceClip.height,
+                ).intersect(valid.x, valid.y, valid.width, valid.height)
+            }
+        }
+        return validRectangles
+            .fold(listOf(requested)) { remaining, covered ->
+                remaining.flatMap { rectangle -> rectangle.minus(covered) }
+            }
+            .clipTo(clipRectangles)
     }
 
     private fun List<XRectangleCommand>.clipTo(clipRectangles: List<XRectangleCommand>?): List<XRectangleCommand> {
@@ -10096,6 +10166,10 @@ internal class X11Connection(
                     writeError(error = 7, opcode = opcode, badValue = value)
                     return false
                 }
+                15 -> if (value !in XGraphicsContext.SubwindowModeClipByChildren..XGraphicsContext.SubwindowModeIncludeInferiors) {
+                    writeError(error = 2, opcode = opcode, badValue = value)
+                    return false
+                }
                 16 -> {
                     val boolValue = body[valueOffset].toInt() and 0xff
                     if (boolValue !in 0..1) {
@@ -10152,6 +10226,7 @@ internal class X11Connection(
         var dashes: List<Int>? = null
         var arcMode: Int? = null
         var graphicsExposures: Boolean? = null
+        var subwindowMode: Int? = null
         for (bit in 0..22) {
             if ((mask and (1 shl bit)) == 0) continue
             val valueOffset = nextOffset() ?: break
@@ -10202,6 +10277,11 @@ internal class X11Connection(
                 12 -> tileStippleXOrigin = value.toShort().toInt()
                 13 -> tileStippleYOrigin = value.toShort().toInt()
                 14 -> fontId = value
+                15 -> if (value in XGraphicsContext.SubwindowModeClipByChildren..XGraphicsContext.SubwindowModeIncludeInferiors) {
+                    subwindowMode = value
+                } else {
+                    return writeError(error = 2, opcode = opcode, badValue = value)
+                }
                 16 -> {
                     val boolValue = body[valueOffset].toInt() and 0xff
                     if (boolValue in 0..1) {
@@ -10255,6 +10335,7 @@ internal class X11Connection(
             dashes = dashes,
             arcMode = arcMode,
             graphicsExposures = graphicsExposures,
+            subwindowMode = subwindowMode,
         )
         if (clearClipRectangles) state.updateGcClip(id, clipRectangles = null)
     }

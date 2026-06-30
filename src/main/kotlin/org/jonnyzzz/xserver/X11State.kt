@@ -3605,11 +3605,12 @@ internal class X11State(
         y: Int,
         image: XImagePixels,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         return framebuffer.putImage(x, y, image, effectiveClip, function, planeMask)
     }
 
@@ -3624,12 +3625,14 @@ internal class X11State(
         width: Int,
         height: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
+        sourceClipRectangles: List<XRectangleCommand>? = effectiveDrawableClip(sourceDrawableId, null, subwindowMode),
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
-        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
         return source.copyAreaTo(
             destination = destination,
             sourceX = sourceX,
@@ -3639,6 +3642,7 @@ internal class X11State(
             width = width,
             height = height,
             clipRectangles = effectiveClip,
+            sourceClipRectangles = sourceClipRectangles,
             function = function,
             planeMask = planeMask,
         )
@@ -3658,12 +3662,14 @@ internal class X11State(
         foreground: Int,
         background: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
+        sourceClipRectangles: List<XRectangleCommand>? = effectiveDrawableClip(sourceDrawableId, null, subwindowMode),
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
-        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
         return source.copyPlaneTo(
             destination = destination,
             sourceX = sourceX,
@@ -3676,6 +3682,7 @@ internal class X11State(
             foreground = foreground,
             background = background,
             clipRectangles = effectiveClip,
+            sourceClipRectangles = sourceClipRectangles,
             function = function,
             planeMask = planeMask,
         )
@@ -5374,6 +5381,7 @@ internal class X11State(
         rectangles: List<XRectangleCommand>,
         preserveAlpha: Boolean = false,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         fillStyle: Int = XGraphicsContext.FillSolid,
@@ -5384,7 +5392,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (rectangle in rectangles) {
@@ -5431,10 +5439,19 @@ internal class X11State(
         }
 
     @Synchronized
-    fun effectiveDrawableClip(drawableId: Int, clipRectangles: List<XRectangleCommand>?): List<XRectangleCommand>? {
+    fun effectiveDrawableClip(
+        drawableId: Int,
+        clipRectangles: List<XRectangleCommand>?,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
+    ): List<XRectangleCommand>? {
         val window = windows[drawableId] ?: return clipRectangles
         val shapeClip = intersectClips(window.boundingShape, window.clipShape)
-        return intersectClips(clipRectangles, shapeClip)
+        val drawableClip = intersectClips(clipRectangles, shapeClip)
+        if (subwindowMode == XGraphicsContext.SubwindowModeIncludeInferiors) return drawableClip
+        val childClips = mappedChildClipRectangles(window)
+        if (childClips.isEmpty()) return drawableClip
+        val baseClip = drawableClip ?: listOf(XRectangleCommand(0, 0, window.width, window.height))
+        return subtractClips(baseClip, childClips)
     }
 
     private fun effectivePictureClip(picture: XPicture): List<XRectangleCommand>? {
@@ -5520,11 +5537,12 @@ internal class X11State(
         points: List<XPoint>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         for (point in points) {
             painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, effectiveClip, function, planeMask) || painted
@@ -5543,11 +5561,12 @@ internal class X11State(
         dashOffset: Int,
         dashes: List<Int>,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
         for (index in 0 until points.lastIndex) {
@@ -5581,11 +5600,12 @@ internal class X11State(
         dashOffset: Int,
         dashes: List<Int>,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         var index = 0
         while (index + 1 < points.size) {
@@ -5605,11 +5625,12 @@ internal class X11State(
         rectangles: List<XRectangleCommand>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         for (rectangle in rectangles) {
             painted = framebuffer.drawRectangleOutline(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, lineWidth, effectiveClip, function, planeMask) || painted
@@ -5624,11 +5645,12 @@ internal class X11State(
         arcs: List<XArcCommand>,
         lineWidth: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         for (arc in arcs) {
             painted = framebuffer.drawArc(arc, pixel, lineWidth, effectiveClip, function, planeMask) || painted
@@ -5643,6 +5665,7 @@ internal class X11State(
         arcs: List<XArcCommand>,
         arcMode: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         fillStyle: Int = XGraphicsContext.FillSolid,
@@ -5653,7 +5676,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         var painted = false
         for (arc in arcs) {
@@ -5685,6 +5708,7 @@ internal class X11State(
         points: List<XPoint>,
         fillRule: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         fillStyle: Int = XGraphicsContext.FillSolid,
@@ -5695,7 +5719,7 @@ internal class X11State(
         tileStippleYOrigin: Int = 0,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
         return if (pattern != null) {
             framebuffer.fillPolygonPattern(
@@ -5725,11 +5749,12 @@ internal class X11State(
         foreground: Int,
         background: Int? = null,
         clipRectangles: List<XRectangleCommand>? = null,
+        subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
-        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles)
+        val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         return framebuffer.drawText(
             x = x,
             baselineY = baselineY,
@@ -6505,6 +6530,7 @@ internal class X11State(
                 12 -> destination.tileStippleXOrigin = source.tileStippleXOrigin
                 13 -> destination.tileStippleYOrigin = source.tileStippleYOrigin
                 14 -> destination.fontId = source.fontId
+                15 -> destination.subwindowMode = source.subwindowMode
                 16 -> destination.graphicsExposures = source.graphicsExposures
                 17 -> destination.clipXOrigin = source.clipXOrigin
                 18 -> destination.clipYOrigin = source.clipYOrigin
@@ -6621,6 +6647,7 @@ internal class X11State(
         dashes: List<Int>? = null,
         arcMode: Int? = null,
         graphicsExposures: Boolean? = null,
+        subwindowMode: Int? = null,
     ) {
         val gc = gcs.getOrPut(id) { XGraphicsContext(id) }
         foreground?.let { gc.foreground = it }
@@ -6650,6 +6677,7 @@ internal class X11State(
         dashes?.let { gc.dashes = it }
         arcMode?.let { gc.arcMode = it }
         graphicsExposures?.let { gc.graphicsExposures = it }
+        subwindowMode?.let { gc.subwindowMode = it }
     }
 
     @Synchronized
@@ -8364,6 +8392,7 @@ internal data class XGraphicsContext(
     var dashes: List<Int> = listOf(4)
     var arcMode: Int = ArcPieSlice
     var graphicsExposures: Boolean = true
+    var subwindowMode: Int = SubwindowModeClipByChildren
 
     fun effectiveClipRectangles(): List<XRectangleCommand>? =
         clipRectangles?.map { rectangle ->
@@ -8408,6 +8437,8 @@ internal data class XGraphicsContext(
         const val FillOpaqueStippled = 3
         const val EvenOddRule = 0
         const val WindingRule = 1
+        const val SubwindowModeClipByChildren = 0
+        const val SubwindowModeIncludeInferiors = 1
         const val ArcChord = 0
         const val ArcPieSlice = 1
     }

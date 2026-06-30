@@ -1564,6 +1564,7 @@ internal class XFramebuffer(
         width: Int,
         height: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        sourceClipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
@@ -1595,6 +1596,7 @@ internal class XFramebuffer(
             for (column in 0 until bounds.width) {
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
+                if (!insideClip(bounds.sourceX + column, bounds.sourceY + row, sourceClipRectangles)) continue
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * destination.width + dx
                 val sourcePixel = copied[row * bounds.width + column]
@@ -1626,6 +1628,7 @@ internal class XFramebuffer(
         foreground: Int,
         background: Int,
         clipRectangles: List<XRectangleCommand>? = null,
+        sourceClipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
     ): XCopyResult? {
@@ -1661,6 +1664,7 @@ internal class XFramebuffer(
                 val targetPixel = copied[row * bounds.width + column]
                 val dx = bounds.destinationX + column
                 val dy = bounds.destinationY + row
+                if (!insideClip(bounds.sourceX + column, bounds.sourceY + row, sourceClipRectangles)) continue
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * destination.width + dx
                 destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
