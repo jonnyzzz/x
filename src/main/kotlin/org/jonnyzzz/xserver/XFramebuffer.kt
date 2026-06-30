@@ -1714,6 +1714,7 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
     ): Boolean =
         compositeTrapezoids(
             operation = operation,
@@ -1721,6 +1722,7 @@ internal class XFramebuffer(
             maskFormat = maskFormat,
             clipRectangles = clipRectangles,
             clipMask = clipMask,
+            smoothEdges = smoothEdges,
         ) { _, _ -> pixel }
 
     fun compositeTrapezoids(
@@ -1729,11 +1731,12 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = compositeTrapezoid(operation, trapezoid, maskFormat, clipRectangles, clipMask, sourcePixelAt) || painted
+            painted = compositeTrapezoid(operation, trapezoid, maskFormat, clipRectangles, clipMask, smoothEdges, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -1744,10 +1747,11 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = addTrapezoidAlpha(trapezoid, maskFormat, clipRectangles, clipMask) || painted
+            painted = addTrapezoidAlpha(trapezoid, maskFormat, clipRectangles, clipMask, smoothEdges) || painted
         }
         if (painted) markPainted()
         return painted
@@ -1760,6 +1764,7 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
     ): Boolean =
         compositeTriangles(
             operation = operation,
@@ -1767,6 +1772,7 @@ internal class XFramebuffer(
             maskFormat = maskFormat,
             clipRectangles = clipRectangles,
             clipMask = clipMask,
+            smoothEdges = smoothEdges,
         ) { _, _ -> pixel }
 
     fun compositeTriangles(
@@ -1775,11 +1781,12 @@ internal class XFramebuffer(
         maskFormat: Int = XRender.A8Format,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeTriangle(operation, triangle, maskFormat, clipRectangles, clipMask, sourcePixelAt) || painted
+            painted = compositeTriangle(operation, triangle, maskFormat, clipRectangles, clipMask, smoothEdges, sourcePixelAt) || painted
         }
         if (painted) markPainted()
         return painted
@@ -1790,10 +1797,11 @@ internal class XFramebuffer(
         trapezoids: List<XColorTrapCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
     ): Boolean {
         var painted = false
         for (trapezoid in trapezoids) {
-            painted = compositeColoredTrapezoid(operation, trapezoid, clipRectangles, clipMask) || painted
+            painted = compositeColoredTrapezoid(operation, trapezoid, clipRectangles, clipMask, smoothEdges) || painted
         }
         if (painted) markPainted()
         return painted
@@ -1847,10 +1855,11 @@ internal class XFramebuffer(
         triangles: List<XColorTriangleCommand>,
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
+        smoothEdges: Boolean = false,
     ): Boolean {
         var painted = false
         for (triangle in triangles) {
-            painted = compositeColoredTriangle(operation, triangle, clipRectangles, clipMask) || painted
+            painted = compositeColoredTriangle(operation, triangle, clipRectangles, clipMask, smoothEdges) || painted
         }
         if (painted) markPainted()
         return painted
@@ -2021,6 +2030,7 @@ internal class XFramebuffer(
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        smoothEdges: Boolean,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val top = trapezoid.top.fixedToDouble()
@@ -2040,7 +2050,7 @@ internal class XFramebuffer(
             val endX = minOf(width, ceil(maxX).toInt())
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
-                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
                 if (coverage == 0) continue
                 val maskAlpha = maskAlpha(maskFormat, coverage)
                 if (maskAlpha == 0) continue
@@ -2058,6 +2068,7 @@ internal class XFramebuffer(
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        smoothEdges: Boolean,
     ): Boolean {
         val top = trapezoid.top.fixedToDouble()
         val bottom = trapezoid.bottom.fixedToDouble()
@@ -2076,7 +2087,7 @@ internal class XFramebuffer(
             val endX = minOf(width, ceil(maxX).toInt())
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
-                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
                 if (coverage == 0) continue
                 val addedAlpha = maskAlpha(maskFormat, coverage)
                 if (addedAlpha == 0) continue
@@ -2096,7 +2107,16 @@ internal class XFramebuffer(
         trapezoid: XTrapezoidCommand,
         top: Double,
         bottom: Double,
+        smoothEdges: Boolean,
     ): Int {
+        if (!smoothEdges) {
+            val sampleY = y + 0.5
+            if (sampleY < top || sampleY >= bottom) return 0
+            val left = trapezoid.left.xAt(sampleY)
+            val right = trapezoid.right.xAt(sampleY)
+            val sampleX = x + 0.5
+            return if (sampleX >= minOf(left, right) && sampleX < maxOf(left, right)) TrapezoidSamples else 0
+        }
         var covered = 0
         for (sampleYIndex in 0 until TrapezoidSampleGrid) {
             val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
@@ -2118,6 +2138,7 @@ internal class XFramebuffer(
         colorTrap: XColorTrapCommand,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        smoothEdges: Boolean,
     ): Boolean {
         val trapezoid = colorTrap.toTrapezoid()
         val top = trapezoid.top.fixedToDouble()
@@ -2137,7 +2158,7 @@ internal class XFramebuffer(
             val endX = minOf(width, ceil(maxX).toInt())
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
-                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom)
+                val coverage = trapezoidCoverage(x, y, trapezoid, top, bottom, smoothEdges)
                 if (coverage == 0) continue
                 val maskAlpha = maskAlpha(XRender.A8Format, coverage)
                 if (maskAlpha == 0) continue
@@ -2188,6 +2209,7 @@ internal class XFramebuffer(
         maskFormat: Int,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        smoothEdges: Boolean,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val x1 = triangle.p1.x.fixedToDouble()
@@ -2206,7 +2228,7 @@ internal class XFramebuffer(
         for (y in startY until endY) {
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
-                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area)
+                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area, smoothEdges)
                 if (coverage == 0) continue
                 val maskAlpha = maskAlpha(maskFormat, coverage)
                 if (maskAlpha == 0) continue
@@ -2224,6 +2246,7 @@ internal class XFramebuffer(
         triangle: XColorTriangleCommand,
         clipRectangles: List<XRectangleCommand>?,
         clipMask: XClipMask?,
+        smoothEdges: Boolean,
     ): Boolean {
         val x1 = triangle.p1.point.x.fixedToDouble()
         val y1 = triangle.p1.point.y.fixedToDouble()
@@ -2242,7 +2265,7 @@ internal class XFramebuffer(
             val sampleY = y + 0.5
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
-                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area)
+                val coverage = triangleCoverage(x, y, x1, y1, x2, y2, x3, y3, area, smoothEdges)
                 if (coverage == 0) continue
                 val maskAlpha = maskAlpha(XRender.A8Format, coverage)
                 if (maskAlpha == 0) continue
@@ -2295,23 +2318,43 @@ internal class XFramebuffer(
         x3: Double,
         y3: Double,
         area: Double,
+        smoothEdges: Boolean,
     ): Int {
+        if (!smoothEdges) {
+            val sampleX = x + 0.5
+            val sampleY = y + 0.5
+            return if (insideTriangle(sampleX, sampleY, x1, y1, x2, y2, x3, y3, area)) TrapezoidSamples else 0
+        }
         var covered = 0
         for (sampleYIndex in 0 until TrapezoidSampleGrid) {
             val sampleY = y + (sampleYIndex + 0.5) / TrapezoidSampleGrid
             for (sampleXIndex in 0 until TrapezoidSampleGrid) {
                 val sampleX = x + (sampleXIndex + 0.5) / TrapezoidSampleGrid
-                val e1 = edge(x1, y1, x2, y2, sampleX, sampleY)
-                val e2 = edge(x2, y2, x3, y3, sampleX, sampleY)
-                val e3 = edge(x3, y3, x1, y1, sampleX, sampleY)
-                if (area > 0.0) {
-                    if (e1 >= 0.0 && e2 >= 0.0 && e3 >= 0.0) covered += 1
-                } else if (e1 <= 0.0 && e2 <= 0.0 && e3 <= 0.0) {
-                    covered += 1
-                }
+                if (insideTriangle(sampleX, sampleY, x1, y1, x2, y2, x3, y3, area)) covered += 1
             }
         }
         return covered
+    }
+
+    private fun insideTriangle(
+        x: Double,
+        y: Double,
+        x1: Double,
+        y1: Double,
+        x2: Double,
+        y2: Double,
+        x3: Double,
+        y3: Double,
+        area: Double,
+    ): Boolean {
+        val e1 = edge(x1, y1, x2, y2, x, y)
+        val e2 = edge(x2, y2, x3, y3, x, y)
+        val e3 = edge(x3, y3, x1, y1, x, y)
+        return if (area > 0.0) {
+            e1 >= 0.0 && e2 >= 0.0 && e3 >= 0.0
+        } else {
+            e1 <= 0.0 && e2 <= 0.0 && e3 <= 0.0
+        }
     }
 
     private fun maskAlpha(maskFormat: Int, coverage: Int): Int =

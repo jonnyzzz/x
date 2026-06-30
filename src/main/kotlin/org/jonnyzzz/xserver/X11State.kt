@@ -5996,6 +5996,7 @@ internal class X11State(
             maskFormat = maskFormat,
             clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
+            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
         }
@@ -6011,6 +6012,7 @@ internal class X11State(
             maskFormat = destination.format,
             clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
+            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
         )
     }
 
@@ -6042,6 +6044,7 @@ internal class X11State(
             maskFormat = maskFormat,
             clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
+            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
         ) { x, y ->
             sourcePixelAt(sourceX + x - originX, sourceY + y - originY)
         }
@@ -6060,6 +6063,7 @@ internal class X11State(
             triangles = triangles,
             clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
+            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
         )
     }
 
@@ -6076,6 +6080,7 @@ internal class X11State(
             trapezoids = trapezoids,
             clipRectangles = effectivePictureClip(destination),
             clipMask = destination.clipMaskPredicate(),
+            smoothEdges = destination.polyEdge == XRender.PolyEdgeSmooth,
         )
     }
 

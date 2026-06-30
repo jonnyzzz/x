@@ -10293,6 +10293,52 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER trapezoids honor destination poly edge mode`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val halfPixel = 1 shl 15
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 10, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderTrapezoidsFixed(
+                        SolidPictureId,
+                        PictureId,
+                        left = 4 * fixedOne,
+                        right = 4 * fixedOne + halfPixel,
+                        top = 2 * fixedOne,
+                        bottom = 6 * fixedOne,
+                    ),
+                )
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPPolyEdge to XRender.PolyEdgeSmooth))
+                out.write(
+                    renderTrapezoidsFixed(
+                        SolidPictureId,
+                        PictureId,
+                        left = 6 * fixedOne,
+                        right = 6 * fixedOne + halfPixel,
+                        top = 2 * fixedOne,
+                        bottom = 6 * fixedOne,
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 10, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 10, x = 4, y = 3))
+                assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 10, x = 6, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Trapezoids validates request framing resources and mask format`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10515,6 +10561,7 @@ class XRenderProtocolTest {
                 out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 8, height = 8))
                 out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
                 out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000))
+                out.write(renderChangePictureAttributes(MaskPictureId, XRender.CPPolyEdge to XRender.PolyEdgeSmooth))
                 repeat(2) {
                     out.write(
                         renderAddTrapsRaw(
@@ -10533,6 +10580,44 @@ class XRenderProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xfffe_0001.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 4))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER AddTraps defaults to sharp poly edge`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val halfPixel = 1 shl 15
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 8, height = 8))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000))
+                out.write(
+                    renderAddTrapsRaw(
+                        MaskPictureId,
+                        left = 4 * fixedOne,
+                        right = 4 * fixedOne + halfPixel,
+                        top = 3 * fixedOne,
+                        bottom = 7 * fixedOne,
+                    ),
+                )
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderComposite(SolidPictureId, PictureId, mask = MaskPictureId, width = 8, height = 8))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 4))
                 assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 4))
             }
             server.close()
@@ -10910,6 +10995,54 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER triangles honor destination poly edge mode`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val fixedOne = 1 shl 16
+                val halfPixel = 1 shl 15
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 10, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderTrianglesFixed(
+                        SolidPictureId,
+                        PictureId,
+                        points = listOf(
+                            4 * fixedOne to 2 * fixedOne,
+                            4 * fixedOne + halfPixel to 2 * fixedOne,
+                            4 * fixedOne to 6 * fixedOne,
+                        ),
+                    ),
+                )
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPPolyEdge to XRender.PolyEdgeSmooth))
+                out.write(
+                    renderTrianglesFixed(
+                        SolidPictureId,
+                        PictureId,
+                        points = listOf(
+                            6 * fixedOne to 2 * fixedOne,
+                            6 * fixedOne + halfPixel to 2 * fixedOne,
+                            6 * fixedOne to 6 * fixedOne,
+                        ),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 10, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 10, x = 4, y = 2))
+                assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 10, x = 6, y = 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Triangles validates request framing resources and mask format`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11089,6 +11222,7 @@ class XRenderProtocolTest {
                 out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
                 out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 20, height = 16, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
                 out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderChangePictureAttributes(PictureId, XRender.CPPolyEdge to XRender.PolyEdgeSmooth))
                 out.write(renderTriangles(SolidPictureId, PictureId, points = listOf(6 to 4, 14 to 4, 6 to 12), operation = XRender.OpClear))
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 16))
                 out.flush()
@@ -13059,6 +13193,34 @@ class XRenderProtocolTest {
     private fun renderTrapezoidsRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 10, body)
 
+    private fun renderTrapezoidsFixed(
+        source: Int,
+        destination: Int,
+        left: Int,
+        right: Int,
+        top: Int,
+        bottom: Int,
+        operation: Int = XRender.OpOver,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
+    ): ByteArray {
+        val body = ByteArray(60)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, maskFormat)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
+        put32le(body, 20, top)
+        put32le(body, 24, bottom)
+        putFixedPointRaw(body, 28, left, top)
+        putFixedPointRaw(body, 36, left, bottom)
+        putFixedPointRaw(body, 44, right, top)
+        putFixedPointRaw(body, 52, right, bottom)
+        return renderTrapezoidsRaw(body)
+    }
+
     private fun renderAddTraps(picture: Int, xOffset: Int, yOffset: Int, x: Int, y: Int, width: Int, height: Int): ByteArray {
         val body = ByteArray(32)
         put32le(body, 0, picture)
@@ -13410,6 +13572,29 @@ class XRenderProtocolTest {
 
     private fun renderTrianglesRaw(body: ByteArray): ByteArray =
         request(XRender.MajorOpcode, 11, body)
+
+    private fun renderTrianglesFixed(
+        source: Int,
+        destination: Int,
+        points: List<Pair<Int, Int>>,
+        operation: Int = XRender.OpOver,
+        sourceX: Int = 0,
+        sourceY: Int = 0,
+        maskFormat: Int = XRender.A8Format,
+    ): ByteArray {
+        require(points.size == 3)
+        val body = ByteArray(44)
+        body[0] = operation.toByte()
+        put32le(body, 4, source)
+        put32le(body, 8, destination)
+        put32le(body, 12, maskFormat)
+        put16le(body, 16, sourceX)
+        put16le(body, 18, sourceY)
+        points.forEachIndexed { index, point ->
+            putFixedPointRaw(body, 20 + index * 8, point.first, point.second)
+        }
+        return renderTrianglesRaw(body)
+    }
 
     private fun renderColorTrapezoids(
         destination: Int,
