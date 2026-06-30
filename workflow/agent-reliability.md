@@ -24,6 +24,8 @@ A later 2026-06-30 stall was a different orchestration failure, not an X server 
 
 `run-agent.sh` now `exec`s the agent from the run-directory child process, so `PID=` is the real agent PID. It also writes `heartbeat.txt` while the agent runs and emits one early diagnostics file after a fully silent period. Use `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS` only when a job is expected to print promptly; many `claude -p --output-format text` runs legitimately stay silent until their final answer.
 
+The latest repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` on a long `claude -p --output-format text` implementation/review prompt. The runner killed the agent after five silent minutes even though text-mode Claude commonly writes no stdout/stderr until completion. The runner now keeps the wall-clock timeout and silence diagnostics, but disables no-output termination for Claude text-mode runs unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1` is set.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -48,5 +50,12 @@ timeout 960 ./run-agent.sh claude "$PWD" "$PWD/THE_PROMPT_v5_review.md"
 For short scout prompts that should either answer quickly or fail with evidence, add:
 
 ```bash
+RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300
+```
+
+For Claude text-mode scout prompts, that kill switch is intentionally ignored unless forced:
+
+```bash
+RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1 \
 RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300
 ```

@@ -73,6 +73,11 @@ Configuration (env variables):
   RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
                       Terminate after this many seconds with no stdout/stderr bytes
                       (default: 0, disabled)
+  RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT
+                      Set to 1 to allow RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS for
+                      claude -p text-mode runs. By default those runs only emit
+                      a final answer, so silence triggers diagnostics but not a
+                      no-output kill.
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
   RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS
@@ -219,6 +224,15 @@ RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_T
 RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
 RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
 RUN_AGENT_POLL_SECONDS="${RUN_AGENT_POLL_SECONDS:-5}"
+RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT="${RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT:-0}"
+EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS="$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS"
+NO_OUTPUT_TIMEOUT_NOTE=""
+if [ "$AGENT" = "claude" ] && \
+   [ "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
+   [ "$RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT" != "1" ]; then
+  EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=0
+  NO_OUTPUT_TIMEOUT_NOTE="disabled for claude text output; set RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1 to force it"
+fi
 
 now_seconds() {
   date +%s
@@ -390,7 +404,12 @@ STDERR=$STDERR_FILE
 PID=$AGENT_PID
 TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
-NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS"
+NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
+EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS"
+if [ -n "$NO_OUTPUT_TIMEOUT_NOTE" ]; then
+  RUN_INFO_BLOCK="$RUN_INFO_BLOCK
+NO_OUTPUT_TIMEOUT_NOTE=$NO_OUTPUT_TIMEOUT_NOTE"
+fi
 printf '%s\n' "$RUN_INFO_BLOCK"
 { printf '%s\n' "$RUN_INFO_BLOCK" > "$RUN_INFO_FILE"; } || true
 echo "$AGENT_PID" > "$PID_FILE"
@@ -400,6 +419,7 @@ START_SECONDS="$(now_seconds)"
 LAST_HEARTBEAT_SECONDS=0
 NO_OUTPUT_DIAGNOSTICS_FIRED=false
 TIMEOUT_FIRED=false
+TIMEOUT_REASON=""
 while kill -0 "$AGENT_PID" 2>/dev/null; do
   sleep "$RUN_AGENT_POLL_SECONDS"
   NOW_SECONDS="$(now_seconds)"
@@ -423,10 +443,11 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
       NO_OUTPUT_DIAGNOSTICS_FIRED=true
       dump_diagnostics "no-output-${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS}s"
     fi
-    if [ "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
-       [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
+    if [ "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
+       [ "$ELAPSED_SECONDS" -ge "$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
       TIMEOUT_FIRED=true
-      dump_diagnostics "no-output-timeout-${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS}s"
+      TIMEOUT_REASON="no-output-timeout-${EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS}s"
+      dump_diagnostics "$TIMEOUT_REASON"
       kill -TERM "$AGENT_PID" 2>/dev/null || true
       sleep 5
       kill -KILL "$AGENT_PID" 2>/dev/null || true
@@ -438,7 +459,8 @@ while kill -0 "$AGENT_PID" 2>/dev/null; do
   if [ "$RUN_AGENT_TIMEOUT_SECONDS" -gt 0 ]; then
     if [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_TIMEOUT_SECONDS" ]; then
       TIMEOUT_FIRED=true
-      dump_diagnostics "timeout-${RUN_AGENT_TIMEOUT_SECONDS}s"
+      TIMEOUT_REASON="timeout-${RUN_AGENT_TIMEOUT_SECONDS}s"
+      dump_diagnostics "$TIMEOUT_REASON"
       kill -TERM "$AGENT_PID" 2>/dev/null || true
       sleep 5
       kill -KILL "$AGENT_PID" 2>/dev/null || true
@@ -459,7 +481,10 @@ rm -f "$PID_FILE"
 echo "EXIT_CODE=$EXIT_CODE"
 if [ "$TIMEOUT_FIRED" = true ]; then
   echo "TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS"
-  { echo "TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS" >> "$RUN_INFO_FILE"; } || true
+  {
+    echo "TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS"
+    echo "TIMEOUT_REASON=$TIMEOUT_REASON"
+  } >> "$RUN_INFO_FILE" || true
 fi
 { echo "EXIT_CODE=$EXIT_CODE" >> "$RUN_INFO_FILE"; } || true
 exit "$EXIT_CODE"
