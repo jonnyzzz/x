@@ -4671,8 +4671,10 @@ internal class X11Connection(
         if (!window.mapped) return
         val previousCursor = state.displayedCursorSnapshot()
         val notifications = state.unmapNotifySinks(window)
+        val exposeWindows = state.unmapExposeWindows(windowId)
         val focusDispatches = state.unmapWindow(windowId)
         sendUnmapNotify(notifications)
+        exposeWindows.forEach { sendExposeToSubscribers(it) }
         sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
@@ -4708,14 +4710,18 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 11, badValue = windowId)
         val previousCursor = state.displayedCursorSnapshot()
+        val exposeWindows = linkedMapOf<Int, XWindow>()
+        val focusDispatches = mutableListOf<XFocusDispatch>()
         for (child in state.childrenOf(windowId)) {
             if (child.mapped) {
                 val notifications = state.unmapNotifySinks(child)
-                val focusDispatches = state.unmapWindow(child.id)
+                state.unmapExposeWindows(child.id).forEach { exposeWindows[it.id] = it }
+                focusDispatches += state.unmapWindow(child.id)
                 sendUnmapNotify(notifications)
-                sendFocusEvents(focusDispatches)
             }
         }
+        exposeWindows.values.forEach { sendExposeToSubscribers(it) }
+        sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 

@@ -10175,6 +10175,190 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UnmapWindow exposes parent and lower overlapping sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 410
+                val lower = WindowId + 411
+                val top = WindowId + 412
+
+                out.write(createWindowRequest(parent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(lower, parent = parent, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = parent, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, lower)
+                assertMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), parent, sequence = 7, width = 60, height = 45, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 7, width = 30, height = 30, count = 0)
+                assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow does not expose when higher siblings already covered target`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 416
+                val target = WindowId + 417
+                val cover = WindowId + 418
+
+                out.write(createWindowRequest(parent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(target, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                out.write(createWindowRequest(cover, parent = parent, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(target))
+                out.write(mapWindowRequest(cover))
+                out.write(unmapWindowRequest(target))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, target)
+                assertMapAndExpose(input, cover)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = target, window = target)
+                assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow exposes mapped descendants of uncovered lower sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 419
+                val lower = WindowId + 420
+                val lowerChild = WindowId + 421
+                val top = WindowId + 422
+
+                out.write(createWindowRequest(parent, width = 70, height = 55, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(lower, parent = parent, x = 0, y = 0, width = 40, height = 40, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(lowerChild, parent = lower, x = 15, y = 15, width = 10, height = 10, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = parent, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(lowerChild))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, lower)
+                assertMapAndExpose(input, lowerChild)
+                assertMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), lower, sequence = 9, width = 40, height = 40, count = 0)
+                assertExpose(input.readExactly(32), lowerChild, sequence = 9, width = 10, height = 10, count = 0)
+                assertEquals(10, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow exposes topmost lower sibling only when it covers lower siblings`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 423
+                val bottom = WindowId + 424
+                val middle = WindowId + 425
+                val top = WindowId + 426
+
+                out.write(createWindowRequest(parent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(bottom, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(middle, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(bottom))
+                out.write(mapWindowRequest(middle))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, bottom)
+                assertMapAndExpose(input, middle)
+                assertMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), middle, sequence = 9, width = 20, height = 20, count = 0)
+                assertEquals(10, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow does not expose parent when lower sibling covers exposed region`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 427
+                val lower = WindowId + 428
+                val top = WindowId + 429
+
+                out.write(createWindowRequest(parent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(lower, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(unmapWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, lower)
+                assertMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), lower, sequence = 7, width = 20, height = 20, count = 0)
+                assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `UnmapSubwindows validates request length and parent window without closing caller`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -10194,6 +10378,42 @@ class XCoreDrawingProtocolTest {
                 assertError(socket.getInputStream(), error = 3, opcode = 11, badValue = missing, sequence = 3)
                 val pointer = readReply(socket.getInputStream())
                 assertEquals(4, u16le(pointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapSubwindows exposes parent after unmapping visible children`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 413
+                val first = WindowId + 414
+                val second = WindowId + 415
+
+                out.write(createWindowRequest(parent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(first, parent = parent, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(createWindowRequest(second, parent = parent, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(unmapSubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = first, window = first)
+                assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = second, window = second)
+                assertExpose(input.readExactly(32), parent, sequence = 7, width = 60, height = 45, count = 0)
+                assertEquals(8, u16le(readReply(input), 2))
             }
             server.close()
             serverThread.join(1_000)
