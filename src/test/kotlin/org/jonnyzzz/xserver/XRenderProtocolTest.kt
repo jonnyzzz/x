@@ -10520,6 +10520,9 @@ class XRenderProtocolTest {
                 val image = readReply(socket.getInputStream())
                 assertEquals(0xff7f_0080.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 3))
                 assertContains(httpGet(server.localPort, "/state.json"), """"polyEdge":1""")
+                val text = httpGet(server.localPort, "/text.txt")
+                assertFalse(text.contains("polyEdge=1"))
+                assertFalse(text.contains("polyMode=0"))
             }
             server.close()
             serverThread.join(1_000)

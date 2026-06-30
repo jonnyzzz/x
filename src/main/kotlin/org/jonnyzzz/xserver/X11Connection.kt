@@ -6365,7 +6365,7 @@ internal class X11Connection(
         ) ?: return writeError(error = 11, opcode = 73, badValue = width * height)
         val bytes = when (format) {
             1 -> encodeXyPixmap(image, drawable.depth, planeMask)
-            else -> encodeZPixmap(image, planeMask)
+            else -> encodeZPixmap(image, drawable.depth, planeMask)
         }
         val reply = reply(extra = drawable.depth, payloadUnits = bytes.size / 4)
         byteOrder.put32(reply, 8, if (state.window(drawableId) != null) X11Ids.RootVisual else 0)
@@ -6374,13 +6374,32 @@ internal class X11Connection(
         write(reply)
     }
 
-    private fun encodeZPixmap(image: XImagePixels, planeMask: Int): ByteArray {
-        val bytes = ByteArray(image.width * image.height * 4)
-        image.pixels.forEachIndexed { index, pixel ->
-            ByteOrder.LsbFirst.put32(bytes, index * 4, pixel and planeMask)
+    private fun encodeZPixmap(image: XImagePixels, depth: Int, planeMask: Int): ByteArray {
+        val bitsPerPixel = XPixmapFormats.bitsPerPixel(depth) ?: 32
+        val stride = zPixmapStrideBytes(image.width, bitsPerPixel) ?: paddedLength(image.width * 4)
+        val bytes = ByteArray(stride * image.height)
+        for (y in 0 until image.height) {
+            val rowOffset = y * stride
+            for (x in 0 until image.width) {
+                val pixel = image.pixels[y * image.width + x]
+                val value = imageWirePixelForDepth(pixel, depth) and planeMask
+                when (bitsPerPixel) {
+                    1 -> if ((value and 1) != 0) bytes[rowOffset + x / 8] = (bytes[rowOffset + x / 8].toInt() or (1 shl (x % 8))).toByte()
+                    8 -> bytes[rowOffset + x] = value.toByte()
+                    32 -> ByteOrder.LsbFirst.put32(bytes, rowOffset + x * 4, value)
+                }
+            }
         }
         return bytes
     }
+
+    private fun imageWirePixelForDepth(pixel: Int, depth: Int): Int =
+        when (depth) {
+            1 -> if ((pixel and 1) != 0 || ((pixel ushr 24) and 0xff) >= 0x80) 1 else 0
+            4 -> pixel and 0x0f
+            8 -> (pixel ushr 24) and 0xff
+            else -> pixel
+        }
 
     private fun encodeXyPixmap(image: XImagePixels, depth: Int, planeMask: Int): ByteArray {
         val effectiveDepth = depth.coerceIn(0, 32)
@@ -10676,26 +10695,18 @@ internal class X11Connection(
         depth: Int,
         data: ByteArray,
     ): XImagePixels? {
-        if (depth !in setOf(8, 24, 32)) return null
-        if (depth == 8) {
-            val stride = paddedLength(width)
-            val pixels = IntArray(width * height)
-            for (y in 0 until height) {
-                val rowOffset = y * stride
-                for (x in 0 until width) {
-                    val alpha = data[rowOffset + x].toInt() and 0xff
-                    pixels[y * width + x] = alpha shl 24
-                }
-            }
-            return XImagePixels(width, height, pixels)
-        }
-        val bytesPerPixel = 4
-        val stride = paddedLength(width * bytesPerPixel)
+        val bitsPerPixel = XPixmapFormats.bitsPerPixel(depth) ?: return null
+        val stride = zPixmapStrideBytes(width, bitsPerPixel) ?: return null
         val pixels = IntArray(width * height)
         for (y in 0 until height) {
             val rowOffset = y * stride
             for (x in 0 until width) {
-                val pixel = ByteOrder.LsbFirst.u32(data, rowOffset + x * bytesPerPixel)
+                val pixel = when (bitsPerPixel) {
+                    1 -> if (imagePlaneBit(data, rowOffset, x)) 1 else 0
+                    8 -> data[rowOffset + x].toInt() and 0xff
+                    32 -> ByteOrder.LsbFirst.u32(data, rowOffset + x * 4)
+                    else -> return null
+                }
                 pixels[y * width + x] = imagePixelForDepth(pixel, depth)
             }
         }
@@ -10722,15 +10733,18 @@ internal class X11Connection(
             }
             2 -> {
                 if (depth != drawableDepth || leftPad != 0) return null
-                when (depth) {
-                    8 -> paddedLength(width.toLong()) * height
-                    24, 32 -> paddedLength(width.toLong() * 4L) * height
-                    else -> return null
-                }
+                val bitsPerPixel = XPixmapFormats.bitsPerPixel(depth) ?: return null
+                zPixmapStrideBytes(width, bitsPerPixel)?.toLong()?.times(height) ?: return null
             }
             else -> return null
         }
         return bytes.takeIf { it <= Int.MAX_VALUE }?.toInt()
+    }
+
+    private fun zPixmapStrideBytes(width: Int, bitsPerPixel: Int): Int? {
+        val bits = width.toLong() * bitsPerPixel
+        val bytes = (bits + 7L) / 8L
+        return paddedLength(bytes).takeIf { it <= Int.MAX_VALUE }?.toInt()
     }
 
     private fun xyPlaneStrideBytes(width: Int, leftPad: Int): Int =
@@ -11115,7 +11129,7 @@ internal class X11Connection(
         const val D65_U_PRIME = 0.19783982482140777
         const val D65_V_PRIME = 0.4683363029324097
         val SyntheticFontNames = listOf("fixed")
-        val SupportedPixmapDepths = setOf(1, 4, 8, 24, 32)
+        val SupportedPixmapDepths = XPixmapFormats.SupportedDepths
         val RenderFilterNames = listOf("nearest", "bilinear", "fast", "good", "best")
         val RenderFilterAliases = listOf(0xffff, 0xffff, 0, 1, 1)
         val XNamedColors = mapOf(

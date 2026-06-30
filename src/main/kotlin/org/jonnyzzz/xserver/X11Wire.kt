@@ -82,6 +82,7 @@ internal object SetupReply {
     private const val WhitePixel = 0x00ff_ffff
     private const val BlackPixel = 0x0000_0000
     private const val RootVisualId = X11Ids.RootVisual
+    private const val RootDepth = X11Ids.RootDepth
 
     fun success(
         byteOrder: ByteOrder,
@@ -97,12 +98,13 @@ internal object SetupReply {
     ): ByteArray {
         val vendor = "jonnyzzz/x".encodeToByteArray()
         val vendorPaddedLength = paddedLength(vendor.size)
-        val pixmapFormatsLength = 1
+        val pixmapFormatsLength = XPixmapFormats.All.size
         val screensLength = 1
-        val depthsLength = 1
+        val depthsLength = XPixmapFormats.All.size
         val visualsLength = 1
-        val screenBytes = 40 + 8 + 24
-        val additionalLength = 32 + vendorPaddedLength + 8 + screenBytes
+        val depthBytes = XPixmapFormats.All.sumOf { 8 + if (it.depth == RootDepth) 24 else 0 }
+        val screenBytes = 40 + depthBytes
+        val additionalLength = 32 + vendorPaddedLength + pixmapFormatsLength * 8 + screenBytes
         val reply = ByteArray(8 + additionalLength)
 
         reply[0] = 1
@@ -126,12 +128,12 @@ internal object SetupReply {
         vendor.copyInto(reply, 40)
 
         var offset = 40 + vendorPaddedLength
-        reply[offset] = 24
-        reply[offset + 1] = 32
-        reply[offset + 2] = 32
-        reply[offset + 3] = 0
-        byteOrder.put32(reply, offset + 4, 32)
-        offset += 8
+        for (format in XPixmapFormats.All) {
+            reply[offset] = format.depth.toByte()
+            reply[offset + 1] = format.bitsPerPixel.toByte()
+            reply[offset + 2] = format.scanlinePad.toByte()
+            offset += 8
+        }
 
         byteOrder.put32(reply, offset, RootWindowId)
         byteOrder.put32(reply, offset + 4, DefaultColormapId)
@@ -151,17 +153,22 @@ internal object SetupReply {
         reply[offset + 39] = depthsLength.toByte()
         offset += 40
 
-        reply[offset] = 24
-        byteOrder.put16(reply, offset + 2, visualsLength)
-        offset += 8
-
-        byteOrder.put32(reply, offset, RootVisualId)
-        reply[offset + 4] = 4
-        reply[offset + 5] = 8
-        byteOrder.put16(reply, offset + 6, 256)
-        byteOrder.put32(reply, offset + 8, 0x00ff_0000)
-        byteOrder.put32(reply, offset + 12, 0x0000_ff00)
-        byteOrder.put32(reply, offset + 16, 0x0000_00ff)
+        for (format in XPixmapFormats.All) {
+            reply[offset] = format.depth.toByte()
+            val formatVisualsLength = if (format.depth == RootDepth) visualsLength else 0
+            byteOrder.put16(reply, offset + 2, formatVisualsLength)
+            offset += 8
+            if (format.depth == RootDepth) {
+                byteOrder.put32(reply, offset, RootVisualId)
+                reply[offset + 4] = 4
+                reply[offset + 5] = 8
+                byteOrder.put16(reply, offset + 6, 256)
+                byteOrder.put32(reply, offset + 8, 0x00ff_0000)
+                byteOrder.put32(reply, offset + 12, 0x0000_ff00)
+                byteOrder.put32(reply, offset + 16, 0x0000_00ff)
+                offset += 24
+            }
+        }
 
         return reply
     }
@@ -187,6 +194,26 @@ internal object SetupReply {
     }
 
     private fun paddedLength(length: Int): Int = (length + 3) and -4
+}
+
+internal data class XPixmapFormatEntry(
+    val depth: Int,
+    val bitsPerPixel: Int,
+    val scanlinePad: Int,
+)
+
+internal object XPixmapFormats {
+    val All = listOf(
+        XPixmapFormatEntry(depth = 1, bitsPerPixel = 1, scanlinePad = 32),
+        XPixmapFormatEntry(depth = 4, bitsPerPixel = 8, scanlinePad = 32),
+        XPixmapFormatEntry(depth = 8, bitsPerPixel = 8, scanlinePad = 32),
+        XPixmapFormatEntry(depth = 24, bitsPerPixel = 32, scanlinePad = 32),
+        XPixmapFormatEntry(depth = 32, bitsPerPixel = 32, scanlinePad = 32),
+    )
+    val SupportedDepths = All.map { it.depth }.toSet()
+
+    fun bitsPerPixel(depth: Int): Int? =
+        All.firstOrNull { it.depth == depth }?.bitsPerPixel
 }
 
 internal object X11Ids {

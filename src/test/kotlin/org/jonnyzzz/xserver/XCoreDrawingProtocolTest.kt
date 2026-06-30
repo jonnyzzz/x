@@ -449,7 +449,8 @@ class XCoreDrawingProtocolTest {
                 assertEquals(57, error[10].toInt() and 0xff)
 
                 val image = readReply(socket.getInputStream())
-                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 1, 0, 0))
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0xff, image[32].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)
@@ -4486,8 +4487,46 @@ class XCoreDrawingProtocolTest {
 
                 val image = readReply(socket.getInputStream())
                 assertEquals(8, image[1].toInt() and 0xff)
-                assertEquals(0x8000_0000.toInt(), pixelAt(image, 2, 0, 0))
-                assertEquals(0x0000_0000, pixelAt(image, 2, 1, 0))
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0x80, image[32].toInt() and 0xff)
+                assertEquals(0x00, image[33].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PutImage and GetImage ZPixmap honor depth eight packing`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 80, height = 40))
+                out.write(createPixmapRequest(PixmapId, width = 3, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(
+                    putImageRawRequest(
+                        PixmapId,
+                        GcId,
+                        format = 2,
+                        width = 3,
+                        height = 1,
+                        depth = 8,
+                        data = byteArrayOf(0x12, 0x80.toByte(), 0xff.toByte(), 0),
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(4, u32le(image, 12))
+                assertEquals(0x12, image[32].toInt() and 0xff)
+                assertEquals(0x80, image[33].toInt() and 0xff)
+                assertEquals(0xff, image[34].toInt() and 0xff)
+                assertEquals(0, image[35].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)

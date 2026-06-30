@@ -7,6 +7,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class X11HandshakeTest {
+    private data class SetupPixmapFormat(val depth: Int, val bitsPerPixel: Int, val scanlinePad: Int)
+    private data class SetupDepth(val depth: Int, val visualCount: Int)
+
     @Test
     fun `returns setup success for little endian client`() {
         XServer(ServerOptions(port = 0, width = 3840, height = 2160, dpi = 100)).use { server ->
@@ -37,10 +40,11 @@ class X11HandshakeTest {
                 assertTrue(additionalUnits > 0)
                 val rest = socket.getInputStream().readExactly(additionalUnits * 4)
                 assertEquals("jonnyzzz/x", rest.decodeVendor())
-                assertEquals(3840, u16le(rest, 72))
-                assertEquals(2160, u16le(rest, 74))
-                assertEquals(975, u16le(rest, 76))
-                assertEquals(549, u16le(rest, 78))
+                val screenOffset = rest.screenOffset()
+                assertEquals(3840, u16le(rest, screenOffset + 20))
+                assertEquals(2160, u16le(rest, screenOffset + 22))
+                assertEquals(975, u16le(rest, screenOffset + 24))
+                assertEquals(549, u16le(rest, screenOffset + 26))
             }
             server.close()
             serverThread.join(1_000)
@@ -81,6 +85,39 @@ class X11HandshakeTest {
     }
 
     @Test
+    fun `setup advertises pixmap formats for render compatible depths`() {
+        val expected = listOf(
+            SetupPixmapFormat(depth = 1, bitsPerPixel = 1, scanlinePad = 32),
+            SetupPixmapFormat(depth = 4, bitsPerPixel = 8, scanlinePad = 32),
+            SetupPixmapFormat(depth = 8, bitsPerPixel = 8, scanlinePad = 32),
+            SetupPixmapFormat(depth = 24, bitsPerPixel = 32, scanlinePad = 32),
+            SetupPixmapFormat(depth = 32, bitsPerPixel = 32, scanlinePad = 32),
+        )
+        XServer(ServerOptions(port = 0)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                writeLittleEndianSetup(socket)
+                val rest = readSetupRest(socket)
+
+                assertEquals(expected, rest.pixmapFormats())
+                assertEquals(
+                    listOf(
+                        SetupDepth(depth = 1, visualCount = 0),
+                        SetupDepth(depth = 4, visualCount = 0),
+                        SetupDepth(depth = 8, visualCount = 0),
+                        SetupDepth(depth = 24, visualCount = 1),
+                        SetupDepth(depth = 32, visualCount = 0),
+                    ),
+                    rest.screenDepths(),
+                )
+                assertEquals(24, rest[rest.screenOffset() + 38].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `reports current input masks in setup screen`() {
         XServer(ServerOptions(port = 0)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -100,13 +137,13 @@ class X11HandshakeTest {
                 Socket("127.0.0.1", server.localPort).use { observer ->
                     writeLittleEndianSetup(observer)
                     val rest = readSetupRest(observer)
-                    assertEquals(eventMask, u32le(rest, 68))
+                    assertEquals(eventMask, u32le(rest, rest.screenOffset() + 16))
                 }
 
                 Socket("127.0.0.1", server.localPort).use { observer ->
                     writeBigEndianSetup(observer)
                     val rest = readSetupRest(observer, bigEndian = true)
-                    assertEquals(eventMask, u32be(rest, 68))
+                    assertEquals(eventMask, u32be(rest, rest.screenOffset(bigEndian = true) + 16))
                 }
             }
             server.close()
@@ -197,6 +234,37 @@ class X11HandshakeTest {
         val vendorLength = u16le(this, 16)
         return copyOfRange(32, 32 + vendorLength).decodeToString()
     }
+
+    private fun ByteArray.pixmapFormats(): List<SetupPixmapFormat> {
+        val count = this[21].toInt() and 0xff
+        val offset = 32 + paddedLength(u16le(this, 16))
+        return (0 until count).map { index ->
+            val formatOffset = offset + index * 8
+            SetupPixmapFormat(
+                depth = this[formatOffset].toInt() and 0xff,
+                bitsPerPixel = this[formatOffset + 1].toInt() and 0xff,
+                scanlinePad = this[formatOffset + 2].toInt() and 0xff,
+            )
+        }
+    }
+
+    private fun ByteArray.screenOffset(bigEndian: Boolean = false): Int {
+        val vendorLength = if (bigEndian) u16be(this, 16) else u16le(this, 16)
+        return 32 + paddedLength(vendorLength) + (this[21].toInt() and 0xff) * 8
+    }
+
+    private fun ByteArray.screenDepths(): List<SetupDepth> {
+        var offset = screenOffset() + 40
+        val count = this[screenOffset() + 39].toInt() and 0xff
+        return (0 until count).map {
+            val depth = this[offset].toInt() and 0xff
+            val visualCount = u16le(this, offset + 2)
+            offset += 8 + visualCount * 24
+            SetupDepth(depth, visualCount)
+        }
+    }
+
+    private fun paddedLength(length: Int): Int = (length + 3) and -4
 
     private fun java.io.InputStream.readExactly(size: Int): ByteArray {
         val bytes = ByteArray(size)
