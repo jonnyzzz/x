@@ -5568,6 +5568,69 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `LineOnOffDash leaves prior pixels visible when PolyArc repaints same outline`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                val arc = XArcCommand(4, 4, 20, 20, 0, FullCircleAngle)
+                out.write(createWindowRequest(WindowId, width = 40, height = 40))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(changeGcLineStyleRequest(GcId + 1, lineStyle = 1))
+                out.write(setDashesRequest(GcId + 1, dashOffset = 0, dashes = listOf(1, 1)))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(arc)))
+                out.write(polyArcRequest(WindowId, GcId + 1, filled = false, arcs = listOf(arc)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 30, height = 30))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertTrue(countPixels(image, 30, 30, 0xffff_0000.toInt()) > 0)
+                assertTrue(countPixels(image, 30, 30, 0xff00_00ff.toInt()) > 0)
+
+                val stateJson = httpGet(server.localPort, "/state.json")
+                assertContains(stateJson, """"kind":"Arc"""")
+                assertContains(stateJson, """"background":"0xffffff"""")
+                assertContains(stateJson, """"lineStyle":1""")
+                assertContains(stateJson, """"dashes":[1,1]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `dashed one-pixel PolyArc uses dash phase instead of always painting foreground`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createGcRequest(GcId, foreground = Red))
+                out.write(createGcRequest(GcId + 1, foreground = Blue))
+                out.write(createGcRequest(GcId + 2, foreground = Blue, background = Green))
+                out.write(changeGcLineStyleRequest(GcId + 1, lineStyle = 1))
+                out.write(changeGcLineStyleRequest(GcId + 2, lineStyle = 2))
+                out.write(setDashesRequest(GcId + 1, dashOffset = 1, dashes = listOf(1, 1)))
+                out.write(setDashesRequest(GcId + 2, dashOffset = 1, dashes = listOf(1, 1)))
+                out.write(polyPointRequest(WindowId, GcId, coordMode = 0, points = listOf(5 to 5)))
+                out.write(polyArcRequest(WindowId, GcId + 1, filled = false, arcs = listOf(XArcCommand(4, 4, 1, 1, 0, -1))))
+                out.write(polyArcRequest(WindowId, GcId + 2, filled = false, arcs = listOf(XArcCommand(14, 4, 1, 1, 0, -1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 20, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 20, 5, 5))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, 20, 15, 5))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyFillArc paints clipped window and pixmap framebuffer pixels without svg overlays`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

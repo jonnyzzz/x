@@ -309,7 +309,11 @@ internal class XFramebuffer(
     fun drawArc(
         arc: XArcCommand,
         pixel: Int,
+        background: Int,
         lineWidth: Int = 1,
+        lineStyle: Int = XGraphicsContext.LineSolid,
+        dashOffset: Int = 0,
+        dashes: List<Int> = emptyList(),
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
@@ -317,13 +321,27 @@ internal class XFramebuffer(
         val points = sampledArcPoints(arc)
         if (points.isEmpty()) return false
         var painted = false
+        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
+        if (points.size == 1) {
+            val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
+            return dashPixel?.let { drawPoint(points[0].x, points[0].y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
+        }
         for (index in 0 until points.lastIndex) {
             val start = points[index]
             val end = points[index + 1]
-            painted = drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
-        }
-        if (points.size == 1) {
-            painted = drawPoint(points[0].x, points[0].y, pixel, lineWidth, clipRectangles, function, planeMask) || painted
+            painted = drawLine(
+                start.x,
+                start.y,
+                end.x,
+                end.y,
+                pixel,
+                lineWidth,
+                clipRectangles,
+                function,
+                planeMask,
+                dashPattern,
+                includeFirstPoint = index == 0,
+            ) || painted
         }
         return painted
     }

@@ -175,7 +175,7 @@ internal object SvgScreenRenderer {
                 )
                 drawing.sourceDrawableId?.let { append("\"0x${it.toUInt().toString(16)}\"") } ?: append("null")
                 append(
-                    ""","foreground":"0x${drawing.foreground.toUInt().toString(16)}","lineWidth":${drawing.lineWidth},"lineStyle":${drawing.lineStyle},"capStyle":${drawing.capStyle},"joinStyle":${drawing.joinStyle},"dashOffset":${drawing.dashOffset},"dashes":[""",
+                    ""","foreground":"0x${drawing.foreground.toUInt().toString(16)}","background":"0x${drawing.background.toUInt().toString(16)}","lineWidth":${drawing.lineWidth},"lineStyle":${drawing.lineStyle},"capStyle":${drawing.capStyle},"joinStyle":${drawing.joinStyle},"dashOffset":${drawing.dashOffset},"dashes":[""",
                 )
                 drawing.dashes.forEachIndexed { dashIndex, dash ->
                     if (dashIndex > 0) append(',')
@@ -944,6 +944,8 @@ internal object SvgScreenRenderer {
                 "stroke-width" to if (filled) null else drawing.lineWidth.coerceAtLeast(1),
                 "stroke-linecap" to if (filled) null else strokeLineCap(drawing.capStyle),
                 "stroke-linejoin" to if (filled) null else strokeLineJoin(drawing.joinStyle),
+                "stroke-dasharray" to if (filled) null else dashArray(drawing),
+                "stroke-dashoffset" to if (filled) null else dashOffset(drawing),
             )
         }
     }

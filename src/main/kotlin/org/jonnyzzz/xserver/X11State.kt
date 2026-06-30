@@ -5730,8 +5730,12 @@ internal class X11State(
     fun drawArcs(
         drawableId: Int,
         pixel: Int,
+        background: Int,
         arcs: List<XArcCommand>,
         lineWidth: Int,
+        lineStyle: Int,
+        dashOffset: Int,
+        dashes: List<Int>,
         clipRectangles: List<XRectangleCommand>? = null,
         subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
@@ -5741,7 +5745,18 @@ internal class X11State(
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
         var painted = false
         for (arc in arcs) {
-            painted = framebuffer.drawArc(arc, pixel, lineWidth, effectiveClip, function, planeMask) || painted
+            painted = framebuffer.drawArc(
+                arc,
+                pixel,
+                background,
+                lineWidth,
+                lineStyle,
+                dashOffset,
+                dashes,
+                effectiveClip,
+                function,
+                planeMask,
+            ) || painted
         }
         return painted
     }
