@@ -5648,6 +5648,11 @@ internal class X11State(
         lineStyle: Int,
         dashOffset: Int,
         dashes: List<Int>,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
         clipRectangles: List<XRectangleCommand>? = null,
         subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
@@ -5655,6 +5660,7 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
+        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
         var painted = false
         val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
         for (index in 0 until points.lastIndex) {
@@ -5672,6 +5678,7 @@ internal class X11State(
                 planeMask,
                 dashPattern,
                 includeFirstPoint = index == 0,
+                strokeSource = strokeSource,
             ) || painted
         }
         return painted
@@ -5687,6 +5694,11 @@ internal class X11State(
         lineStyle: Int,
         dashOffset: Int,
         dashes: List<Int>,
+        fillStyle: Int = XGraphicsContext.FillSolid,
+        tilePixmap: XImagePixels? = null,
+        stipplePixmap: XImagePixels? = null,
+        tileStippleXOrigin: Int = 0,
+        tileStippleYOrigin: Int = 0,
         clipRectangles: List<XRectangleCommand>? = null,
         subwindowMode: Int = XGraphicsContext.SubwindowModeIncludeInferiors,
         function: Int = XGraphicsContext.GXcopy,
@@ -5694,13 +5706,26 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
+        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
         var painted = false
         var index = 0
         while (index + 1 < points.size) {
             val start = points[index]
             val end = points[index + 1]
             val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
-            painted = framebuffer.drawLine(start.x, start.y, end.x, end.y, pixel, lineWidth, effectiveClip, function, planeMask, dashPattern) || painted
+            painted = framebuffer.drawLine(
+                start.x,
+                start.y,
+                end.x,
+                end.y,
+                pixel,
+                lineWidth,
+                effectiveClip,
+                function,
+                planeMask,
+                dashPattern,
+                strokeSource = strokeSource,
+            ) || painted
             index += 2
         }
         return painted

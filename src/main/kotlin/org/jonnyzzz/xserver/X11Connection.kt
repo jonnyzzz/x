@@ -5973,18 +5973,23 @@ internal class X11Connection(
         if (!validateDrawableGc(opcode = 65, drawableId = drawableId, drawable = drawable, gc = gc)) return
         val points = points(body, 8, coordMode)
         state.drawPolyline(
-            drawableId,
-            gc.foreground,
-            gc.background,
-            points,
-            gc.lineWidth,
-            gc.lineStyle,
-            gc.dashOffset,
-            gc.dashes,
-            gc.effectiveClipRectangles(),
-            gc.subwindowMode,
-            gc.function,
-            gc.planeMask,
+            drawableId = drawableId,
+            pixel = gc.foreground,
+            background = gc.background,
+            points = points,
+            lineWidth = gc.lineWidth,
+            lineStyle = gc.lineStyle,
+            dashOffset = gc.dashOffset,
+            dashes = gc.dashes,
+            fillStyle = gc.fillStyle,
+            tilePixmap = gc.tilePixmap,
+            stipplePixmap = gc.stipplePixmap,
+            tileStippleXOrigin = gc.tileStippleXOrigin,
+            tileStippleYOrigin = gc.tileStippleYOrigin,
+            clipRectangles = gc.effectiveClipRectangles(),
+            subwindowMode = gc.subwindowMode,
+            function = gc.function,
+            planeMask = gc.planeMask,
         )
         state.draw(
             XDrawingCommand(
@@ -6020,18 +6025,23 @@ internal class X11Connection(
             offset += 8
         }
         state.drawSegments(
-            drawableId,
-            gc.foreground,
-            gc.background,
-            points,
-            gc.lineWidth,
-            gc.lineStyle,
-            gc.dashOffset,
-            gc.dashes,
-            gc.effectiveClipRectangles(),
-            gc.subwindowMode,
-            gc.function,
-            gc.planeMask,
+            drawableId = drawableId,
+            pixel = gc.foreground,
+            background = gc.background,
+            points = points,
+            lineWidth = gc.lineWidth,
+            lineStyle = gc.lineStyle,
+            dashOffset = gc.dashOffset,
+            dashes = gc.dashes,
+            fillStyle = gc.fillStyle,
+            tilePixmap = gc.tilePixmap,
+            stipplePixmap = gc.stipplePixmap,
+            tileStippleXOrigin = gc.tileStippleXOrigin,
+            tileStippleYOrigin = gc.tileStippleYOrigin,
+            clipRectangles = gc.effectiveClipRectangles(),
+            subwindowMode = gc.subwindowMode,
+            function = gc.function,
+            planeMask = gc.planeMask,
         )
         state.draw(
             XDrawingCommand(

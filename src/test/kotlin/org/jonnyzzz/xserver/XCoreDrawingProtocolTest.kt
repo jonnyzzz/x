@@ -4014,6 +4014,84 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `LineOnOffDash PolyLine uses tiled fill source for on dashes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = 0x00aa_00aa))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 1)))
+                out.write(polyLineRequest(WindowId, GcId, points = listOf(1 to 1, 5 to 1)))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 8, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 3, 1))
+                assertEquals(0, countPixels(image, 8, 4, 0xffaa_00aa.toInt()))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `LineOnOffDash PolySegment uses tiled fill source for on dashes`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = 0x00aa_00aa))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(changeGcLineStyleRequest(GcId, lineStyle = 1))
+                out.write(setDashesRequest(GcId, dashOffset = 0, dashes = listOf(2, 1)))
+                out.write(polySegmentRequest(WindowId, GcId, segments = listOf((1 to 1) to (5 to 1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 8, 1, 1))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 8, 2, 1))
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, 8, 3, 1))
+                assertEquals(0, countPixels(image, 8, 4, 0xffaa_00aa.toInt()))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ChangeGC dash offset and single dash value affect PolyLine phase`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
