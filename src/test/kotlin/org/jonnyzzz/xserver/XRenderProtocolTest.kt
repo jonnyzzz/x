@@ -89,6 +89,7 @@ class XRenderProtocolTest {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
@@ -1116,6 +1117,7 @@ class XRenderProtocolTest {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
             Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
                 setup(socket)
                 val out = socket.getOutputStream()
                 out.write(createWindowRequest(WindowId))
@@ -2557,6 +2559,74 @@ class XRenderProtocolTest {
                         XRender.CPAlphaXOrigin to -1,
                     ),
                 )
+                out.write(renderComposite(PixmapPictureId, PictureId, width = 2, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(1, image[0].toInt() and 0xff)
+                val first = pixelAt(image, imageWidth = 2, x = 0, y = 0)
+                val second = pixelAt(image, imageWidth = 2, x = 1, y = 0)
+                assertEquals(0xff80_007f.toInt(), first, "first=${first.toUInt().toString(16)}")
+                assertEquals(0xff00_00ff.toInt(), second, "second=${second.toUInt().toString(16)}")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER pixmap picture keeps drawable after FreePixmap and id reuse`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 2, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(freePixmapRequest(PixmapId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(renderComposite(PixmapPictureId, PictureId, width = 2, height = 1, operation = XRender.OpSrc, destinationX = 0, destinationY = 0))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 2, x = 1, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER alpha map keeps referenced picture after FreePicture and id reuse`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 2, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 2, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8Request(MaskPixmapId, width = 2, height = 1, alphas = byteArrayOf(0x80.toByte(), 0x00)))
+                out.write(renderChangePictureAttributes(PixmapPictureId, XRender.CPAlphaMap to MaskPictureId))
+                out.write(renderFreePictureRequest(MaskPictureId))
+                out.write(freePixmapRequest(MaskPixmapId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 8, width = 2, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A8Format))
+                out.write(putImage8OnlyRequest(MaskPixmapId, width = 2, height = 1, alphas = byteArrayOf(0x00, 0xff.toByte())))
                 out.write(renderComposite(PixmapPictureId, PictureId, width = 2, height = 1, operation = XRender.OpOver, destinationX = 0, destinationY = 0))
                 out.write(getImageRequest(WindowId, x = 0, y = 0, width = 2, height = 1))
                 out.flush()
@@ -13863,6 +13933,12 @@ class XRenderProtocolTest {
         val body = ByteArray(4)
         put32le(body, 0, id)
         return request(54, 0, body)
+    }
+
+    private fun renderFreePictureRequest(id: Int): ByteArray {
+        val body = ByteArray(4)
+        put32le(body, 0, id)
+        return request(XRender.MajorOpcode, 7, body)
     }
 
     private fun createGcRequest(

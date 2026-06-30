@@ -2815,7 +2815,12 @@ internal class X11State(
     ) {
         pictures[id]?.valueMask = valueMask
         repeat?.let { pictures[id]?.repeat = it }
-        alphaMap?.let { pictures[id]?.alphaMap = it }
+        alphaMap?.let {
+            pictures[id]?.let { picture ->
+                picture.alphaMap = it
+                picture.alphaMapPicture = if (it == 0) null else pictures[it]
+            }
+        }
         alphaXOrigin?.let { pictures[id]?.alphaXOrigin = it }
         alphaYOrigin?.let { pictures[id]?.alphaYOrigin = it }
         clipXOrigin?.let { pictures[id]?.clipXOrigin = it }
@@ -3623,12 +3628,12 @@ internal class X11State(
         height: Int,
     ): XImagePixels? {
         val destinationDrawableId = destination.drawableId ?: return null
-        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val destinationFramebuffer = destination.drawableFramebuffer() ?: return null
         if (operation == XRender.OpDst || operation == XRender.OpDisjointDst || operation == XRender.OpConjointDst) {
             return destinationFramebuffer.snapshotRegion(destinationX, destinationY, width, height)
         }
         val destinationClipMask = destination.clipMaskPredicate()
-        val maskFramebuffer = mask?.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer }
+        val maskFramebuffer = mask?.drawableFramebuffer()
         val maskPixelAt = mask?.takeIf { it.componentAlpha }?.componentMaskSampler()
         val maskAlphaAt = mask?.maskAlphaSampler()
         if (maskPixelAt != null) {
@@ -4474,7 +4479,7 @@ internal class X11State(
             }
         }
         val sourceDrawableId = source.drawableId ?: return null
-        val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val sourceFramebuffer = source.drawableFramebuffer() ?: return null
         if (source.transform != IdentityTransform || source.repeat != XRender.RepeatNone) {
             return destinationFramebuffer.compositeGenerated(
                 sourceX = sourceX,
@@ -4536,7 +4541,7 @@ internal class X11State(
         height: Int,
     ): XImagePixels? {
         val destinationDrawableId = destination.drawableId ?: return null
-        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
+        val destinationFramebuffer = destination.drawableFramebuffer() ?: return null
         val sourcePixelAt = scaledSourcePixelAt(source, colorScale, alphaScale) ?: return null
         return destinationFramebuffer.compositeGeneratedOptional(
             sourceX = sourceX,
@@ -4569,8 +4574,7 @@ internal class X11State(
         if (solid != null) {
             return { x, y -> if (source.insidePictureClip(x, y)) source.withAlphaMap(solid, x + 0.5, y + 0.5)?.let { scaledPixel(it, colorScale, alphaScale) } else null }
         }
-        val sourceDrawableId = source.drawableId ?: return null
-        val sourceFramebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val sourceFramebuffer = source.drawableFramebuffer() ?: return null
         return { x, y ->
             if (source.insidePictureClip(x, y)) {
                 if (source.alphaMap == 0) {
@@ -4628,7 +4632,7 @@ internal class X11State(
             }
         }
         if (transform == IdentityTransform && repeat == XRender.RepeatNone && !hasPictureClip() && alphaMap == 0) return null
-        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         return { x, y ->
             if (insidePictureClip(x, y)) {
                 sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName)?.let { (it ushr 24) and 0xff }
@@ -4643,7 +4647,7 @@ internal class X11State(
         gradientSampler()?.let { sampler ->
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else 0 }
         }
-        val framebuffer = drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         return { x, y -> if (insidePictureClip(x, y)) sampleMaskDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else 0 }
     }
 
@@ -4709,11 +4713,11 @@ internal class X11State(
     private fun XPicture.withAlphaMap(pixel: Int, x: Double, y: Double): Int? {
         val alphaMapId = alphaMap
         if (alphaMapId == 0) return pixel
-        val alphaPicture = pictures[alphaMapId] ?: return null
+        val alphaPicture = alphaMapPicture ?: pictures[alphaMapId] ?: return null
         val mapX = x - alphaXOrigin
         val mapY = y - alphaYOrigin
         if (!alphaPicture.insidePictureClip(mapX, mapY)) return null
-        val alphaFramebuffer = alphaPicture.drawableId?.let { windows[it]?.framebuffer ?: pixmaps[it]?.framebuffer } ?: return null
+        val alphaFramebuffer = alphaPicture.drawableFramebuffer() ?: return null
         val alphaPixel = alphaFramebuffer.samplePixelAt(mapX, mapY, XRender.RepeatNone, filterName = null)
             ?: return null
         val alpha = (alphaPixel ushr 24) and 0xff
@@ -4834,7 +4838,7 @@ internal class X11State(
         solidPixel?.let { pixel -> return { x, y -> withAlphaMap(pixel, x + 0.5, y + 0.5) ?: 0 } }
         gradientSampler()?.let { sampler -> return { x, y -> withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) ?: 0 } }
         val sourceDrawableId = drawableId ?: return null
-        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
             return { x, y -> sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) ?: 0 }
@@ -4848,7 +4852,7 @@ internal class X11State(
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else null }
         }
         val sourceDrawableId = drawableId ?: return null
-        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         return if (snapshot != null) {
             { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(snapshot, x + 0.5, y + 0.5, filterName) else null }
@@ -4863,7 +4867,7 @@ internal class X11State(
             return { x, y -> if (insidePictureClip(x, y)) withAlphaMap(sampler(x, y), x + 0.5, y + 0.5) else null }
         }
         val sourceDrawableId = drawableId ?: return null
-        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         val snapshot = if (sourceDrawableId == destinationDrawableId) framebuffer.snapshot() else null
         if (snapshot != null) {
             return { x, y ->
@@ -4875,6 +4879,12 @@ internal class X11State(
             }
         }
         return { x, y -> if (insidePictureClip(x, y)) sampleDrawablePixel(framebuffer, x + 0.5, y + 0.5, filterName) else null }
+    }
+
+    private fun XPicture.drawableFramebuffer(): XFramebuffer? {
+        val sourceDrawableId = drawableId ?: return null
+        retainedDrawableFramebuffer?.let { return it }
+        return windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer
     }
 
     private fun XPicture.insidePictureClip(x: Int, y: Int): Boolean {
@@ -4991,7 +5001,7 @@ internal class X11State(
             }
         }
         val sourceDrawableId = drawableId ?: return null
-        val framebuffer = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
+        val framebuffer = drawableFramebuffer() ?: return null
         val effectiveFilterName = filterNameOverride ?: filterName
         val snapshot = if (sourceDrawableId == snapshotDrawableId) framebuffer.snapshot() else null
         return if (snapshot != null) {
@@ -5592,8 +5602,7 @@ internal class X11State(
         pixel: Int,
         rectangles: List<XRectangleCommand>,
     ): Boolean {
-        val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         val destinationClipMask = destination.clipMaskPredicate()
         var painted = false
         for (rectangle in rectangles) {
@@ -6031,7 +6040,7 @@ internal class X11State(
         trapezoids: List<XTrapezoidCommand>,
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
         } else if (source.hasPictureClip()) {
@@ -6057,8 +6066,7 @@ internal class X11State(
     @Synchronized
     fun addTraps(destination: XPicture, trapezoids: List<XTrapezoidCommand>): Boolean {
         if (!XRender.isAlphaMaskFormat(destination.format)) return false
-        val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         return framebuffer.addTrapezoids(
             trapezoids = trapezoids,
             maskFormat = destination.format,
@@ -6079,7 +6087,7 @@ internal class X11State(
         triangles: List<XTriangleCommand>,
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
             source.compositeSourcePixelSamplerOptional(drawableId)
         } else if (source.hasPictureClip()) {
@@ -6108,8 +6116,7 @@ internal class X11State(
         destination: XPicture,
         triangles: List<XColorTriangleCommand>,
     ): Boolean {
-        val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         return framebuffer.compositeColoredTriangles(
             operation = operation,
             triangles = triangles,
@@ -6125,8 +6132,7 @@ internal class X11State(
         destination: XPicture,
         trapezoids: List<XColorTrapCommand>,
     ): Boolean {
-        val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         return framebuffer.compositeColoredTrapezoids(
             operation = operation,
             trapezoids = trapezoids,
@@ -6146,7 +6152,7 @@ internal class X11State(
         filterName: String,
     ): Boolean {
         val drawableId = destination.drawableId ?: return false
-        val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
+        val framebuffer = destination.drawableFramebuffer() ?: return false
         val sourcePixelAt = source.sourcePixelSamplerAt(snapshotDrawableId = drawableId, filterNameOverride = filterName) ?: return false
         return framebuffer.compositeTransformedQuad(
             operation = operation,
@@ -6171,7 +6177,7 @@ internal class X11State(
         placements: List<XGlyphPlacement>,
     ): Boolean {
         val destinationDrawableId = destination.drawableId ?: return false
-        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
+        val destinationFramebuffer = destination.drawableFramebuffer() ?: return false
         val glyphSet = glyphSets[glyphSetId] ?: return false
         val destinationClipMask = destination.clipMaskPredicate()
         val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
@@ -6220,7 +6226,7 @@ internal class X11State(
         placementsByGlyphSet: Map<Int, List<XGlyphPlacement>>,
     ): Boolean {
         val destinationDrawableId = destination.drawableId ?: return false
-        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
+        val destinationFramebuffer = destination.drawableFramebuffer() ?: return false
         val placedGlyphs = mutableListOf<XPlacedGlyph>()
         for ((glyphSetId, placements) in placementsByGlyphSet) {
             val glyphSet = glyphSets[glyphSetId] ?: continue
@@ -8286,7 +8292,10 @@ internal data class XPicture(
     var transform: List<Int> = IdentityTransform,
     var filterName: String? = null,
     var filterValues: List<Int> = emptyList(),
-)
+    var retainedDrawableFramebuffer: XFramebuffer? = null,
+) {
+    var alphaMapPicture: XPicture? = null
+}
 
 internal data class XFixesRegion(
     val id: Int,

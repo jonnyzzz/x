@@ -2498,7 +2498,12 @@ internal class X11Connection(
                 polyMode = attributes.polyMode ?: 0,
                 dither = attributes.dither ?: 0,
                 componentAlpha = attributes.componentAlpha?.toXBool() ?: false,
-            ),
+                retainedDrawableFramebuffer = state.pixmap(drawable)?.framebuffer,
+            ).also { picture ->
+                picture.alphaMapPicture = attributes.alphaMap
+                    ?.takeIf { it != 0 }
+                    ?.let { state.picture(it) }
+            },
         )
         own(id)
     }
