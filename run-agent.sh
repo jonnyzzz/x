@@ -65,6 +65,22 @@ Arguments:
 Configuration (env variables):
   RUNS_DIR            Runs output directory (default: ./runs)
   RUN_AGENT_AGENTS    Comma-separated list of available agents (default: all built-in)
+  RUN_AGENT_TIMEOUT_SECONDS
+                      Wall-clock timeout for the agent process (default: 3600, 0 disables)
+  RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
+                      Dump diagnostics once after this many seconds with no stdout/stderr bytes
+                      (default: 180, 0 disables)
+  RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
+                      Terminate after this many seconds with no stdout/stderr bytes
+                      (default: 0, disabled)
+  RUN_AGENT_HEARTBEAT_SECONDS
+                      Update heartbeat.txt while the agent is running (default: 30, 0 disables)
+  RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS
+                      Timeout for individual diagnostics commands (default: 20)
+  RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS
+                      Timeout for each JVM thread dump in diagnostics (default: 5)
+  RUN_AGENT_THREAD_DUMP_MAX_JVMS
+                      Maximum JVMs to thread-dump during agent diagnostics (default: 5)
 
 Exported to agent process:
   RUNS_DIR            Absolute path to the runs directory
@@ -196,6 +212,12 @@ cp "$PROMPT_FILE" "$PROMPT"
 CMDLINE="${_quoted_cmd}< $(printf '%q' "$PROMPT")"
 
 RUN_AGENT_TIMEOUT_SECONDS="${RUN_AGENT_TIMEOUT_SECONDS:-3600}"
+RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS="${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS:-180}"
+RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS="${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
+RUN_AGENT_HEARTBEAT_SECONDS="${RUN_AGENT_HEARTBEAT_SECONDS:-30}"
+RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS="${RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS:-20}"
+RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS="${RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS:-5}"
+RUN_AGENT_THREAD_DUMP_MAX_JVMS="${RUN_AGENT_THREAD_DUMP_MAX_JVMS:-5}"
 RUN_AGENT_POLL_SECONDS="${RUN_AGENT_POLL_SECONDS:-5}"
 
 now_seconds() {
@@ -222,6 +244,23 @@ latest_output_mtime() {
   fi
 }
 
+output_size() {
+  local stdout_size stderr_size
+  stdout_size="$(wc -c < "$STDOUT_FILE" 2>/dev/null || echo 0)"
+  stderr_size="$(wc -c < "$STDERR_FILE" 2>/dev/null || echo 0)"
+  echo $((stdout_size + stderr_size))
+}
+
+run_bounded() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
+
 dump_diagnostics() {
   local reason="$1"
   local safe_reason diag_file
@@ -236,28 +275,41 @@ dump_diagnostics() {
     echo
     echo "== child process =="
     ps -p "$AGENT_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
+    if command -v pgrep >/dev/null 2>&1; then
+      echo
+      echo "== child processes =="
+      pgrep -P "$AGENT_PID" -a 2>/dev/null || true
+    fi
+    if command -v sample >/dev/null 2>&1; then
+      local sample_file="$RUN_DIR/sample-${safe_reason}-${AGENT_PID}.txt"
+      echo
+      echo "== process sample =="
+      run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" \
+        sample "$AGENT_PID" 3 -file "$sample_file" >/dev/null 2>&1 && echo "$sample_file" || true
+    fi
     echo
     echo "== matching processes =="
-    ps -axo pid,ppid,stat,etime,command 2>/dev/null | \
+    ps -axo pid,ppid,stat,etime,comm 2>/dev/null | \
       egrep 'codex|claude|gemini|gradle|java|run-agent' | \
       egrep -v 'egrep|diagnostics-' || true
     echo
     echo "== jps =="
     if command -v jps >/dev/null 2>&1; then
-      jps -lm 2>/dev/null || true
+      run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" jps -lm 2>/dev/null || true
     else
       echo "jps not found"
     fi
     echo
     echo "== java thread dumps =="
     if command -v jps >/dev/null 2>&1; then
-      jps -q 2>/dev/null | while read -r java_pid; do
+      java_pids="$(run_bounded "$RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS" jps -q 2>/dev/null | head -"$RUN_AGENT_THREAD_DUMP_MAX_JVMS" || true)"
+      for java_pid in $java_pids; do
         [ -n "$java_pid" ] || continue
         echo "-- pid $java_pid --"
         if command -v jcmd >/dev/null 2>&1; then
-          jcmd "$java_pid" Thread.print 2>&1 || true
+          run_bounded "$RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS" jcmd "$java_pid" Thread.print 2>&1 || true
         elif command -v jstack >/dev/null 2>&1; then
-          jstack "$java_pid" 2>&1 || true
+          run_bounded "$RUN_AGENT_THREAD_DUMP_TIMEOUT_SECONDS" jstack "$java_pid" 2>&1 || true
         else
           echo "jcmd/jstack not found"
         fi
@@ -293,7 +345,7 @@ trap 'on_signal HUP  129' HUP
 
 (
   cd "$CWD"
-  "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
+  exec "${AGENT_CMD[@]}" <"$PROMPT" 1>"$STDOUT_FILE" 2>"$STDERR_FILE"
 ) &
 AGENT_PID=$!
 
@@ -308,19 +360,55 @@ CMD=$CMDLINE
 PROMPT=$PROMPT
 STDOUT=$STDOUT_FILE
 STDERR=$STDERR_FILE
-PID=$AGENT_PID"
+PID=$AGENT_PID
+TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
+NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
+NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS"
 printf '%s\n' "$RUN_INFO_BLOCK"
 { printf '%s\n' "$RUN_INFO_BLOCK" > "$RUN_INFO_FILE"; } || true
 echo "$AGENT_PID" > "$PID_FILE"
 
 EXIT_CODE=0
 START_SECONDS="$(now_seconds)"
+LAST_HEARTBEAT_SECONDS=0
+NO_OUTPUT_DIAGNOSTICS_FIRED=false
 TIMEOUT_FIRED=false
 while kill -0 "$AGENT_PID" 2>/dev/null; do
   sleep "$RUN_AGENT_POLL_SECONDS"
+  NOW_SECONDS="$(now_seconds)"
+  ELAPSED_SECONDS=$((NOW_SECONDS - START_SECONDS))
+  OUTPUT_SIZE="$(output_size)"
+  if [ "$RUN_AGENT_HEARTBEAT_SECONDS" -gt 0 ] && \
+     [ $((NOW_SECONDS - LAST_HEARTBEAT_SECONDS)) -ge "$RUN_AGENT_HEARTBEAT_SECONDS" ]; then
+    {
+      echo "UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "PID=$AGENT_PID"
+      echo "ELAPSED_SECONDS=$ELAPSED_SECONDS"
+      echo "OUTPUT_BYTES=$OUTPUT_SIZE"
+      ps -p "$AGENT_PID" -o pid=,ppid=,stat=,etime=,command= 2>/dev/null || true
+    } > "$RUN_DIR/heartbeat.txt" 2>/dev/null || true
+    LAST_HEARTBEAT_SECONDS="$NOW_SECONDS"
+  fi
+  if [ "$OUTPUT_SIZE" -eq 0 ]; then
+    if [ "$NO_OUTPUT_DIAGNOSTICS_FIRED" = false ] && \
+       [ "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" -gt 0 ] && \
+       [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS" ]; then
+      NO_OUTPUT_DIAGNOSTICS_FIRED=true
+      dump_diagnostics "no-output-${RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS}s"
+    fi
+    if [ "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
+       [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
+      TIMEOUT_FIRED=true
+      dump_diagnostics "no-output-timeout-${RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS}s"
+      kill -TERM "$AGENT_PID" 2>/dev/null || true
+      sleep 5
+      kill -KILL "$AGENT_PID" 2>/dev/null || true
+      wait "$AGENT_PID" 2>/dev/null || true
+      EXIT_CODE=124
+      break
+    fi
+  fi
   if [ "$RUN_AGENT_TIMEOUT_SECONDS" -gt 0 ]; then
-    NOW_SECONDS="$(now_seconds)"
-    ELAPSED_SECONDS=$((NOW_SECONDS - START_SECONDS))
     if [ "$ELAPSED_SECONDS" -ge "$RUN_AGENT_TIMEOUT_SECONDS" ]; then
       TIMEOUT_FIRED=true
       dump_diagnostics "timeout-${RUN_AGENT_TIMEOUT_SECONDS}s"
