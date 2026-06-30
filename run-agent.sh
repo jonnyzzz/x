@@ -78,6 +78,9 @@ Configuration (env variables):
                       claude -p text-mode runs. By default those runs only emit
                       a final answer, so silence triggers diagnostics but not a
                       no-output kill.
+  RUN_AGENT_CLAUDE_SAFE_MODE
+                      Run claude with --safe-mode to disable MCP/plugins/hooks
+                      for bounded run-agent jobs (default: 1, set 0 to disable)
   RUN_AGENT_HEARTBEAT_SECONDS
                       Update heartbeat.txt while the agent is running (default: 30, 0 disables)
   RUN_AGENT_DIAGNOSTICS_COMMAND_TIMEOUT_SECONDS
@@ -171,6 +174,8 @@ CWD="$(cd "$CWD" && pwd)"
 # Sanitize environment: remove CLAUDECODE to avoid leaking nested runtime context
 unset CLAUDECODE
 
+RUN_AGENT_CLAUDE_SAFE_MODE="${RUN_AGENT_CLAUDE_SAFE_MODE:-1}"
+
 # Build agent command array — properly quoted, no eval needed.
 # To add a new agent, add a case entry here and update BUILTIN_AGENTS above.
 AGENT_CMD=()
@@ -180,6 +185,9 @@ case "$AGENT" in
     ;;
   claude)
     AGENT_CMD=(claude -p --input-format text --output-format text --tools default --permission-mode bypassPermissions)
+    if [ "$RUN_AGENT_CLAUDE_SAFE_MODE" != "0" ]; then
+      AGENT_CMD+=(--safe-mode)
+    fi
     ;;
   gemini)
     AGENT_CMD=(gemini --screen-reader true --sandbox=false --approval-mode yolo --include-directories "$CWD")
@@ -440,7 +448,8 @@ PID=$AGENT_PID
 TIMEOUT_SECONDS=$RUN_AGENT_TIMEOUT_SECONDS
 NO_OUTPUT_DIAGNOSTICS_SECONDS=$RUN_AGENT_NO_OUTPUT_DIAGNOSTICS_SECONDS
 NO_OUTPUT_TIMEOUT_SECONDS=$RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS
-EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS"
+EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS=$EFFECTIVE_NO_OUTPUT_TIMEOUT_SECONDS
+CLAUDE_SAFE_MODE=$RUN_AGENT_CLAUDE_SAFE_MODE"
 if [ "$RUN_AGENT_RELIABILITY_PREAMBLE" != "0" ] && [ -n "${RELIABILITY_FILE:-}" ]; then
   RUN_INFO_BLOCK="$RUN_INFO_BLOCK
 RELIABILITY_PREAMBLE=$RELIABILITY_FILE"

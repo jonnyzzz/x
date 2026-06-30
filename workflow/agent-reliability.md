@@ -38,6 +38,8 @@ Root cause: read-only run-agent research prompts inherited "use MCP Steroid wher
 
 `run-agent.sh` now prepends a short reliability override to copied prompts when this file is present. That override supersedes older broad "prefer MCP Steroid" role prompts for run-agent work, while still allowing explicit IDE-semantic tasks to opt into MCP Steroid. Set `RUN_AGENT_RELIABILITY_PREAMBLE=0` only for an intentionally isolated run that must receive the prompt byte-for-byte.
 
+Claude run-agents also default to `--safe-mode` (`RUN_AGENT_CLAUDE_SAFE_MODE=1`), because `claude -p --tools default` can spawn configured MCP stdio servers before the prompt text has any effect. Disable safe mode only for a run that explicitly needs Claude plugins/hooks/MCP configuration and keep the usual wall-clock plus no-output diagnostics.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
