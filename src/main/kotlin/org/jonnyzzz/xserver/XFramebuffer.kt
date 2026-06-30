@@ -1343,13 +1343,19 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         clipMask: XClipMask? = null,
         mask: XFramebuffer,
+        componentMask: Boolean = false,
         sourcePixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val bounds = clippedBounds(destinationX, destinationY, width, height) ?: return false
         return compositeBoundsOptional(bounds, clipRectangles, clipMask) { x, y ->
-            val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
             val sourcePixel = sourcePixelAt(sourceX + x - originX, sourceY + y - originY) ?: return@compositeBoundsOptional null
-            renderPixel(sourcePixel, pixels[y * this.width + x], operation, maskAlpha)
+            if (componentMask) {
+                val maskPixel = mask.pixelAt(x - destinationX, y - destinationY) ?: return@compositeBoundsOptional null
+                renderPixelComponentMask(sourcePixel, pixels[y * this.width + x], operation, maskPixel)
+            } else {
+                val maskAlpha = mask.alphaAt(x - destinationX, y - destinationY)
+                renderPixel(sourcePixel, pixels[y * this.width + x], operation, maskAlpha)
+            }
         }
     }
 

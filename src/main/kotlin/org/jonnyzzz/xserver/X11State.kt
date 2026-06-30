@@ -4860,6 +4860,45 @@ internal class X11State(
             0
         }
 
+    private fun glyphPixelForMaskFormat(pixel: Int, glyphFormat: Int, maskFormat: Int): Int {
+        val alpha = (pixel ushr 24) and 0xff
+        fun grayAlpha(): Int = (alpha shl 24) or (alpha shl 16) or (alpha shl 8) or alpha
+        fun grayOpaque(): Int = XFramebuffer.opaque((alpha shl 16) or (alpha shl 8) or alpha)
+        return when (maskFormat) {
+            XRender.A1Format -> if (alpha >= 0x80) 0xff shl 24 else 0
+            XRender.A8Format -> alpha shl 24
+            XRender.Argb32Format -> when (glyphFormat) {
+                XRender.Argb32Format -> XFramebuffer.argb(pixel)
+                XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
+                else -> grayAlpha()
+            }
+            XRender.Rgb24Format -> when (glyphFormat) {
+                XRender.Argb32Format, XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
+                else -> grayOpaque()
+            }
+            else -> alpha shl 24
+        }
+    }
+
+    private fun addMaskPixel(destination: Int, source: Int, format: Int): Int =
+        when (format) {
+            XRender.A1Format -> if (((destination ushr 24) and 0xff) != 0 || ((source ushr 24) and 0xff) >= 0x80) 0xff shl 24 else 0
+            XRender.A8Format -> (((destination ushr 24) and 0xff) + ((source ushr 24) and 0xff)).coerceAtMost(0xff) shl 24
+            XRender.Rgb24Format -> XFramebuffer.opaque(
+                (saturatingChannel(destination, source, 16) shl 16) or
+                    (saturatingChannel(destination, source, 8) shl 8) or
+                    saturatingChannel(destination, source, 0),
+            )
+            XRender.Argb32Format -> (saturatingChannel(destination, source, 24) shl 24) or
+                (saturatingChannel(destination, source, 16) shl 16) or
+                (saturatingChannel(destination, source, 8) shl 8) or
+                saturatingChannel(destination, source, 0)
+            else -> source
+        }
+
+    private fun saturatingChannel(destination: Int, source: Int, shift: Int): Int =
+        (((destination ushr shift) and 0xff) + ((source ushr shift) and 0xff)).coerceAtMost(0xff)
+
     private fun glyphMaskFromPicture(
         format: Int,
         width: Int,
@@ -4873,9 +4912,12 @@ internal class X11State(
         val pixels = IntArray(width * height)
         for (y in 0 until height) {
             for (x in 0 until width) {
-                val alpha = (sourcePixelAt(sourceX + x, sourceY + y) ushr 24) and 0xff
+                val pixel = sourcePixelAt(sourceX + x, sourceY + y)
+                val alpha = (pixel ushr 24) and 0xff
                 pixels[y * width + x] = when (format) {
                     XRender.A1Format -> if (alpha >= 0x80) 0xff shl 24 else 0
+                    XRender.Argb32Format -> XFramebuffer.argb(pixel)
+                    XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
                     else -> alpha shl 24
                 }
             }
@@ -6101,10 +6143,100 @@ internal class X11State(
                 clipRectangles = effectivePictureClip(destination),
                 clipMask = destinationClipMask,
                 mask = mask,
+                componentMask = glyphSet.format == XRender.Argb32Format || glyphSet.format == XRender.Rgb24Format,
                 sourcePixelAt = sourcePixelAt,
             ) || painted
         }
         return painted
+    }
+
+    @Synchronized
+    fun compositeGlyphsWithMask(
+        operation: Int,
+        source: XPicture,
+        destination: XPicture,
+        sourceX: Int,
+        sourceY: Int,
+        originX: Int,
+        originY: Int,
+        maskFormat: Int,
+        placementsByGlyphSet: Map<Int, List<XGlyphPlacement>>,
+    ): Boolean {
+        val destinationDrawableId = destination.drawableId ?: return false
+        val destinationFramebuffer = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return false
+        val placedGlyphs = mutableListOf<XPlacedGlyph>()
+        for ((glyphSetId, placements) in placementsByGlyphSet) {
+            val glyphSet = glyphSets[glyphSetId] ?: continue
+            for (placement in placements) {
+                val glyph = glyphSet.glyphs[placement.glyphId] ?: continue
+                if (glyph.mask == null || glyph.width <= 0 || glyph.height <= 0) continue
+                placedGlyphs += XPlacedGlyph(
+                    glyph = glyph,
+                    glyphFormat = glyphSet.format,
+                    destinationX = placement.x - glyph.x,
+                    destinationY = placement.y - glyph.y,
+                )
+            }
+        }
+        if (placedGlyphs.isEmpty()) return false
+        val minXLong = placedGlyphs.minOf { it.destinationX.toLong() }
+        val minYLong = placedGlyphs.minOf { it.destinationY.toLong() }
+        val maxXLong = placedGlyphs.maxOf { it.destinationX.toLong() + it.glyph.width.toLong() }
+        val maxYLong = placedGlyphs.maxOf { it.destinationY.toLong() + it.glyph.height.toLong() }
+        val maskWidthLong = maxXLong - minXLong
+        val maskHeightLong = maxYLong - minYLong
+        if (maskWidthLong <= 0 || maskHeightLong <= 0) return false
+        if (maskWidthLong > Int.MAX_VALUE || maskHeightLong > Int.MAX_VALUE) return false
+        if (maskWidthLong * maskHeightLong > MaxGlyphMaskPixels) return false
+        if (minXLong < Int.MIN_VALUE || minXLong > Int.MAX_VALUE || minYLong < Int.MIN_VALUE || minYLong > Int.MAX_VALUE) return false
+        val minX = minXLong.toInt()
+        val minY = minYLong.toInt()
+        val maskWidth = maskWidthLong.toInt()
+        val maskHeight = maskHeightLong.toInt()
+        if (maskWidth <= 0 || maskHeight <= 0) return false
+
+        val maskPixels = IntArray(maskWidth * maskHeight) {
+            if (maskFormat == XRender.Rgb24Format) XFramebuffer.opaque(0) else 0
+        }
+        for (placed in placedGlyphs) {
+            val mask = placed.glyph.mask ?: continue
+            val localX = placed.destinationX - minX
+            val localY = placed.destinationY - minY
+            for (y in 0 until placed.glyph.height) {
+                for (x in 0 until placed.glyph.width) {
+                    val glyphPixel = mask.pixelAt(x, y) ?: continue
+                    val targetPixel = glyphPixelForMaskFormat(glyphPixel, placed.glyphFormat, maskFormat)
+                    val index = (localY + y) * maskWidth + localX + x
+                    maskPixels[index] = addMaskPixel(maskPixels[index], targetPixel, maskFormat)
+                }
+            }
+        }
+        val temporaryMask = XFramebuffer(maskWidth, maskHeight, painted = true).also { framebuffer ->
+            framebuffer.putImage(0, 0, XImagePixels(maskWidth, maskHeight, maskPixels))
+        }
+        val sourcePixelAt: (x: Int, y: Int) -> Int? = (if (source.alphaMap != 0) {
+            source.compositeSourcePixelSamplerOptional(destinationDrawableId)
+        } else if (source.hasPictureClip()) {
+            source.sourcePixelSamplerOptional(snapshotDrawableId = destinationDrawableId)
+        } else {
+            source.sourcePixelSampler(snapshotDrawableId = destinationDrawableId)?.let { sampler -> { x: Int, y: Int -> sampler(x, y) } }
+        }) ?: return false
+        return destinationFramebuffer.compositeSourceOverMask(
+            sourceX = sourceX,
+            sourceY = sourceY,
+            originX = originX,
+            originY = originY,
+            destinationX = minX,
+            destinationY = minY,
+            width = maskWidth,
+            height = maskHeight,
+            operation = operation,
+            clipRectangles = effectivePictureClip(destination),
+            clipMask = destination.clipMaskPredicate(),
+            mask = temporaryMask,
+            componentMask = maskFormat == XRender.Argb32Format || maskFormat == XRender.Rgb24Format,
+            sourcePixelAt = sourcePixelAt,
+        )
     }
 
     @Synchronized
@@ -8163,6 +8295,13 @@ internal data class XGlyph(
     val xOff: Int,
     val yOff: Int,
     val mask: XFramebuffer? = null,
+)
+
+private data class XPlacedGlyph(
+    val glyph: XGlyph,
+    val glyphFormat: Int,
+    val destinationX: Int,
+    val destinationY: Int,
 )
 
 internal data class XPictureGlyph(

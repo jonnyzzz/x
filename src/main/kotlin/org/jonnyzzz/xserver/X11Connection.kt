@@ -3245,9 +3245,14 @@ internal class X11Connection(
         }
         val placementsByGlyphSet = parseResult.placements
         val origin = placementsByGlyphSet.values.firstOrNull()?.firstOrNull() ?: return
-        var painted = false
-        for ((glyphSetId, placements) in placementsByGlyphSet) {
-            painted = state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements) || painted
+        val painted = if (maskFormat == 0) {
+            var directPainted = false
+            for ((glyphSetId, placements) in placementsByGlyphSet) {
+                directPainted = state.compositeGlyphs(operation, source, destination, glyphSetId, sourceX, sourceY, origin.x, origin.y, placements) || directPainted
+            }
+            directPainted
+        } else {
+            state.compositeGlyphsWithMask(operation, source, destination, sourceX, sourceY, origin.x, origin.y, maskFormat, placementsByGlyphSet)
         }
         state.draw(
             XDrawingCommand(
@@ -10544,8 +10549,10 @@ internal class X11Connection(
                     val rowOffset = offset + y * stride
                     for (x in 0 until width) {
                         val pixel = byteOrder.u32(data, rowOffset + x * 4)
-                        val alpha = if (format == XRender.Rgb24Format) 0xff else (pixel ushr 24) and 0xff
-                        pixels[y * width + x] = alpha shl 24
+                        pixels[y * width + x] = when (format) {
+                            XRender.Rgb24Format -> XFramebuffer.opaque(pixel)
+                            else -> XFramebuffer.argb(pixel)
+                        }
                     }
                 }
             }
