@@ -7033,6 +7033,77 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `pointer button input emits crossing events before button press when moving between windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val first = WindowId
+                val second = WindowId + 1
+                out.write(createWindowRequest(first, x = 10, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(second, x = 40, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(warpPointerRequest(destinationWindow = first, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(second, XEventMasks.EnterWindow or XEventMasks.ButtonPress or XEventMasks.PointerMotion))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertEquals(1, readReply(input)[0].toInt() and 0xff)
+
+                val down = server.input.pointerDown(46, 17, button = 1)
+                assertEquals(second, down.targetWindowId)
+                assertEquals(3, down.deliveredEvents)
+
+                val leave = input.readExactly(32)
+                assertCrossingEvent(
+                    leave,
+                    type = 8,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = first,
+                    rootX = 46,
+                    rootY = 17,
+                    eventX = 36,
+                    eventY = 7,
+                )
+                val enter = input.readExactly(32)
+                assertCrossingEvent(
+                    enter,
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = second,
+                    rootX = 46,
+                    rootY = 17,
+                    eventX = 6,
+                    eventY = 7,
+                )
+                val button = input.readExactly(32)
+                assertButtonEvent(button, type = 4, detail = 1)
+                assertEquals(X11Ids.RootWindow, u32le(button, 8))
+                assertEquals(second, u32le(button, 12))
+                assertEquals(0, u32le(button, 16))
+                assertEquals(46, u16le(button, 20))
+                assertEquals(17, u16le(button, 22))
+                assertEquals(6, u16le(button, 24))
+                assertEquals(7, u16le(button, 26))
+
+                out.write(queryPointerRequest())
+                out.flush()
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `pointer button input clamps to active pointer grab confine window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

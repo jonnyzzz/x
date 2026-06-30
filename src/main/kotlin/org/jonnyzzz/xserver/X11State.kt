@@ -1924,6 +1924,7 @@ internal class X11State(
 
     fun pointerButton(x: Int, y: Int, button: Int, pressed: Boolean): XPointerDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
+        val crossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         val finalRootX: Int
@@ -1932,6 +1933,8 @@ internal class X11State(
             val previousCursor = displayedCursorIdentity()
             val previousX = pointerX
             val previousY = pointerY
+            val previousWindowId = windowAt(pointerX, pointerY)?.id
+            val previousPath = previousWindowId?.let { windowPathToRoot(it) }.orEmpty()
             val confinedPosition = confinedPointerPosition(x, y)
             pointerX = confinedPosition.first
             pointerY = confinedPosition.second
@@ -1948,6 +1951,19 @@ internal class X11State(
             val time = inputTime++
             if (pointerX != previousX || pointerY != previousY) {
                 recordMotionHistory(time, pointerX, pointerY)
+            }
+
+            val crossedWindow = previousWindowId != targetId
+            if (activePointerGrab == null && crossedWindow) {
+                crossingDeliveries += crossingEventDeliveries(
+                    previousPath = previousPath,
+                    targetPath = path,
+                    absoluteById = absoluteById,
+                    rootX = pointerX,
+                    rootY = pointerY,
+                    state = previousState,
+                    time = time,
+                )
             }
 
             if (pressed && logicalButton != 0 && activePointerGrab == null && pressedLogicalButtons.isEmpty()) {
@@ -2032,11 +2048,14 @@ internal class X11State(
             if (targetId != null) focusWindowId = targetId
         }
 
+        for ((sink, event) in crossingDeliveries) {
+            sink.sendCrossingEvent(event)
+        }
         for ((sink, event) in deliveries) {
             sink.sendPointerEvent(event)
         }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
-        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size, rootX = finalRootX, rootY = finalRootY)
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = crossingDeliveries.size + deliveries.size, rootX = finalRootX, rootY = finalRootY)
     }
 
     fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
@@ -2282,7 +2301,7 @@ internal class X11State(
             sink.sendPointerEvent(event)
         }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
-        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size, rootX = finalRootX, rootY = finalRootY)
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = crossingDeliveries.size + deliveries.size, rootX = finalRootX, rootY = finalRootY)
     }
 
     @Synchronized
