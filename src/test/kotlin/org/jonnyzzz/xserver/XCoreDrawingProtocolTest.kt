@@ -14525,6 +14525,67 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `SendEvent swaps synthetic ClientMessage fields by format for big endian destination owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { senderSocket ->
+                Socket("127.0.0.1", server.localPort).use { recipientSocket ->
+                    senderSocket.soTimeout = 2_000
+                    recipientSocket.soTimeout = 2_000
+                    setup(senderSocket)
+                    setup(recipientSocket, byteOrderByte = 0x42)
+                    val recipient = WindowId + 15
+                    recipientSocket.getOutputStream().write(createWindowRequestBigEndian(recipient, width = 31, height = 17))
+                    recipientSocket.getOutputStream().write(getGeometryRequestBigEndian(recipient))
+                    recipientSocket.getOutputStream().flush()
+
+                    val geometry = readReply(recipientSocket.getInputStream(), byteOrderByte = 0x42)
+                    assertEquals(1, geometry[0].toInt())
+                    assertEquals(2, u16be(geometry, 2))
+                    assertEquals(31, u16be(geometry, 16))
+                    assertEquals(17, u16be(geometry, 18))
+
+                    val data32 = listOf(0x0102_0304, 0x1112_1314, 0x2122_2324, 0x3132_3334, 0x4142_4344)
+                    val data8 = ByteArray(20) { index -> (index + 1).toByte() }
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = recipient,
+                            event = clientMessageEvent(recipient, PrimaryAtom, format = 32, data32 = data32),
+                        ),
+                    )
+                    senderSocket.getOutputStream().write(
+                        sendEventRequest(
+                            destination = recipient,
+                            event = clientMessageEvent(recipient, StringAtom, format = 8, data8 = data8),
+                        ),
+                    )
+                    senderSocket.getOutputStream().flush()
+
+                    val format32 = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 33, format32[0].toInt() and 0xff)
+                    assertEquals(32, format32[1].toInt() and 0xff)
+                    assertEquals(2, u16be(format32, 2))
+                    assertEquals(recipient, u32be(format32, 4))
+                    assertEquals(PrimaryAtom, u32be(format32, 8))
+                    data32.forEachIndexed { index, value ->
+                        assertEquals(value, u32be(format32, 12 + index * 4))
+                    }
+
+                    val format8 = recipientSocket.getInputStream().readExactly(32)
+                    assertEquals(0x80 or 33, format8[0].toInt() and 0xff)
+                    assertEquals(8, format8[1].toInt() and 0xff)
+                    assertEquals(2, u16be(format8, 2))
+                    assertEquals(recipient, u32be(format8, 4))
+                    assertEquals(StringAtom, u32be(format8, 8))
+                    assertEquals(data8.toList(), format8.copyOfRange(12, 32).toList())
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SendEvent accepts synthetic XFixes SelectionNotify for advertised extension event code`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -16052,6 +16113,25 @@ class XCoreDrawingProtocolTest {
         put32le(event, 12, selection)
         put32le(event, 16, target)
         put32le(event, 20, property)
+        return event
+    }
+
+    private fun clientMessageEvent(
+        window: Int,
+        type: Int,
+        format: Int,
+        data32: List<Int> = emptyList(),
+        data8: ByteArray = ByteArray(0),
+    ): ByteArray {
+        val event = ByteArray(32)
+        event[0] = 33
+        event[1] = format.toByte()
+        put32le(event, 4, window)
+        put32le(event, 8, type)
+        when (format) {
+            32 -> data32.forEachIndexed { index, value -> put32le(event, 12 + index * 4, value) }
+            8 -> data8.copyInto(event, 12, endIndex = data8.size.coerceAtMost(20))
+        }
         return event
     }
 
