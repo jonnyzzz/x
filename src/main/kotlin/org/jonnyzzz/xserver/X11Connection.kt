@@ -4663,12 +4663,15 @@ internal class X11Connection(
             }
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val previousPointerPath = state.pointerCrossingPath()
         val notifications = state.mapNotifySinks(current)
         val window = state.mapWindow(windowId) ?: return
+        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         if (window.windowClass == XWindowClass.InputOutput) {
             state.paintWindowBackground(window.id)
         }
         sendMapNotify(notifications)
+        sendCrossing(crossingEvents)
         sendExposeForViewableMappedSubtree(window)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
@@ -4679,10 +4682,13 @@ internal class X11Connection(
         val window = state.window(windowId) ?: return writeError(error = 3, opcode = 10, badValue = windowId)
         if (!window.mapped) return
         val previousCursor = state.displayedCursorSnapshot()
+        val previousPointerPath = state.pointerCrossingPath()
         val notifications = state.unmapNotifySinks(window)
         val exposeWindows = state.unmapExposeWindows(windowId)
         val focusDispatches = state.unmapWindow(windowId)
+        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         sendUnmapNotify(notifications)
+        sendCrossing(crossingEvents)
         exposeWindows.forEach { sendExposeToSubscribers(it) }
         sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -11021,6 +11027,12 @@ internal class X11Connection(
     private fun sendFocusEvents(notifications: List<XFocusDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendFocusEvent(notification.event) }
+        }
+    }
+
+    private fun sendCrossing(notifications: List<Pair<XEventSink, XCrossingEvent>>) {
+        for ((sink, event) in notifications) {
+            runCatching { sink.sendCrossingEvent(event) }
         }
     }
 

@@ -10318,6 +10318,43 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapWindow emits hierarchy crossing event after map notify when pointer enters window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify or XEventMasks.EnterWindow))
+                out.write(warpPointerRequest(destinationWindow = X11Ids.RootWindow, destinationX = 15, destinationY = 15))
+                out.write(mapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapNotify(input.readExactly(32), sequence = 3, eventWindow = WindowId, window = WindowId)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = WindowId,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertExpose(input.readExactly(32), WindowId, sequence = 3, width = 20, height = 20)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(4, u16le(pointer, 2))
+                assertEquals(WindowId, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapWindow delivers SubstructureNotify to another client selecting parent`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11014,6 +11051,44 @@ class XCoreDrawingProtocolTest {
                     observerOut.flush()
                     assertEquals(3, u16le(readReply(observerSocket.getInputStream()), 2))
                 }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow emits hierarchy crossing event after unmap notify when pointer leaves window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify or XEventMasks.LeaveWindow))
+                out.write(mapWindowRequest(WindowId))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 5, destinationY = 5))
+                out.write(unmapWindowRequest(WindowId))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertSelectedMapAndExpose(input, WindowId)
+                assertUnmapNotify(input.readExactly(32), sequence = 4, eventWindow = WindowId, window = WindowId)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = WindowId,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(5, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
             }
             server.close()
             serverThread.join(1_000)

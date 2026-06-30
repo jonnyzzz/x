@@ -812,6 +812,27 @@ internal class X11State(
     }
 
     @Synchronized
+    fun pointerCrossingPath(): List<XWindow> =
+        (windowAt(pointerX, pointerY) ?: windows[X11Ids.RootWindow])?.let { windowPathToRoot(it.id) }.orEmpty()
+
+    @Synchronized
+    fun hierarchyCrossingEventDeliveries(previousPath: List<XWindow>): List<Pair<XEventSink, XCrossingEvent>> {
+        val targetPath = pointerCrossingPath()
+        if (previousPath.firstOrNull()?.id == targetPath.firstOrNull()?.id) return emptyList()
+        val deliveries = crossingEventDeliveries(
+            previousPath = previousPath,
+            targetPath = targetPath,
+            absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) },
+            rootX = pointerX,
+            rootY = pointerY,
+            state = pointerMask(),
+            time = inputTime,
+        )
+        if (deliveries.isNotEmpty()) inputTime++
+        return deliveries
+    }
+
+    @Synchronized
     fun unmapWindow(id: Int): List<XFocusDispatch> {
         windows[id]?.mapped = false
         val focusDispatches = revertFocusIfCurrentFocusNotViewable()
