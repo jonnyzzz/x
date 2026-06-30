@@ -381,6 +381,7 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        strokeSource: XStrokeSource? = null,
     ): Boolean {
         val points = sampledArcPoints(arc)
         if (points.isEmpty()) return false
@@ -388,7 +389,8 @@ internal class XFramebuffer(
         val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
         if (points.size == 1) {
             val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
-            return dashPixel?.let { drawPoint(points[0].x, points[0].y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
+            val sourcePixel = dashPixel?.let { if (strokeSource == null) it else strokeSource(points[0].x, points[0].y, it) }
+            return sourcePixel?.let { drawPoint(points[0].x, points[0].y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
         }
         for (index in 0 until points.lastIndex) {
             val start = points[index]
@@ -405,6 +407,7 @@ internal class XFramebuffer(
                 planeMask,
                 dashPattern,
                 includeFirstPoint = index == 0,
+                strokeSource = strokeSource,
             ) || painted
         }
         return painted

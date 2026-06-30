@@ -5734,6 +5734,77 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `one-pixel PolyArc uses tiled fill source for outline pixel`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = 0x00aa_00aa))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(XArcCommand(4, 4, 1, 1, 0, -1))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 10, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff12_3456.toInt(), pixelAt(image, 10, 5, 5))
+                assertEquals(0, countPixels(image, 10, 10, 0xffaa_00aa.toInt()))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `PolyArc outline segments use tiled fill source`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, width = 30, height = 20))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 2))
+                out.write(createGcRequest(GcId, foreground = 0x00aa_00aa))
+                out.write(
+                    putImage24PixelsRequest(
+                        PixmapId,
+                        width = 2,
+                        height = 2,
+                        pixels = listOf(
+                            Red, Green,
+                            Blue, 0x0012_3456,
+                        ),
+                    ),
+                )
+                out.write(changeGcTiledFillRequest(GcId, tilePixmap = PixmapId, xOrigin = 0, yOrigin = 0))
+                out.write(polyArcRequest(WindowId, GcId, filled = false, arcs = listOf(XArcCommand(4, 4, 8, 8, 0, 90 * 64))))
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 18, height = 14))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, 18, 12, 8))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, 18, 12, 7))
+                assertEquals(0, countPixels(image, 18, 14, 0xffaa_00aa.toInt()))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PolyFillArc paints clipped window and pixmap framebuffer pixels without svg overlays`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
