@@ -1926,6 +1926,8 @@ internal class X11State(
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
+        val finalRootX: Int
+        val finalRootY: Int
         synchronized(this) {
             val previousCursor = displayedCursorIdentity()
             val previousX = pointerX
@@ -1933,6 +1935,8 @@ internal class X11State(
             val confinedPosition = confinedPointerPosition(x, y)
             pointerX = confinedPosition.first
             pointerY = confinedPosition.second
+            finalRootX = pointerX
+            finalRootY = pointerY
             val previousState = pointerMask()
             val logicalButton = pointerLogicalButton(button)
             val type = if (pressed) XPointerEventType.ButtonPress else XPointerEventType.ButtonRelease
@@ -2032,7 +2036,7 @@ internal class X11State(
             sink.sendPointerEvent(event)
         }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
-        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size, rootX = finalRootX, rootY = finalRootY)
     }
 
     fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
@@ -2173,11 +2177,13 @@ internal class X11State(
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
+        val finalRootX: Int
+        val finalRootY: Int
         synchronized(this) {
             val previousCursor = displayedCursorIdentity()
             val sourceWindow = sourceWindowId.takeIf { it != 0 }?.let { windows[it] }
             if (sourceWindow != null && !sourceWindowContainsPointer(sourceWindow, sourceX, sourceY, sourceWidth, sourceHeight)) {
-                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
+                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0, rootX = pointerX, rootY = pointerY)
             }
 
             val rawPosition = if (destinationWindowId == 0) {
@@ -2186,17 +2192,21 @@ internal class X11State(
                 val destinationWindow = windows[destinationWindowId] ?: return XPointerDispatch(
                     targetWindowId = windowAt(pointerX, pointerY)?.id,
                     deliveredEvents = 0,
+                    rootX = pointerX,
+                    rootY = pointerY,
                 )
                 val absolute = absolutePosition(destinationWindow)
                 absolute.first + destinationX to absolute.second + destinationY
             }
             val (newX, newY) = confinedPointerPosition(rawPosition.first, rawPosition.second)
             if (newX == pointerX && newY == pointerY) {
-                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0)
+                return XPointerDispatch(targetWindowId = windowAt(pointerX, pointerY)?.id, deliveredEvents = 0, rootX = pointerX, rootY = pointerY)
             }
 
             pointerX = newX
             pointerY = newY
+            finalRootX = pointerX
+            finalRootY = pointerY
             targetId = windowAt(pointerX, pointerY)?.id
             val path = targetId?.let { windowPathToRoot(it) }.orEmpty()
             val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
@@ -2254,7 +2264,7 @@ internal class X11State(
             sink.sendPointerEvent(event)
         }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
-        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size)
+        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = deliveries.size, rootX = finalRootX, rootY = finalRootY)
     }
 
     @Synchronized

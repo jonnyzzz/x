@@ -66,11 +66,13 @@ class XInputController internal constructor(
         val result = XInputResult(
             targetWindowId = release.targetWindowId ?: press.targetWindowId,
             deliveredEvents = press.deliveredEvents + release.deliveredEvents,
+            rootX = release.rootX,
+            rootY = release.rootY,
         )
         state.recordInputOperation(
             kind = "click",
-            x = x,
-            y = y,
+            x = result.rootX,
+            y = result.rootY,
             button = buttonName,
             targetWindowId = result.targetWindowId,
             deliveredEvents = result.deliveredEvents,
@@ -88,11 +90,13 @@ class XInputController internal constructor(
         val result = XInputResult(
             targetWindowId = dispatch.targetWindowId,
             deliveredEvents = dispatch.deliveredEvents,
+            rootX = dispatch.rootX,
+            rootY = dispatch.rootY,
         )
         state.recordInputOperation(
             kind = if (pressed) "pointer-down" else "pointer-up",
-            x = x,
-            y = y,
+            x = result.rootX,
+            y = result.rootY,
             button = buttonName,
             targetWindowId = result.targetWindowId,
             deliveredEvents = result.deliveredEvents,
@@ -149,6 +153,8 @@ class XInputController internal constructor(
 data class XInputResult(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
+    val rootX: Int = 0,
+    val rootY: Int = 0,
 ) {
     val targetWindowIdHex: String? get() = targetWindowId?.let { "0x${it.toUInt().toString(16)}" }
 }
@@ -208,6 +214,8 @@ internal enum class XPointerEventType(val code: Int) {
 internal data class XPointerDispatch(
     val targetWindowId: Int?,
     val deliveredEvents: Int,
+    val rootX: Int,
+    val rootY: Int,
 )
 
 internal data class XKeyEvent(

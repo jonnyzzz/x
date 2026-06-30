@@ -8137,8 +8137,8 @@ internal class X11Connection(
                 )
                 state.recordInputOperation(
                     kind = if (pressed) "xtest-pointer-down" else "xtest-pointer-up",
-                    x = pointer?.rootX ?: 0,
-                    y = pointer?.rootY ?: 0,
+                    x = dispatch.rootX,
+                    y = dispatch.rootY,
                     button = detail.toString(),
                     targetWindowId = dispatch.targetWindowId,
                     deliveredEvents = dispatch.deliveredEvents,
@@ -8165,8 +8165,8 @@ internal class X11Connection(
                 )
                 state.recordInputOperation(
                     kind = "xtest-motion",
-                    x = rootX,
-                    y = rootY,
+                    x = dispatch.rootX,
+                    y = dispatch.rootY,
                     button = detail.toString(),
                     targetWindowId = dispatch.targetWindowId,
                     deliveredEvents = dispatch.deliveredEvents,

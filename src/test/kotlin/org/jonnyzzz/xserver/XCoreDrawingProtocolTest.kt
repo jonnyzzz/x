@@ -6935,6 +6935,8 @@ class XCoreDrawingProtocolTest {
                 val down = server.input.pointerDown(100, 80, button = 1)
                 assertEquals(WindowId, down.targetWindowId)
                 assertEquals(1, down.deliveredEvents)
+                assertEquals(29, down.rootX)
+                assertEquals(29, down.rootY)
 
                 val button = input.readExactly(32)
                 assertButtonEvent(button, type = 4, detail = 1)
@@ -6956,6 +6958,10 @@ class XCoreDrawingProtocolTest {
                 assertEquals(WindowId, u32le(pointer, 12))
                 assertEquals(29, u16le(pointer, 16))
                 assertEquals(29, u16le(pointer, 18))
+
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state, """"kind":"pointer-down","x":29,"y":29""")
+                assertContains(state, """"inputGrabs":[{"kind":"pointer"""")
             }
             server.close()
             serverThread.join(1_000)
@@ -7016,6 +7022,8 @@ class XCoreDrawingProtocolTest {
                 val down = server.input.pointerDown(100, 80, button = 1)
                 assertEquals(X11Ids.RootWindow, down.targetWindowId)
                 assertEquals(1, down.deliveredEvents)
+                assertEquals(34, down.rootX)
+                assertEquals(14, down.rootY)
 
                 val button = input.readExactly(32)
                 assertButtonEvent(button, type = 4, detail = 1)
@@ -7025,7 +7033,9 @@ class XCoreDrawingProtocolTest {
                 assertEquals(14, u16le(button, 22))
                 assertEquals(34, u16le(button, 24))
                 assertEquals(14, u16le(button, 26))
-                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state, """"kind":"pointer-down","x":34,"y":14""")
+                assertContains(state, """"inputGrabs":[{"kind":"pointer"""")
             }
             server.close()
             serverThread.join(1_000)

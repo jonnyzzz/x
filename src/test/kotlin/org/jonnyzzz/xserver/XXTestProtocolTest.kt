@@ -141,6 +141,9 @@ class XXTestProtocolTest {
                 assertEquals(13, u16le(pointer, 2))
                 assertEquals(17, u16le(pointer, 16))
                 assertEquals(19, u16le(pointer, 18))
+
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state, """"kind":"xtest-motion","x":17,"y":19""")
             }
             server.close()
             serverThread.join(1_000)
@@ -286,6 +289,13 @@ class XXTestProtocolTest {
 
     private fun listExtensionsRequest(): ByteArray =
         request(99, 0, ByteArray(0))
+
+    private fun httpGet(port: Int, path: String): String =
+        Socket("127.0.0.1", port).use { socket ->
+            socket.getOutputStream().write("GET $path HTTP/1.1\r\nHost: localhost\r\n\r\n".encodeToByteArray())
+            socket.getOutputStream().flush()
+            socket.getInputStream().readBytes().decodeToString().substringAfter("\r\n\r\n")
+        }
 
     private fun queryPointerRequest(): ByteArray {
         val body = ByteArray(4)
