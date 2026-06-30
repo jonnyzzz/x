@@ -4583,7 +4583,7 @@ internal class X11State(
     ): XImagePixels? {
         val destinationDrawableId = destination.drawableId ?: return null
         val destinationFramebuffer = destination.drawableFramebuffer() ?: return null
-        val sourcePixelAt = scaledSourcePixelAt(source, colorScale, alphaScale) ?: return null
+        val sourcePixelAt = scaledSourcePixelAt(source, colorScale, alphaScale, destinationDrawableId) ?: return null
         return destinationFramebuffer.compositeGeneratedOptional(
             sourceX = sourceX,
             sourceY = sourceY,
@@ -4599,7 +4599,12 @@ internal class X11State(
         }
     }
 
-    private fun scaledSourcePixelAt(source: XPicture, colorScale: Int, alphaScale: Int): ((x: Int, y: Int) -> Int?)? {
+    private fun scaledSourcePixelAt(
+        source: XPicture,
+        colorScale: Int,
+        alphaScale: Int,
+        snapshotDrawableId: Int? = null,
+    ): ((x: Int, y: Int) -> Int?)? {
         val gradientSampler = source.gradientSampler()
         if (gradientSampler != null) {
             return { x, y ->
@@ -4615,19 +4620,33 @@ internal class X11State(
         if (solid != null) {
             return { x, y -> if (source.insidePictureClip(x, y)) source.withAlphaMap(solid, x + 0.5, y + 0.5)?.let { scaledPixel(it, colorScale, alphaScale) } else null }
         }
+        val sourceDrawableId = source.drawableId ?: return null
         val sourceFramebuffer = source.drawableFramebuffer() ?: return null
+        val sourceSnapshot = if (sourceDrawableId == snapshotDrawableId) sourceFramebuffer.snapshot() else null
         return { x, y ->
             if (source.insidePictureClip(x, y)) {
                 if (source.alphaMap == 0) {
                     val sample = transformedPoint(x + 0.5, y + 0.5, source.transform)
-                    if (source.scaleClipsBaseDrawable(sample.first, sample.second, sourceFramebuffer.width, sourceFramebuffer.height)) {
+                    val sourceWidth = sourceSnapshot?.width ?: sourceFramebuffer.width
+                    val sourceHeight = sourceSnapshot?.height ?: sourceFramebuffer.height
+                    if (source.scaleClipsBaseDrawable(sample.first, sample.second, sourceWidth, sourceHeight)) {
                         null
                     } else {
-                        sourceFramebuffer.samplePixelAt(sample.first, sample.second, source.repeat, source.filterName)
+                        val pixel = if (sourceSnapshot != null) {
+                            sourceSnapshot.samplePixelAt(sample.first, sample.second, source.repeat, source.filterName)
+                        } else {
+                            sourceFramebuffer.samplePixelAt(sample.first, sample.second, source.repeat, source.filterName)
+                        }
+                        pixel
                             ?.let { scaledPixel(it, colorScale, alphaScale) }
                     }
                 } else {
-                    source.sampleDrawablePixel(sourceFramebuffer, x + 0.5, y + 0.5, source.filterName)
+                    val pixel = if (sourceSnapshot != null) {
+                        source.sampleDrawablePixel(sourceSnapshot, x + 0.5, y + 0.5, source.filterName)
+                    } else {
+                        source.sampleDrawablePixel(sourceFramebuffer, x + 0.5, y + 0.5, source.filterName)
+                    }
+                    pixel
                         ?.let { scaledPixel(it, colorScale, alphaScale) }
                 }
             } else {
