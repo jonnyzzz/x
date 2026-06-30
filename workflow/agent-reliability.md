@@ -26,6 +26,16 @@ A later 2026-06-30 stall was a different orchestration failure, not an X server 
 
 The latest repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIMEOUT_SECONDS=300` on a long `claude -p --output-format text` implementation/review prompt. The runner killed the agent after five silent minutes even though text-mode Claude commonly writes no stdout/stderr until completion. The runner now keeps the wall-clock timeout and silence diagnostics, but disables no-output termination for Claude text-mode runs unless `RUN_AGENT_CLAUDE_ALLOW_TEXT_NO_OUTPUT_TIMEOUT=1` is set.
 
+The 2026-06-30 20:39Z recurrence was another orchestration stall, not an X server hang:
+
+- the heavyweight `IntellijCommunitySmokeTest` passed immediately before the agent stall;
+- `jps -lm` showed no active X server test JVM after the smoke finished;
+- `run-agent.sh claude ...` stayed at zero stdout/stderr bytes past the 180-second diagnostics point;
+- diagnostics showed the Claude process had spawned an MCP Steroid stdio child whose Java thread dump was idle in `McpStdioServer.readChunk` waiting on stdin;
+- the scout was terminated manually with `EXIT_CODE=143` after diagnostics were captured.
+
+Root cause: read-only run-agent research prompts inherited "use MCP Steroid where possible" guidance and could enter an MCP/stdin wait that is invisible as useful progress to the outer runner. For run-agent scouts and reviews, prefer shell/read-only source searches (`rg`, `sed`, `git`, bounded Gradle only when requested). Use MCP Steroid from a run-agent only when the prompt explicitly needs IDE semantic APIs, and then keep the wall-clock timeout plus no-output diagnostics enabled.
+
 ## Required Practice
 
 - Start long commands through `timeout` or with `RUN_AGENT_TIMEOUT_SECONDS` set.
@@ -54,6 +64,7 @@ The latest repeat of this pattern was caused by setting `RUN_AGENT_NO_OUTPUT_TIM
 
 - Keep routine run monitoring bounded to recent runs or active PID files. The local `runs/` tree is large enough that whole-history scans can time out.
 - Do not let run-agents spawn additional unbounded review subagents. Quorum reviews should be scheduled by the root agent with explicit timeouts, or replaced by a bounded local review for trivial changes.
+- Do not ask run-agent research/review scouts to use MCP Steroid by default. Shell-based inspection is enough for most gap selection and avoids MCP stdio waits inside a silent text-mode agent.
 - When a run times out, inspect the generated `DIAGNOSTICS=...` file in `run-info.txt` before retrying.
 - On macOS, install GNU coreutils or make sure `gtimeout` is available if you need hard time limits around watcher diagnostics. Without either `timeout` or `gtimeout`, the watcher still runs but cannot bound individual `jps`/`jcmd`/`jstack` calls.
 - Treat built-in subagents as scarce stateful resources. After a bounded `wait_agent`, close only agents that have returned a final status, and close them individually. Do not call `close_agent` for a non-responsive agent and do not wrap `close_agent` calls in a parallel tool batch; one blocked close can stall the whole root agent.
