@@ -7904,10 +7904,14 @@ internal class X11State(
         var clampedY = y.coerceIn(0, height - 1)
         val confineWindow = activePointerGrab?.confineTo?.let { windows[it] } ?: return clampedX to clampedY
         val absolute = absolutePosition(confineWindow)
-        val bounds = visibleBounds(confineWindow, absolute.first, absolute.second) ?: return clampedX to clampedY
-        if (bounds.width <= 0 || bounds.height <= 0) return clampedX to clampedY
-        clampedX = clampedX.coerceIn(bounds.x, bounds.x + bounds.width - 1)
-        clampedY = clampedY.coerceIn(bounds.y, bounds.y + bounds.height - 1)
+        // Match the grab validity rule: a viewable confine window remains active while it intersects root.
+        val left = maxOf(absolute.first, 0)
+        val top = maxOf(absolute.second, 0)
+        val right = minOf(absolute.first + confineWindow.width, width)
+        val bottom = minOf(absolute.second + confineWindow.height, height)
+        if (right <= left || bottom <= top) return clampedX to clampedY
+        clampedX = clampedX.coerceIn(left, right - 1)
+        clampedY = clampedY.coerceIn(top, bottom - 1)
         return clampedX to clampedY
     }
 

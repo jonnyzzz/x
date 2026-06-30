@@ -6990,6 +6990,49 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `pointer button input clamps to parent-clipped confine window root bounds`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val confine = WindowId + 1
+                out.write(createWindowRequest(parent, x = 0, y = 0, width = 20, height = 20))
+                out.write(createWindowRequest(confine, parent = parent, x = 25, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(confine))
+                out.write(grabPointerRequest(X11Ids.RootWindow, eventMask = XEventMasks.ButtonPress, confineTo = confine))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, confine)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(0, grab[1].toInt() and 0xff)
+
+                val down = server.input.pointerDown(100, 80, button = 1)
+                assertEquals(X11Ids.RootWindow, down.targetWindowId)
+                assertEquals(1, down.deliveredEvents)
+
+                val button = input.readExactly(32)
+                assertButtonEvent(button, type = 4, detail = 1)
+                assertEquals(X11Ids.RootWindow, u32le(button, 8))
+                assertEquals(X11Ids.RootWindow, u32le(button, 12))
+                assertEquals(34, u16le(button, 20))
+                assertEquals(14, u16le(button, 22))
+                assertEquals(34, u16le(button, 24))
+                assertEquals(14, u16le(button, 26))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer replies success status for valid window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
