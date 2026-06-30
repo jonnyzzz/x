@@ -12621,6 +12621,102 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER AddGlyphsFromPicture honors source picture ClipByChildren`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val sourceWindow = WindowId
+                val childWindow = WindowId + 1
+                val destinationWindow = WindowId + 2
+                val sourcePicture = PictureId
+                val destinationPicture = PictureId + 10
+                val solidPicture = PictureId + 11
+                val includedGlyph = GlyphId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(sourceWindow, x = 0, y = 0, width = 4, height = 1, borderWidth = 0))
+                out.write(mapWindowRequest(sourceWindow))
+                out.write(createWindowRequest(childWindow, parent = sourceWindow, x = 1, y = 0, width = 1, height = 1, borderWidth = 0))
+                out.write(createWindowRequest(destinationWindow, x = 0, y = 2, width = 6, height = 1, borderWidth = 0))
+                out.write(renderCreatePicture(sourcePicture, sourceWindow, XRender.Rgb24Format))
+                out.write(renderCreatePicture(destinationPicture, destinationWindow, XRender.Rgb24Format))
+                out.write(renderFillRectangles(sourcePicture, x = 0, y = 0, width = 4, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(destinationPicture, x = 0, y = 0, width = 6, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(mapWindowRequest(childWindow))
+                out.write(renderCreateGlyphSet(GlyphSetId, XRender.A8Format))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, sourcePicture, GlyphId, width = 4, height = 1, xOff = 4))
+                out.write(renderCreateSolidFill(solidPicture, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = solidPicture,
+                        destination = destinationPicture,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 0,
+                        glyphIds = listOf(GlyphId),
+                    ),
+                )
+                out.write(getImageRequest(destinationWindow, x = 0, y = 0, width = 6, height = 1))
+                out.write(
+                    renderChangePictureAttributes(
+                        sourcePicture,
+                        XRender.CPSubwindowMode to XRender.SubwindowModeIncludeInferiors,
+                    ),
+                )
+                out.write(renderFillRectangles(destinationPicture, x = 0, y = 0, width = 6, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderAddGlyphsFromPicture(GlyphSetId, sourcePicture, includedGlyph, width = 4, height = 1, xOff = 4))
+                out.write(
+                    renderCompositeGlyphs32(
+                        source = solidPicture,
+                        destination = destinationPicture,
+                        glyphSet = GlyphSetId,
+                        sourceX = 0,
+                        sourceY = 0,
+                        deltaX = 1,
+                        deltaY = 0,
+                        glyphIds = listOf(includedGlyph),
+                    ),
+                )
+                out.write(getImageRequest(destinationWindow, x = 0, y = 0, width = 6, height = 1))
+                out.flush()
+
+                assertExpose(socket.getInputStream(), sourceWindow)
+                assertExpose(socket.getInputStream(), childWindow)
+                val clippedImage = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(
+                    1,
+                    clippedImage[0].toInt() and 0xff,
+                    "type=${clippedImage[0].toInt() and 0xff} code=${clippedImage[1].toInt() and 0xff} seq=${u16le(clippedImage, 2)} bad=${u32le(clippedImage, 4)} minor=${u16le(clippedImage, 8)} major=${clippedImage[10].toInt() and 0xff}",
+                )
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 1, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 3, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 4, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(clippedImage, imageWidth = 6, x = 5, y = 0))
+
+                val includedImage = readReplySkippingEvents(socket.getInputStream())
+                assertEquals(
+                    1,
+                    includedImage[0].toInt() and 0xff,
+                    "type=${includedImage[0].toInt() and 0xff} code=${includedImage[1].toInt() and 0xff} seq=${u16le(includedImage, 2)} bad=${u32le(includedImage, 4)} minor=${u16le(includedImage, 8)} major=${includedImage[10].toInt() and 0xff}",
+                )
+                assertEquals(0xffff_0000.toInt(), pixelAt(includedImage, imageWidth = 6, x = 0, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(includedImage, imageWidth = 6, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(includedImage, imageWidth = 6, x = 2, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(includedImage, imageWidth = 6, x = 3, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(includedImage, imageWidth = 6, x = 4, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(includedImage, imageWidth = 6, x = 5, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER AddGlyphsFromPicture preserves ARGB32 component glyph mask channels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
