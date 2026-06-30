@@ -4548,6 +4548,7 @@ internal class X11Connection(
         state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
         val removal = state.removeWindowWithDestroyNotify(windowId)
         ownedResources.removeAll(removal.removedResources)
+        sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
@@ -4560,6 +4561,7 @@ internal class X11Connection(
         for (child in state.childrenOf(windowId)) {
             val removal = state.removeWindowWithDestroyNotify(child.id)
             ownedResources.removeAll(removal.removedResources)
+            sendFocusEvents(removal.focusDispatches)
             sendDestroyNotify(removal.destroyNotifyDispatches)
             sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
             sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
@@ -4594,8 +4596,9 @@ internal class X11Connection(
         val wasMapped = window.mapped
         if (wasMapped) {
             val notifications = state.unmapNotifySinks(window)
-            state.unmapWindow(windowId)
+            val focusDispatches = state.unmapWindow(windowId)
             sendUnmapNotify(notifications)
+            sendFocusEvents(focusDispatches)
         }
         val oldParentId = window.parentId
         val reparented = state.reparentWindow(
@@ -4647,8 +4650,9 @@ internal class X11Connection(
         if (!window.mapped) return
         val previousCursor = state.displayedCursorSnapshot()
         val notifications = state.unmapNotifySinks(window)
-        state.unmapWindow(windowId)
+        val focusDispatches = state.unmapWindow(windowId)
         sendUnmapNotify(notifications)
+        sendFocusEvents(focusDispatches)
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
 
@@ -4686,8 +4690,9 @@ internal class X11Connection(
         for (child in state.childrenOf(windowId)) {
             if (child.mapped) {
                 val notifications = state.unmapNotifySinks(child)
-                state.unmapWindow(child.id)
+                val focusDispatches = state.unmapWindow(child.id)
                 sendUnmapNotify(notifications)
+                sendFocusEvents(focusDispatches)
             }
         }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
@@ -10867,6 +10872,7 @@ internal class X11Connection(
     }
 
     private fun sendResourceRemoval(removal: XResourceRemoval) {
+        sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)

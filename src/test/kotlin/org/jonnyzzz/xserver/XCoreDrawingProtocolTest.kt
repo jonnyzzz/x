@@ -11504,6 +11504,130 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `UnmapWindow reverts focus to None and emits FocusOut`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(setInputFocusRequest(WindowId, revertTo = 0))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.FocusChange))
+                out.write(unmapWindowRequest(WindowId))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertFocusEvent(input.readExactly(32), type = 10, sequence = 5, window = WindowId)
+                val focus = readReply(input)
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(0, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroyWindow reverts focus to None and emits FocusOut`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(setInputFocusRequest(WindowId, revertTo = 0))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.FocusChange))
+                out.write(destroyWindowRequest(WindowId))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertFocusEvent(input.readExactly(32), type = 10, sequence = 5, window = WindowId)
+                val focus = readReply(input)
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(0, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow reverts focus to closest viewable parent`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, parent = parent))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(child, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.FocusChange))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.FocusChange))
+                out.write(unmapWindowRequest(child))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertFocusEvent(input.readExactly(32), type = 10, sequence = 8, window = child)
+                assertFocusEvent(input.readExactly(32), type = 9, sequence = 8, window = parent)
+                val focus = readReply(input)
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(parent, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapWindow ancestor reverts non-viewable focused child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent))
+                out.write(createWindowRequest(child, parent = parent))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(setInputFocusRequest(child, revertTo = 2))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.FocusChange))
+                out.write(unmapWindowRequest(parent))
+                out.write(getInputFocusRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertFocusEvent(input.readExactly(32), type = 10, sequence = 7, window = child)
+                val focus = readReply(input)
+                assertEquals(0, focus[1].toInt() and 0xff)
+                assertEquals(X11Ids.RootWindow, u32le(focus, 8))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SetInputFocus ignored by timestamp does not emit FocusChange events`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -12892,6 +13016,8 @@ class XCoreDrawingProtocolTest {
                     appOut.write(createWindowRequest(appWindow, parent = middle, x = 7, y = 8, width = 20, height = 15))
                     appOut.write(mapWindowRequest(middle))
                     appOut.write(mapWindowRequest(appWindow))
+                    appOut.write(setInputFocusRequest(appWindow, revertTo = 0))
+                    appOut.write(changeWindowEventMaskRequest(appWindow, XEventMasks.FocusChange))
                     appOut.flush()
                     val appInput = appSocket.getInputStream()
                     assertMapAndExpose(appInput, middle)
@@ -12914,6 +13040,7 @@ class XCoreDrawingProtocolTest {
                     assertEquals(4, u16le(readReply(frameSocket.getInputStream()), 2))
                     closeClientAndWait(frameSocket)
 
+                    assertFocusEvent(appInput.readExactly(32), type = 10, sequence = 6, window = appWindow)
                     assertEquals(listOf(appWindow), waitForRootChildren(server.localPort) { it == listOf(appWindow) })
                     val json = httpGet(server.localPort, "/state.json")
                     val windowJson = json.substringAfter(windowJsonId(appWindow)).substringBefore("}")
