@@ -169,6 +169,29 @@ internal object TextScreenRenderer {
                 }
             }
             appendLine()
+            appendLine("GLX contexts:")
+            if (snapshot.glxContexts.isEmpty()) {
+                appendLine("- None.")
+            } else {
+                for (context in snapshot.glxContexts) {
+                    append("- ")
+                    append(context.idHex)
+                    append(" fbConfig=")
+                    append(context.fbConfigIdHex)
+                    append(" screen=")
+                    append(context.screen)
+                    append(" renderType=")
+                    append(context.renderTypeHex)
+                    append(" direct=")
+                    append(context.direct)
+                    append(" draw=")
+                    append(context.currentDrawDrawableIdHex ?: "none")
+                    append(" read=")
+                    append(context.currentReadDrawableIdHex ?: "none")
+                    appendLine()
+                }
+            }
+            appendLine()
             appendLine("GLX pixmaps:")
             if (snapshot.glxPixmaps.isEmpty()) {
                 appendLine("- None.")

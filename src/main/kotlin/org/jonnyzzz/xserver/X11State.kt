@@ -2829,6 +2829,17 @@ internal class X11State(
             windows = windowSnapshots,
             pixmaps = pixmapSnapshots,
             cursors = cursors.values.map { it.snapshot() },
+            glxContexts = glxContexts.values.map { context ->
+                XGlxContextSnapshot(
+                    id = context.id,
+                    fbConfigId = context.fbConfigId,
+                    screen = context.screen,
+                    renderType = context.renderType,
+                    direct = context.direct,
+                    currentDrawDrawableId = context.currentDrawDrawableId,
+                    currentReadDrawableId = context.currentReadDrawableId,
+                )
+            },
             glxPixmaps = glxPixmaps.values.map { pixmap ->
                 XGlxPixmapSnapshot(
                     id = pixmap.id,
@@ -2997,6 +3008,15 @@ internal class X11State(
 
     @Synchronized
     fun glxContext(id: Int): XGlxContext? = glxContexts[id]
+
+    @Synchronized
+    fun updateGlxContextCurrent(id: Int, drawDrawableId: Int, readDrawableId: Int) {
+        val context = glxContexts[id] ?: return
+        glxContexts[id] = context.copy(
+            currentDrawDrawableId = drawDrawableId,
+            currentReadDrawableId = readDrawableId,
+        )
+    }
 
     @Synchronized
     fun glxLargeRender(contextTag: Int): XGlxLargeRenderState? = glxLargeRenders[contextTag]
@@ -9242,6 +9262,7 @@ internal data class XScreenSnapshot(
     val windows: List<XWindowSnapshot>,
     val pixmaps: List<XPixmapSnapshot>,
     val cursors: List<XCursorSnapshot>,
+    val glxContexts: List<XGlxContextSnapshot>,
     val glxPixmaps: List<XGlxPixmapSnapshot>,
     val glxWindows: List<XGlxWindowSnapshot>,
     val glxPbuffers: List<XGlxPbufferSnapshot>,
@@ -9546,7 +9567,25 @@ internal data class XGlxContext(
     val screen: Int,
     val renderType: Int,
     val direct: Boolean,
+    val currentDrawDrawableId: Int = 0,
+    val currentReadDrawableId: Int = 0,
 )
+
+internal data class XGlxContextSnapshot(
+    val id: Int,
+    val fbConfigId: Int,
+    val screen: Int,
+    val renderType: Int,
+    val direct: Boolean,
+    val currentDrawDrawableId: Int,
+    val currentReadDrawableId: Int,
+) {
+    val idHex: String get() = "0x${id.toUInt().toString(16)}"
+    val fbConfigIdHex: String get() = "0x${fbConfigId.toUInt().toString(16)}"
+    val renderTypeHex: String get() = "0x${renderType.toUInt().toString(16)}"
+    val currentDrawDrawableIdHex: String? get() = currentDrawDrawableId.takeIf { it != 0 }?.let { "0x${it.toUInt().toString(16)}" }
+    val currentReadDrawableIdHex: String? get() = currentReadDrawableId.takeIf { it != 0 }?.let { "0x${it.toUInt().toString(16)}" }
+}
 
 internal data class XGlxLargeRenderState(
     val contextTag: Int,

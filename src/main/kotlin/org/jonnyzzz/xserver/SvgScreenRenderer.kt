@@ -151,6 +151,15 @@ internal object SvgScreenRenderer {
                 cursor.hotspotY?.let { append(it) } ?: append("null")
                 append(""","foreground":"${cursor.foregroundHex}","background":"${cursor.backgroundHex}"}""")
             }
+            append("""],"glxContexts":[""")
+            snapshot.glxContexts.forEachIndexed { index, context ->
+                if (index > 0) append(',')
+                append("""{"id":"${context.idHex}","fbConfig":"${context.fbConfigIdHex}","screen":${context.screen},"renderType":"${context.renderTypeHex}","direct":${context.direct},"currentDrawDrawable":""")
+                context.currentDrawDrawableIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","currentReadDrawable":""")
+                context.currentReadDrawableIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append('}')
+            }
             append("""],"glxPixmaps":[""")
             snapshot.glxPixmaps.forEachIndexed { index, pixmap ->
                 if (index > 0) append(',')

@@ -4070,10 +4070,30 @@ internal class X11Connection(
         if (context != 0 && state.glxContext(context) == null) {
             return writeError(error = XGlx.BadContext, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = context)
         }
+        val drawDrawable = if (isContextCurrent) byteOrder.u32(body, 4) else byteOrder.u32(body, 0)
+        val readDrawable = if (isContextCurrent) byteOrder.u32(body, 8) else drawDrawable
+        if (context != 0 && !glxDrawableExists(drawDrawable)) {
+            return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = drawDrawable)
+        }
+        if (context != 0 && !glxDrawableExists(readDrawable)) {
+            return writeError(error = XGlx.BadDrawable, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = readDrawable)
+        }
+        if (oldTag != 0 && oldTag != context) {
+            state.updateGlxContextCurrent(oldTag, drawDrawableId = 0, readDrawableId = 0)
+        }
+        if (context != 0) {
+            state.updateGlxContextCurrent(context, drawDrawableId = drawDrawable, readDrawableId = readDrawable)
+        }
         val reply = reply(extra = 0, payloadUnits = 0)
         byteOrder.put32(reply, 8, context)
         write(reply)
     }
+
+    private fun glxDrawableExists(drawable: Int): Boolean =
+        state.glxPixmap(drawable) != null ||
+            state.glxWindow(drawable) != null ||
+            state.glxPbuffer(drawable) != null ||
+            state.window(drawable) != null
 
     private fun glxWait(body: ByteArray, minorOpcode: Int) {
         if (body.size != 4) return writeError(error = 16, opcode = XGlx.MajorOpcode, minorOpcode = minorOpcode, badValue = 0)

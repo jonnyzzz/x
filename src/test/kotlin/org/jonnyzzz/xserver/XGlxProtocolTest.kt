@@ -304,6 +304,42 @@ class XGlxProtocolTest {
     }
 
     @Test
+    fun `GLX MakeCurrent requests validate drawables and expose current binding`() {
+        withServer { socket ->
+            socket.soTimeout = 2_000
+            val contextId = 0x0020_010e
+            val missingDraw = 0x0020_010f
+            val missingRead = 0x0020_0110
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.CreateNewContext, createNewContextBody(contextId, direct = false))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(missingDraw) + u32(X11Ids.RootWindow) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(missingRead) + u32(contextId))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(missingDraw) + u32(contextId) + u32(0))
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeContextCurrent, u32(0) + u32(X11Ids.RootWindow) + u32(X11Ids.RootWindow) + u32(contextId))
+
+            assertGlxError(socket.getInputStream(), error = XGlx.BadDrawable, badValue = missingDraw, minorOpcode = XGlx.MakeContextCurrent, sequence = 2)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadDrawable, badValue = missingRead, minorOpcode = XGlx.MakeContextCurrent, sequence = 3)
+            assertGlxError(socket.getInputStream(), error = XGlx.BadDrawable, badValue = missingDraw, minorOpcode = XGlx.MakeCurrent, sequence = 4)
+            val current = readReply(socket.getInputStream())
+            assertEquals(5, u16le(current, 2))
+            assertEquals(contextId, u32le(current, 8))
+
+            val boundJson = httpGet(socket, "/state.json")
+            assertTrue(
+                boundJson.contains(""""glxContexts":[{"id":"0x${contextId.toString(16)}","fbConfig":"0x${XGlx.RootFbConfigId.toString(16)}","screen":0,"renderType":"0x${XGlx.RgbaType.toString(16)}","direct":false,"currentDrawDrawable":"0x${X11Ids.RootWindow.toString(16)}","currentReadDrawable":"0x${X11Ids.RootWindow.toString(16)}"}]"""),
+                boundJson,
+            )
+
+            writeRequest(socket, XGlx.MajorOpcode, XGlx.MakeCurrent, u32(X11Ids.RootWindow) + u32(0) + u32(contextId))
+            val unbound = readReply(socket.getInputStream())
+            assertEquals(6, u16le(unbound, 2))
+            assertEquals(0, u32le(unbound, 8))
+
+            val unboundJson = httpGet(socket, "/state.json")
+            assertTrue(unboundJson.contains(""""currentDrawDrawable":null,"currentReadDrawable":null"""), unboundJson)
+        }
+    }
+
+    @Test
     fun `GLX fixed size string and direct queries validate request length`() {
         withServer { socket ->
             socket.soTimeout = 2_000
