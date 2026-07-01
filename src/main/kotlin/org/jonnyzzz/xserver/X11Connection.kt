@@ -4746,12 +4746,15 @@ internal class X11Connection(
                         continue
                     }
                 }
+                val previousPointerPath = state.pointerCrossingPath()
                 val notifications = state.mapNotifySinks(child)
                 val mapped = state.mapWindow(child.id) ?: continue
+                val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
                 if (mapped.windowClass == XWindowClass.InputOutput) {
                     state.paintWindowBackground(mapped.id)
                 }
                 sendMapNotify(notifications)
+                sendCrossing(crossingEvents)
                 sendExposeForViewableMappedSubtree(mapped)
             }
         }
@@ -4767,12 +4770,19 @@ internal class X11Connection(
         val focusDispatches = mutableListOf<XFocusDispatch>()
         for (child in state.childrenOf(windowId)) {
             if (child.mapped) {
+                val previousPointerPath = state.pointerCrossingPath()
                 val notifications = state.unmapNotifySinks(child)
                 state.unmapExposeWindows(child.id).forEach { exposeWindows[it.id] = it }
                 val unmapResult = state.unmapWindow(child.id)
+                val crossingEvents = if (unmapResult.pointerUngrabResult.released) {
+                    emptyList()
+                } else {
+                    state.hierarchyCrossingEventDeliveries(previousPointerPath)
+                }
                 focusDispatches += unmapResult.focusDispatches
                 sendUnmapNotify(notifications)
                 sendCrossing(unmapResult.pointerUngrabResult.crossingDispatches)
+                sendCrossing(crossingEvents)
             }
         }
         exposeWindows.values.forEach { sendExposeToSubscribers(it) }

@@ -11163,6 +11163,48 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `MapSubwindows emits hierarchy crossing event after map notify when pointer enters child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 442
+                val child = parent + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, width = 50, height = 40))
+                out.write(createWindowRequest(child, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify or XEventMasks.EnterWindow))
+                out.write(mapWindowRequest(parent))
+                out.write(warpPointerRequest(destinationWindow = X11Ids.RootWindow, destinationX = 15, destinationY = 15))
+                out.write(mapSubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapNotify(input.readExactly(32), sequence = 5, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertExpose(input.readExactly(32), child, sequence = 5, width = 20, height = 20)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(6, u16le(pointer, 2))
+                assertEquals(parent, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `MapSubwindows redirects unmapped children to parent SubstructureRedirect selector`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11839,6 +11881,50 @@ class XCoreDrawingProtocolTest {
                 assertUnmapNotify(input.readExactly(32), sequence = 7, eventWindow = second, window = second)
                 assertExpose(input.readExactly(32), parent, sequence = 7, width = 60, height = 45, count = 0)
                 assertEquals(8, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `UnmapSubwindows emits hierarchy crossing event after unmap notify when pointer leaves child`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                val parent = WindowId + 443
+                val child = parent + 1
+
+                out.write(createWindowRequest(parent, width = 50, height = 40))
+                out.write(createWindowRequest(child, parent = parent, x = 10, y = 10, width = 20, height = 20, eventMask = XEventMasks.StructureNotify or XEventMasks.LeaveWindow))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                out.write(unmapSubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertSelectedMapAndExpose(input, child)
+                assertUnmapNotify(input.readExactly(32), sequence = 6, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(7, u16le(pointer, 2))
+                assertEquals(parent, u32le(pointer, 12))
             }
             server.close()
             serverThread.join(1_000)
