@@ -4846,9 +4846,12 @@ internal class X11Connection(
             return
         }
         val previousCursor = state.displayedCursorSnapshot()
+        val previousPointerPath = state.pointerCrossingPath()
         val exposeWindows = state.circulateExposeWindows(target)
         val result = state.circulateWindow(windowId, direction) ?: return
+        val crossingEvents = state.hierarchyCrossingEventDeliveries(previousPointerPath)
         sendCirculateNotify(state.circulateNotifySinks(result))
+        sendCrossing(crossingEvents)
         exposeWindows.forEach { sendExposeToSubscribers(it) }
         sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
     }
