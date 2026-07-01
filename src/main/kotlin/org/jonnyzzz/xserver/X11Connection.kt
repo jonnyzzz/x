@@ -4600,6 +4600,7 @@ internal class X11Connection(
         ownedResources.removeAll(removal.removedResources)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
+        sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
     }
@@ -4613,6 +4614,7 @@ internal class X11Connection(
             ownedResources.removeAll(removal.removedResources)
             sendFocusEvents(removal.focusDispatches)
             sendDestroyNotify(removal.destroyNotifyDispatches)
+            sendCrossing(removal.pointerUngrabResult.crossingDispatches)
             sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
             sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
         }
@@ -5568,7 +5570,7 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = opcode, badValue = 0)
         val id = byteOrder.u32(body, 0)
         if (!exists(id)) return writeError(error = error, opcode = opcode, badValue = id)
-        sendXFixesCursorNotify(state.removeResource(id))
+        sendResourceRemoval(state.removeResource(id))
         ownedResources.remove(id)
     }
 
@@ -11178,6 +11180,7 @@ internal class X11Connection(
     private fun sendResourceRemoval(removal: XResourceRemoval) {
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
+        sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
     }

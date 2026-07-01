@@ -9259,6 +9259,67 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow emits ungrab mode crossings when confine window releases active pointer grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val pointerWindow = WindowId + 406
+                val confine = pointerWindow + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(pointerWindow, x = 10, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(confine, x = 50, y = 50, width = 20, height = 20))
+                out.write(mapWindowRequest(pointerWindow))
+                out.write(mapWindowRequest(confine))
+                out.write(warpPointerRequest(destinationWindow = pointerWindow, destinationX = 5, destinationY = 5))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(pointerWindow, XEventMasks.EnterWindow))
+                out.write(destroyWindowRequest(confine))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, pointerWindow)
+                assertMapAndExpose(input, confine)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(XGrabStatus.Success, grab[1].toInt() and 0xff)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = X11Ids.RootWindow,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 15,
+                    eventY = 15,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = pointerWindow,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                    mode = XNotifyMode.Ungrab,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(10, u16le(pointer, 2))
+                assertEquals(pointerWindow, u32le(pointer, 12))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroyWindow delivers StructureNotify and parent SubstructureNotify`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9634,6 +9695,71 @@ class XCoreDrawingProtocolTest {
                 assertFalse(json.contains(windowJsonId(first)))
                 assertFalse(json.contains(windowJsonId(nested)))
                 assertFalse(json.contains(windowJsonId(second)))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroySubwindows emits ungrab mode crossings when child confine window releases active pointer grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 436
+                val confine = parent + 1
+                val pointerWindow = parent + 2
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, width = 40, height = 40))
+                out.write(createWindowRequest(confine, parent = parent, x = 5, y = 5, width = 20, height = 20))
+                out.write(createWindowRequest(pointerWindow, x = 70, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(confine))
+                out.write(mapWindowRequest(pointerWindow))
+                out.write(warpPointerRequest(destinationWindow = pointerWindow, destinationX = 5, destinationY = 5))
+                out.write(grabPointerRequest(X11Ids.RootWindow, confineTo = confine))
+                out.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(pointerWindow, XEventMasks.EnterWindow))
+                out.write(destroySubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, confine)
+                assertMapAndExpose(input, pointerWindow)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(XGrabStatus.Success, grab[1].toInt() and 0xff)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = X11Ids.RootWindow,
+                    rootX = 75,
+                    rootY = 15,
+                    eventX = 75,
+                    eventY = 15,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = pointerWindow,
+                    rootX = 75,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                    mode = XNotifyMode.Ungrab,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(12, u16le(pointer, 2))
+                assertEquals(pointerWindow, u32le(pointer, 12))
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -13043,13 +13169,49 @@ class XCoreDrawingProtocolTest {
             Socket("127.0.0.1", server.localPort).use { socket ->
                 socket.soTimeout = 2_000
                 setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
                 val cursor = PixmapId + 90
                 val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
                 out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
                 out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
-                out.write(grabPointerRequest(X11Ids.RootWindow, cursor = cursor))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(grabPointerRequest(parent, cursor = cursor))
                 out.flush()
-                assertEquals(1, readReply(socket.getInputStream())[0].toInt())
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(XGrabStatus.Success, grab[1].toInt() and 0xff)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Grab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Grab,
+                )
                 val grabbed = httpGet(server.localPort, "/state.json")
                 assertContains(grabbed, """"inputGrabs":[{"kind":"pointer"""")
                 assertContains(grabbed, """"cursor":"0x${cursor.toString(16)}"""")
@@ -13058,8 +13220,31 @@ class XCoreDrawingProtocolTest {
                 out.write(queryPointerRequest())
                 out.flush()
 
-                val pointer = readReply(socket.getInputStream())
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Ungrab,
+                )
+                val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt())
+                assertEquals(parent, u32le(pointer, 12))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
