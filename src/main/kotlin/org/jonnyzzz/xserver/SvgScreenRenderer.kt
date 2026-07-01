@@ -98,6 +98,14 @@ internal object SvgScreenRenderer {
                 window.colormapIdHex?.let { append('"').append(it).append('"') } ?: append("null")
                 append(""","cursor":""")
                 window.cursorIdHex?.let { append('"').append(it).append('"') } ?: append("null")
+                append(""","boundingShape":""")
+                appendRectangles(window.boundingShape)
+                append(""","clipShape":""")
+                appendRectangles(window.clipShape)
+                append(""","inputShape":""")
+                appendRectangles(window.inputShape)
+                append(""","renderShape":""")
+                appendRectangles(window.renderShape)
                 append('}')
             }
             append("""],"pixmaps":[""")
@@ -416,7 +424,13 @@ internal object SvgScreenRenderer {
             svgElement("defs") {
                 for (window in visibleWindows) {
                     svgElement("clipPath", "id" to clipId("screen", window), "clipPathUnits" to "userSpaceOnUse") {
-                        svgElement("rect", "x" to window.visibleX, "y" to window.visibleY, "width" to window.visibleWidth, "height" to window.visibleHeight)
+                        renderClipRectangles(
+                            builder = this,
+                            window = window,
+                            originX = 0,
+                            originY = 0,
+                            base = XRectangleCommand(window.visibleX, window.visibleY, window.visibleWidth, window.visibleHeight),
+                        )
                     }
                 }
             }
@@ -424,35 +438,37 @@ internal object SvgScreenRenderer {
                 visibleWindows.forEachIndexed { index, window ->
                     val color = palette[index % palette.size]
                     val strokeWidth = if (window.focused) 8 else 4
-                    svgElement(
-                        "rect",
-                        "data-window-id" to window.idHex,
-                        "x" to window.visibleX,
-                        "y" to window.visibleY,
-                        "width" to window.visibleWidth,
-                        "height" to window.visibleHeight,
-                        "fill" to (windowBackgroundFill(window, snapshot.windows) ?: "none"),
-                        "stroke" to color,
-                        "stroke-width" to strokeWidth,
-                    )
-                    renderFramebuffers(this, snapshot, listOf(window), originX = 0, originY = 0, clipPrefix = "screen")
-                    renderDrawings(this, snapshot, clipPrefix = "screen", drawableIds = setOf(window.id))
-                    svgElement(
-                        "rect",
-                        "x" to window.visibleX,
-                        "y" to window.visibleY,
-                        "width" to window.visibleWidth,
-                        "height" to minOf(46, window.visibleHeight),
-                        "fill" to color,
-                        "fill-opacity" to "0.85",
-                    )
-                    svgElement(
-                        "text",
-                        "x" to window.visibleX + 10,
-                        "y" to window.visibleY + minOf(34, window.visibleHeight),
-                        "fill" to "#111318",
-                    ) {
-                        text(window.label)
+                    svgElement("g", "clip-path" to "url(#${clipId("screen", window)})") {
+                        svgElement(
+                            "rect",
+                            "data-window-id" to window.idHex,
+                            "x" to window.visibleX,
+                            "y" to window.visibleY,
+                            "width" to window.visibleWidth,
+                            "height" to window.visibleHeight,
+                            "fill" to (windowBackgroundFill(window, snapshot.windows) ?: "none"),
+                            "stroke" to color,
+                            "stroke-width" to strokeWidth,
+                        )
+                        renderFramebuffers(this, snapshot, listOf(window), originX = 0, originY = 0, clipPrefix = "screen")
+                        renderDrawings(this, snapshot, clipPrefix = "screen", drawableIds = setOf(window.id))
+                        svgElement(
+                            "rect",
+                            "x" to window.visibleX,
+                            "y" to window.visibleY,
+                            "width" to window.visibleWidth,
+                            "height" to minOf(46, window.visibleHeight),
+                            "fill" to color,
+                            "fill-opacity" to "0.85",
+                        )
+                        svgElement(
+                            "text",
+                            "x" to window.visibleX + 10,
+                            "y" to window.visibleY + minOf(34, window.visibleHeight),
+                            "fill" to "#111318",
+                        ) {
+                            text(window.label)
+                        }
                     }
                 }
                 for (overlap in snapshot.overlaps) {
@@ -667,40 +683,44 @@ internal object SvgScreenRenderer {
             svgElement("defs") {
                 for (window in subtree) {
                     svgElement("clipPath", "id" to clipId(clipPrefix, window), "clipPathUnits" to "userSpaceOnUse") {
-                        svgElement(
-                            "rect",
-                            "x" to window.x - rootWindow.x,
-                            "y" to window.y - rootWindow.y,
-                            "width" to window.width,
-                            "height" to window.height,
+                        renderClipRectangles(
+                            builder = this,
+                            window = window,
+                            originX = rootWindow.x,
+                            originY = rootWindow.y,
+                            base = XRectangleCommand(window.x - rootWindow.x, window.y - rootWindow.y, window.width, window.height),
                         )
                     }
                 }
             }
             windowBackgroundFill(rootWindow, snapshot.windows)?.let { fill ->
-                svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.width, "height" to rootWindow.height, "fill" to fill)
+                svgElement("g", "clip-path" to "url(#${clipId(clipPrefix, rootWindow)})") {
+                    svgElement("rect", "x" to 0, "y" to 0, "width" to rootWindow.width, "height" to rootWindow.height, "fill" to fill)
+                }
             }
             subtree.forEach { window ->
-                windowBackgroundFill(window, snapshot.windows)?.let { fill ->
-                    svgElement(
-                        "rect",
-                        "class" to "window-background",
-                        "x" to window.x - rootWindow.x,
-                        "y" to window.y - rootWindow.y,
-                        "width" to window.width,
-                        "height" to window.height,
-                        "fill" to fill,
+                svgElement("g", "clip-path" to "url(#${clipId(clipPrefix, window)})") {
+                    windowBackgroundFill(window, snapshot.windows)?.let { fill ->
+                        svgElement(
+                            "rect",
+                            "class" to "window-background",
+                            "x" to window.x - rootWindow.x,
+                            "y" to window.y - rootWindow.y,
+                            "width" to window.width,
+                            "height" to window.height,
+                            "fill" to fill,
+                        )
+                    }
+                    renderFramebuffers(this, snapshot, listOf(window), originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
+                    renderDrawings(
+                        this,
+                        snapshot,
+                        clipPrefix = clipPrefix,
+                        originX = rootWindow.x,
+                        originY = rootWindow.y,
+                        drawableIds = setOf(window.id),
                     )
                 }
-                renderFramebuffers(this, snapshot, listOf(window), originX = rootWindow.x, originY = rootWindow.y, clipPrefix = clipPrefix)
-                renderDrawings(
-                    this,
-                    snapshot,
-                    clipPrefix = clipPrefix,
-                    originX = rootWindow.x,
-                    originY = rootWindow.y,
-                    drawableIds = setOf(window.id),
-                )
             }
             svgElement(
                 "text",
@@ -1074,6 +1094,44 @@ internal object SvgScreenRenderer {
     private fun pixelColor(pixel: Int): String =
         "#${(pixel and 0x00ff_ffff).toString(16).padStart(6, '0')}"
 
+    private fun renderClipRectangles(
+        builder: XmlDom,
+        window: XWindowSnapshot,
+        originX: Int,
+        originY: Int,
+        base: XRectangleCommand,
+    ) {
+        val rectangles = window.renderShape?.mapNotNull { rectangle ->
+            intersectRectangles(
+                XRectangleCommand(
+                    x = window.x - originX + rectangle.x,
+                    y = window.y - originY + rectangle.y,
+                    width = rectangle.width,
+                    height = rectangle.height,
+                ),
+                base,
+            )
+        } ?: listOf(base)
+        for (rectangle in rectangles) {
+            builder.svgElement(
+                "rect",
+                "x" to rectangle.x,
+                "y" to rectangle.y,
+                "width" to rectangle.width,
+                "height" to rectangle.height,
+            )
+        }
+    }
+
+    private fun intersectRectangles(first: XRectangleCommand, second: XRectangleCommand): XRectangleCommand? {
+        val left = maxOf(first.x, second.x)
+        val top = maxOf(first.y, second.y)
+        val right = minOf(first.x + first.width, second.x + second.width)
+        val bottom = minOf(first.y + first.height, second.y + second.height)
+        if (right <= left || bottom <= top) return null
+        return XRectangleCommand(left, top, right - left, bottom - top)
+    }
+
     private fun windowBackgroundFill(window: XWindowSnapshot, windows: List<XWindowSnapshot>): String? =
         windowBackgroundFill(window, windows.associateBy { it.id }, visited = mutableSetOf())
 
@@ -1091,6 +1149,19 @@ internal object SvgScreenRenderer {
 
     private fun XWindowSnapshot.displayTitle(): String =
         label.trim().ifEmpty { idHex }
+
+    private fun StringBuilder.appendRectangles(rectangles: List<XRectangleCommand>?) {
+        if (rectangles == null) {
+            append("null")
+            return
+        }
+        append('[')
+        rectangles.forEachIndexed { index, rectangle ->
+            if (index > 0) append(',')
+            append("""{"x":${rectangle.x},"y":${rectangle.y},"width":${rectangle.width},"height":${rectangle.height}}""")
+        }
+        append(']')
+    }
 
     private fun escapeJson(value: String): String =
         buildString(value.length) {

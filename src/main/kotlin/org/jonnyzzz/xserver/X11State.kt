@@ -2748,6 +2748,7 @@ internal class X11State(
         val windowSnapshots = windows.values.mapIndexed { index, window ->
             val absolute = absolutePosition(window)
             val visible = visibleBounds(window, absolute.first, absolute.second)
+            val renderShape = intersectClips(window.boundingShape, window.clipShape)
             XWindowSnapshot(
                 id = window.id,
                 parentId = window.parentId,
@@ -2783,6 +2784,10 @@ internal class X11State(
                 saveUnder = window.saveUnder,
                 colormapId = window.colormapId,
                 cursorId = window.cursorId,
+                boundingShape = window.boundingShape?.map { it.copy() },
+                clipShape = window.clipShape?.map { it.copy() },
+                inputShape = window.inputShape?.map { it.copy() },
+                renderShape = renderShape?.map { it.copy() },
             )
         }
         fun matchingWindowIds(width: Int, height: Int): List<Int> =
@@ -10056,6 +10061,10 @@ internal data class XWindowSnapshot(
     val saveUnder: Boolean,
     val colormapId: Int?,
     val cursorId: Int?,
+    val boundingShape: List<XRectangleCommand>?,
+    val clipShape: List<XRectangleCommand>?,
+    val inputShape: List<XRectangleCommand>?,
+    val renderShape: List<XRectangleCommand>?,
 ) {
     val idHex: String get() = "0x${id.toUInt().toString(16)}"
     val parentIdHex: String get() = "0x${parentId.toUInt().toString(16)}"

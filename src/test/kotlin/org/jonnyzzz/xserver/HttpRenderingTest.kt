@@ -140,6 +140,69 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `svg clips mapped windows to SHAPE bounding and clip regions`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                setup(out, socket.getInputStream())
+                out.write(createWindowRequest(0x0020_0001, 10, 10, 80, 70))
+                out.write(changePropertyRequest(0x0020_0001, "shaped"))
+                out.write(
+                    shapeRectanglesRequest(
+                        window = 0x0020_0001,
+                        kind = XFixes.ShapeBounding,
+                        rectangles = listOf(XRectangleCommand(5, 6, 30, 20)),
+                    ),
+                )
+                out.write(
+                    shapeRectanglesRequest(
+                        window = 0x0020_0001,
+                        kind = XFixes.ShapeClip,
+                        rectangles = listOf(XRectangleCommand(12, 9, 20, 10)),
+                    ),
+                )
+                out.write(mapWindowRequest(0x0020_0001))
+                out.flush()
+                Thread.sleep(100)
+
+                val svg = httpGet(server.localPort, "/screen.svg").body
+                val screenClip = Regex("""<clipPath\b(?=[^>]*\bid="clip-screen-200001")[\s\S]*?</clipPath>""")
+                    .find(svg)
+                    ?.value
+                    .orEmpty()
+                assertContains(screenClip, """x="22"""")
+                assertContains(screenClip, """y="19"""")
+                assertContains(screenClip, """width="20"""")
+                assertContains(screenClip, """height="10"""")
+                assertFalse(
+                    Regex("""<rect\b(?=[^>]*\bx="10")(?=[^>]*\by="10")(?=[^>]*\bwidth="80")(?=[^>]*\bheight="70")""").containsMatchIn(screenClip),
+                    "Screen clip path must use the SHAPE intersection, not the full visible window rectangle",
+                )
+
+                val html = httpGet(server.localPort, "/").body
+                val previewClip = Regex("""<clipPath\b(?=[^>]*\bid="clip-preview-200001-200001")[\s\S]*?</clipPath>""")
+                    .find(html)
+                    ?.value
+                    .orEmpty()
+                assertContains(previewClip, """x="12"""")
+                assertContains(previewClip, """y="9"""")
+                assertContains(previewClip, """width="20"""")
+                assertContains(previewClip, """height="10"""")
+
+                val json = httpGet(server.localPort, "/state.json").body
+                assertContains(json, """"boundingShape":[{"x":5,"y":6,"width":30,"height":20}]""")
+                assertContains(json, """"clipShape":[{"x":12,"y":9,"width":20,"height":10}]""")
+                assertContains(json, """"renderShape":[{"x":12,"y":9,"width":20,"height":10}]""")
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `copy area from pixmap renders stored pixmap image into window preview`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -1142,6 +1205,30 @@ class HttpRenderingTest {
         val bytes = ByteArray(4)
         bytes[0] = 200.toByte()
         put16le(bytes, 2, 1)
+        return bytes
+    }
+
+    private fun shapeRectanglesRequest(
+        window: Int,
+        kind: Int,
+        rectangles: List<XRectangleCommand>,
+        operation: Int = XShape.OpSet,
+    ): ByteArray {
+        val bytes = ByteArray(16 + rectangles.size * 8)
+        bytes[0] = XShape.MajorOpcode.toByte()
+        bytes[1] = XShape.Rectangles.toByte()
+        put16le(bytes, 2, bytes.size / 4)
+        bytes[4] = operation.toByte()
+        bytes[5] = kind.toByte()
+        bytes[6] = XShape.OrderingYXBanded.toByte()
+        put32le(bytes, 8, window)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 16 + index * 8
+            put16le(bytes, offset, rectangle.x)
+            put16le(bytes, offset + 2, rectangle.y)
+            put16le(bytes, offset + 4, rectangle.width)
+            put16le(bytes, offset + 6, rectangle.height)
+        }
         return bytes
     }
 
