@@ -4596,11 +4596,18 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         if (windowId == X11Ids.RootWindow) return
         state.window(windowId) ?: return writeError(error = 3, opcode = 4, badValue = windowId)
+        val previousPointerPath = state.pointerCrossingPath()
         val removal = state.removeWindowWithDestroyNotify(windowId)
+        val crossingEvents = if (removal.pointerUngrabResult.released) {
+            emptyList()
+        } else {
+            state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        }
         ownedResources.removeAll(removal.removedResources)
         sendFocusEvents(removal.focusDispatches)
         sendDestroyNotify(removal.destroyNotifyDispatches)
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
+        sendCrossing(crossingEvents)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
     }
@@ -4610,11 +4617,18 @@ internal class X11Connection(
         val windowId = byteOrder.u32(body, 0)
         state.window(windowId) ?: return writeError(error = 3, opcode = 5, badValue = windowId)
         for (child in state.childrenOf(windowId)) {
+            val previousPointerPath = state.pointerCrossingPath()
             val removal = state.removeWindowWithDestroyNotify(child.id)
+            val crossingEvents = if (removal.pointerUngrabResult.released) {
+                emptyList()
+            } else {
+                state.hierarchyCrossingEventDeliveries(previousPointerPath)
+            }
             ownedResources.removeAll(removal.removedResources)
             sendFocusEvents(removal.focusDispatches)
             sendDestroyNotify(removal.destroyNotifyDispatches)
             sendCrossing(removal.pointerUngrabResult.crossingDispatches)
+            sendCrossing(crossingEvents)
             sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
             sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
         }

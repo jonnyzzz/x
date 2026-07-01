@@ -9320,6 +9320,50 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `DestroyWindow emits hierarchy crossing when destroyed window reveals sibling under pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val lower = WindowId + 437
+                val top = WindowId + 438
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30))
+                out.write(createWindowRequest(top, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(warpPointerRequest(destinationWindow = top, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(lower, XEventMasks.EnterWindow))
+                out.write(destroyWindowRequest(top))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, lower)
+                assertSelectedMapAndExpose(input, top)
+                assertDestroyNotify(input.readExactly(32), sequence = 7, eventWindow = top, window = top)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = lower,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(8, u16le(pointer, 2))
+                assertEquals(lower, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `DestroyWindow delivers StructureNotify and parent SubstructureNotify`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -9760,6 +9804,50 @@ class XCoreDrawingProtocolTest {
                 assertEquals(12, u16le(pointer, 2))
                 assertEquals(pointerWindow, u32le(pointer, 12))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `DestroySubwindows emits hierarchy crossing when destroyed child reveals parent under pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId + 439
+                val child = parent + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 40))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 20, height = 20, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow))
+                out.write(destroySubwindowsRequest(parent))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertSelectedMapAndExpose(input, child)
+                assertDestroyNotify(input.readExactly(32), sequence = 7, eventWindow = child, window = child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 20,
+                    rootY = 20,
+                    eventX = 10,
+                    eventY = 10,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(8, u16le(pointer, 2))
+                assertEquals(parent, u32le(pointer, 12))
             }
             server.close()
             serverThread.join(1_000)
