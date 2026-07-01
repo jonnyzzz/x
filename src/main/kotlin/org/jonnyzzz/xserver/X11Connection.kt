@@ -5238,12 +5238,15 @@ internal class X11Connection(
             ),
         )
         write(reply(extra = result.status, payloadUnits = 0))
+        sendCrossing(result.crossingDispatches)
         sendXFixesCursorNotify(result.cursorNotifyDispatches)
     }
 
     private fun ungrabPointer(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 27, badValue = 0)
-        sendXFixesCursorNotify(state.ungrabPointer(this, byteOrder.u32(body, 0)))
+        val result = state.ungrabPointer(this, byteOrder.u32(body, 0))
+        sendCrossing(result.crossingDispatches)
+        sendXFixesCursorNotify(result.cursorNotifyDispatches)
     }
 
     private fun grabButton(ownerEvents: Int, body: ByteArray) {
@@ -9485,7 +9488,7 @@ internal class X11Connection(
         byteOrder.put16(bytes, 24, event.eventX)
         byteOrder.put16(bytes, 26, event.eventY)
         byteOrder.put16(bytes, 28, event.state)
-        bytes[30] = XNotifyMode.Normal.toByte()
+        bytes[30] = event.mode.toByte()
         bytes[31] = ((if (event.focus) 0x01 else 0x00) or 0x02).toByte()
         write(bytes)
     }

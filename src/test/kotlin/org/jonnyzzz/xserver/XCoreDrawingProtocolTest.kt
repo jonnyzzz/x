@@ -7260,6 +7260,89 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GrabPointer and UngrabPointer emit grab mode crossing events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(grabPointerRequest(parent))
+                out.write(ungrabPointerRequest())
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                val grab = readReply(input)
+                assertEquals(1, grab[0].toInt())
+                assertEquals(XGrabStatus.Success, grab[1].toInt() and 0xff)
+                assertEquals(8, u16le(grab, 2))
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Grab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Grab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Ungrab,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(10, u16le(pointer, 2))
+                assertEquals(parent, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `GrabPointer reports NotViewable for unmapped or offscreen windows`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7595,6 +7678,89 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, up.deliveredEvents)
                 assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `passive GrabButton emits grab mode crossings around button events`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val parent = WindowId
+                val child = WindowId + 1
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10))
+                out.write(grabButtonRequest(parent, eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.EnterWindow or XEventMasks.LeaveWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertEquals(1, readReply(input)[0].toInt())
+
+                val down = server.input.pointerDown(17, 18, button = 1)
+                assertEquals(3, down.deliveredEvents)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Grab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Grab,
+                )
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+
+                val up = server.input.pointerUp(17, 18, button = 1)
+                assertEquals(3, up.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                    mode = XNotifyMode.Ungrab,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                    mode = XNotifyMode.Ungrab,
+                )
             }
             server.close()
             serverThread.join(1_000)
@@ -19721,6 +19887,7 @@ class XCoreDrawingProtocolTest {
         rootY: Int,
         eventX: Int,
         eventY: Int,
+        mode: Int = XNotifyMode.Normal,
     ) {
         assertEquals(type, event[0].toInt() and 0xff)
         assertEquals(detail, event[1].toInt() and 0xff)
@@ -19732,7 +19899,7 @@ class XCoreDrawingProtocolTest {
         assertEquals(eventX, u16le(event, 24))
         assertEquals(eventY, u16le(event, 26))
         assertEquals(0, u16le(event, 28))
-        assertEquals(XNotifyMode.Normal, event[30].toInt() and 0xff)
+        assertEquals(mode, event[30].toInt() and 0xff)
         val sameScreenAndFocus = event[31].toInt() and 0xff
         assertEquals(0x02, sameScreenAndFocus and 0x02)
         assertEquals(0, sameScreenAndFocus and 0xfc)

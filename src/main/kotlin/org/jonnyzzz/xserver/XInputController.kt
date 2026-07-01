@@ -215,6 +215,7 @@ internal enum class XPointerEventType(val code: Int) {
 internal data class XCrossingEvent(
     val type: XCrossingEventType,
     val detail: Int,
+    val mode: Int = XNotifyMode.Normal,
     val focus: Boolean,
     val rootX: Int,
     val rootY: Int,

@@ -1324,19 +1324,35 @@ internal class X11State(
         activePointerGrab = grab.copy(time = effectiveTime)
         return XPointerGrabResult(
             status = XGrabStatus.Success,
+            crossingDispatches = pointerGrabCrossingEventDeliveries(
+                grabWindowId = grab.windowId,
+                mode = XNotifyMode.Grab,
+                time = effectiveTime,
+                activating = true,
+            ),
             cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
         )
     }
 
     @Synchronized
-    fun ungrabPointer(owner: XEventSink, time: Int): List<XXFixesCursorNotifyDispatch> {
+    fun ungrabPointer(owner: XEventSink, time: Int): XPointerUngrabResult {
         val grab = activePointerGrab
         if (grab?.owner == owner && validUngrabTime(time, grab.time)) {
             val previousCursor = displayedCursorIdentity()
+            val effectiveTime = if (time == 0) currentServerTime(grab.time) else time
+            val crossingDispatches = pointerGrabCrossingEventDeliveries(
+                grabWindowId = grab.windowId,
+                mode = XNotifyMode.Ungrab,
+                time = effectiveTime,
+                activating = false,
+            )
             activePointerGrab = null
-            return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
+            return XPointerUngrabResult(
+                crossingDispatches = crossingDispatches,
+                cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
+            )
         }
-        return emptyList()
+        return XPointerUngrabResult()
     }
 
     @Synchronized
@@ -1946,6 +1962,7 @@ internal class X11State(
     fun pointerButton(x: Int, y: Int, button: Int, pressed: Boolean): XPointerDispatch {
         val deliveries = mutableListOf<Pair<XEventSink, XPointerEvent>>()
         val crossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
+        val ungrabCrossingDeliveries = mutableListOf<Pair<XEventSink, XCrossingEvent>>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
         val targetId: Int?
         val finalRootX: Int
@@ -2003,6 +2020,12 @@ internal class X11State(
                         activatedByPassiveGrab = true,
                     )
                     lastPointerGrabTime = time
+                    crossingDeliveries += pointerGrabCrossingEventDeliveries(
+                        grabWindowId = grab.windowId,
+                        mode = XNotifyMode.Grab,
+                        time = time,
+                        activating = true,
+                    )
                 }
             }
 
@@ -2063,6 +2086,15 @@ internal class X11State(
                 }
             }
             if (!pressed && activePointerGrab?.activatedByPassiveGrab == true && pressedLogicalButtons.isEmpty()) {
+                val grab = activePointerGrab
+                if (grab != null) {
+                    ungrabCrossingDeliveries += pointerGrabCrossingEventDeliveries(
+                        grabWindowId = grab.windowId,
+                        mode = XNotifyMode.Ungrab,
+                        time = time,
+                        activating = false,
+                    )
+                }
                 activePointerGrab = null
             }
             xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
@@ -2075,8 +2107,16 @@ internal class X11State(
         for ((sink, event) in deliveries) {
             sink.sendPointerEvent(event)
         }
+        for ((sink, event) in ungrabCrossingDeliveries) {
+            sink.sendCrossingEvent(event)
+        }
         sendXFixesCursorNotify(xfixesCursorNotifyDispatches)
-        return XPointerDispatch(targetWindowId = targetId, deliveredEvents = crossingDeliveries.size + deliveries.size, rootX = finalRootX, rootY = finalRootY)
+        return XPointerDispatch(
+            targetWindowId = targetId,
+            deliveredEvents = crossingDeliveries.size + deliveries.size + ungrabCrossingDeliveries.size,
+            rootX = finalRootX,
+            rootY = finalRootY,
+        )
     }
 
     fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
@@ -8106,6 +8146,7 @@ internal class X11State(
         rootY: Int,
         state: Int,
         time: Int,
+        mode: Int = XNotifyMode.Normal,
     ): List<Pair<XEventSink, XCrossingEvent>> {
         if (previousPath.isEmpty() || targetPath.isEmpty()) return emptyList()
         if (previousPath.first().id == targetPath.first().id) return emptyList()
@@ -8132,6 +8173,7 @@ internal class X11State(
             val event = XCrossingEvent(
                 type = type,
                 detail = detail,
+                mode = mode,
                 focus = crossingEventFocus(window.id),
                 rootX = rootX,
                 rootY = rootY,
@@ -8169,6 +8211,27 @@ internal class X11State(
         }
 
         return result
+    }
+
+    private fun pointerGrabCrossingEventDeliveries(
+        grabWindowId: Int,
+        mode: Int,
+        time: Int,
+        activating: Boolean,
+    ): List<Pair<XEventSink, XCrossingEvent>> {
+        val pointerPath = pointerCrossingPath()
+        val grabPath = windowPathToRoot(grabWindowId)
+        val absoluteById = windows.values.associate { window -> window.id to absolutePosition(window) }
+        return crossingEventDeliveries(
+            previousPath = if (activating) pointerPath else grabPath,
+            targetPath = if (activating) grabPath else pointerPath,
+            absoluteById = absoluteById,
+            rootX = pointerX,
+            rootY = pointerY,
+            state = pointerMask(),
+            time = time,
+            mode = mode,
+        )
     }
 
     private fun crossingEventFocus(windowId: Int): Boolean =
@@ -9323,7 +9386,13 @@ internal data class XInputGrabSnapshot(
 
 internal data class XPointerGrabResult(
     val status: Int,
-    val cursorNotifyDispatches: List<XXFixesCursorNotifyDispatch>,
+    val crossingDispatches: List<Pair<XEventSink, XCrossingEvent>> = emptyList(),
+    val cursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
+)
+
+internal data class XPointerUngrabResult(
+    val crossingDispatches: List<Pair<XEventSink, XCrossingEvent>> = emptyList(),
+    val cursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
 internal object XGrabStatus {
