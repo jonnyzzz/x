@@ -9901,6 +9901,56 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `ReparentWindow automatic unmap exposes old parent and lower overlapping sibling`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val oldParent = WindowId + 417
+                val newParent = WindowId + 418
+                val lower = WindowId + 419
+                val top = WindowId + 420
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(oldParent, width = 60, height = 45, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(newParent))
+                out.write(createWindowRequest(lower, parent = oldParent, x = 0, y = 0, width = 30, height = 30, eventMask = XEventMasks.Exposure))
+                out.write(createWindowRequest(top, parent = oldParent, x = 10, y = 10, width = 30, height = 30, eventMask = XEventMasks.StructureNotify))
+                out.write(mapWindowRequest(oldParent))
+                out.write(mapWindowRequest(newParent))
+                out.write(mapWindowRequest(lower))
+                out.write(mapWindowRequest(top))
+                out.write(reparentWindowRequest(top, newParent, x = 0, y = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, oldParent)
+                assertMapAndExpose(input, newParent)
+                assertMapAndExpose(input, lower)
+                assertSelectedMapAndExpose(input, top)
+                assertUnmapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), oldParent, sequence = 9, width = 60, height = 45, count = 0)
+                assertExpose(input.readExactly(32), lower, sequence = 9, width = 30, height = 30, count = 0)
+                assertReparentNotify(
+                    input.readExactly(32),
+                    sequence = 9,
+                    eventWindow = top,
+                    window = top,
+                    parent = newParent,
+                    x = 0,
+                    y = 0,
+                )
+                assertMapNotify(input.readExactly(32), sequence = 9, eventWindow = top, window = top)
+                assertExpose(input.readExactly(32), top)
+                assertEquals(10, u16le(readReply(input), 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `ReparentWindow emits hierarchy crossing during automatic unmap`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
