@@ -1742,7 +1742,6 @@ internal class X11Connection(
         val totalKeySyms = keySymRows.sumOf { it.size }
         val keyTypesPayloadBytes = if (keyTypesRequested) XkbDefaultKeyTypesPayloadBytes else 0
         val keySymPayloadBytes = keySymRows.sumOf { 8 + it.size * 4 }
-        val modifierMapEntries = if (modifierMapRequested) xkbModifierMapEntries() else emptyList()
         val modifierMapFirst = if ((full and XXkb.MapPartModifierMap) != 0) {
             XKeyboard.MinKeycode
         } else {
@@ -1752,6 +1751,19 @@ internal class X11Connection(
             XKeyboard.MaxKeycode - XKeyboard.MinKeycode + 1
         } else {
             body[19].toInt() and 0xff
+        }
+        if (modifierMapRequested && modifierMapCount > 0) {
+            if (modifierMapFirst !in XKeyboard.MinKeycode..XKeyboard.MaxKeycode) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = modifierMapFirst)
+            }
+            if (modifierMapFirst + modifierMapCount - 1 > XKeyboard.MaxKeycode) {
+                return writeError(error = 2, opcode = majorOpcode, minorOpcode = XXkb.GetMap, badValue = modifierMapFirst)
+            }
+        }
+        val modifierMapEntries = if (modifierMapRequested) {
+            xkbModifierMapEntries().filter { (keycode) -> keycode in modifierMapFirst until modifierMapFirst + modifierMapCount }
+        } else {
+            emptyList()
         }
         val modifierMapPayloadBytes = paddedLength(modifierMapEntries.size * 2)
         val payloadBytes = keyTypesPayloadBytes + keySymPayloadBytes + modifierMapPayloadBytes

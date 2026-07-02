@@ -569,6 +569,36 @@ class XXkbProtocolTest {
     }
 
     @Test
+    fun `XKEYBOARD GetMap filters partial modifier map to requested keycode range`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(
+                getMapRequest(
+                    full = 0,
+                    partial = XXkb.MapPartModifierMap,
+                    firstModMapKey = 50,
+                    nModMapKeys = 1,
+                ),
+            )
+            out.flush()
+
+            val map = readReply(socket.getInputStream())
+            assertEquals(1, u16le(map, 2))
+            assertEquals(map.size, 32 + u32le(map, 4) * 4)
+            assertEquals(0, u16le(map, 8))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertEquals(XKeyboard.MinKeycode, map[10].toInt() and 0xff)
+            assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
+            assertEquals(50, map[31].toInt() and 0xff)
+            assertEquals(1, map[32].toInt() and 0xff)
+            assertEquals(1, map[33].toInt() and 0xff)
+            assertEquals(0, u16le(map, 38))
+            assertXkbModifierMap(map, 50 to 0x01)
+            assertEquals(44, map.size)
+        }
+    }
+
+    @Test
     fun `XKEYBOARD GetMap validates request length and recovers stream`() {
         withServer { socket, _ ->
             val out = socket.getOutputStream()
@@ -584,6 +614,24 @@ class XXkbProtocolTest {
             assertEquals(XKeyboard.MaxKeycode, map[11].toInt() and 0xff)
             assertEquals(0, u16le(map, 12))
             assertEquals(40, map.size)
+        }
+    }
+
+    @Test
+    fun `XKEYBOARD GetMap validates partial modifier map keycode ranges`() {
+        withServer { socket, _ ->
+            val out = socket.getOutputStream()
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 7, nModMapKeys = 1))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = XKeyboard.MaxKeycode, nModMapKeys = 2))
+            out.write(getMapRequest(full = 0, partial = XXkb.MapPartModifierMap, firstModMapKey = 50, nModMapKeys = 1))
+            out.flush()
+
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = 7, sequence = 1, minorOpcode = XXkb.GetMap)
+            assertError(socket.getInputStream(), error = 2, opcode = XXkb.MajorOpcode, badValue = XKeyboard.MaxKeycode, sequence = 2, minorOpcode = XXkb.GetMap)
+            val map = readReply(socket.getInputStream())
+            assertEquals(3, u16le(map, 2))
+            assertEquals(XXkb.MapPartModifierMap, u16le(map, 12))
+            assertXkbModifierMap(map, 50 to 0x01)
         }
     }
 
@@ -1882,6 +1930,8 @@ class XXkbProtocolTest {
         partial: Int,
         firstKeySym: Int = XKeyboard.MinKeycode,
         nKeySyms: Int = 0xff,
+        firstModMapKey: Int = XKeyboard.MinKeycode,
+        nModMapKeys: Int = 0xff,
     ): ByteArray {
         val body = ByteArray(24)
         put16le(body, 0, 0x0100)
@@ -1898,8 +1948,8 @@ class XXkbProtocolTest {
         put16le(body, 14, 0xffff)
         body[16] = XKeyboard.MinKeycode.toByte()
         body[17] = 0xff.toByte()
-        body[18] = XKeyboard.MinKeycode.toByte()
-        body[19] = 0xff.toByte()
+        body[18] = firstModMapKey.toByte()
+        body[19] = nModMapKeys.toByte()
         body[20] = XKeyboard.MinKeycode.toByte()
         body[21] = 0xff.toByte()
         return request(XXkb.MajorOpcode, XXkb.GetMap, body)
