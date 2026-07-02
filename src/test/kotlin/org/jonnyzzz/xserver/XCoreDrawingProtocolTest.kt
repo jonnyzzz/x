@@ -1280,6 +1280,68 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `client disconnect emits hierarchy crossing when destroyed window reveals sibling under pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val lower = WindowId + 439
+                    val top = WindowId + 440
+                    val observerInput = observer.getInputStream()
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30))
+                    observerOut.write(mapWindowRequest(lower))
+                    observerOut.write(changeWindowEventMaskRequest(lower, XEventMasks.EnterWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+
+                    assertMapAndExpose(observerInput, lower)
+                    assertEquals(4, u16le(readReply(observerInput), 2))
+
+                    val ownerInput = owner.getInputStream()
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(createWindowRequest(top, x = 10, y = 10, width = 30, height = 30))
+                    ownerOut.write(mapWindowRequest(top))
+                    ownerOut.write(warpPointerRequest(destinationWindow = top, destinationX = 5, destinationY = 5))
+                    ownerOut.write(queryPointerRequest())
+                    ownerOut.flush()
+
+                    assertMapAndExpose(ownerInput, top)
+                    val ownerPointer = readReply(ownerInput)
+                    assertEquals(1, ownerPointer[0].toInt())
+                    assertEquals(top, u32le(ownerPointer, 12))
+
+                    closeClientAndWait(owner)
+
+                    assertCrossingEvent(
+                        observerInput.readExactly(32),
+                        type = 7,
+                        detail = XNotifyDetail.Nonlinear,
+                        eventWindow = lower,
+                        rootX = 15,
+                        rootY = 15,
+                        eventX = 5,
+                        eventY = 5,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    val finalPointer = readReply(observerInput)
+                    assertEquals(1, finalPointer[0].toInt())
+                    assertEquals(lower, u32le(finalPointer, 12))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES cursor notify tracks window cursor changes recolor and GetCursorImage serial`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

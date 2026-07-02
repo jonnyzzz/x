@@ -11300,6 +11300,7 @@ internal class X11Connection(
         }
         state.releaseServerGrab(this)
         state.releaseClientResourceReservations(this)
+        val previousPointerPath = if (mode == XCloseDownMode.Destroy) state.pointerCrossingPath() else emptyList()
         val resourceRemoval = when (mode) {
             XCloseDownMode.Destroy -> state.removeClientResources(this, resources)
             else -> {
@@ -11307,7 +11308,13 @@ internal class X11Connection(
                 XResourceRemoval(destroyNotifyDispatches = emptyList(), xfixesSelectionNotifyDispatches = emptyList())
             }
         }
+        val closeDownCrossings = if (mode == XCloseDownMode.Destroy && !resourceRemoval.pointerUngrabResult.released) {
+            state.hierarchyCrossingEventDeliveries(previousPointerPath)
+        } else {
+            emptyList()
+        }
         sendResourceRemoval(resourceRemoval)
+        sendCrossing(closeDownCrossings)
         val sinkRemoval = state.unregisterEventSink(this)
         sendCrossing(sinkRemoval.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(sinkRemoval.xfixesSelectionNotifyDispatches)
