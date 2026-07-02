@@ -24,6 +24,7 @@ internal data class XResourceRemoval(
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
     val syncAlarmNotifyDispatches: List<XSyncAlarmNotifyDispatch> = emptyList(),
+    val colormapNotifyDispatches: List<XColormapNotifyDispatch> = emptyList(),
 )
 
 internal data class XEventSinkRemoval(
@@ -406,6 +407,8 @@ internal class X11State(
         }
         val ids = resourceIds - removedWindows
         val previousCursor = displayedCursorIdentity()
+        val beforeInstalledColormaps = installedColormaps.toSet()
+        val removedColormaps = linkedSetOf<Int>()
         pointerUngrabResult = pointerUngrabResult + releaseInputGrabsForResources(ids)
         for (id in ids) {
             pixmaps.remove(id)
@@ -413,7 +416,7 @@ internal class X11State(
             fonts.remove(id)
             cursors.remove(id)
             if (id != X11Ids.DefaultColormap) {
-                colormaps.remove(id)
+                if (colormaps.remove(id)) removedColormaps += id
                 installedColormaps.remove(id)
             }
             glxContexts.remove(id)
@@ -432,6 +435,7 @@ internal class X11State(
         xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor)
         discardRetainedResourceIds(resourceIds)
         ensureDefaultColormapInstalled()
+        val colormapNotifyDispatches = removedColormapNotifyDispatches(removedColormaps, beforeInstalledColormaps)
         return XResourceRemoval(
             destroyNotifyDispatches = destroyNotifyDispatches,
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
@@ -439,6 +443,7 @@ internal class X11State(
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
             syncAlarmNotifyDispatches = syncAlarmNotifyDispatches,
+            colormapNotifyDispatches = colormapNotifyDispatches,
         )
     }
 
@@ -997,6 +1002,44 @@ internal class X11State(
     @Synchronized
     fun propertyNotifySinks(windowId: Int): List<XEventSink> =
         eventSelectionsForWindow(windowId, XEventMasks.PropertyChange)
+
+    @Synchronized
+    fun colormapNotifySinks(windowId: Int, colormapId: Int, new: Boolean, state: Int): List<XColormapNotifyDispatch> =
+        eventSelectionsForWindow(windowId, XEventMasks.ColormapChange).map { sink ->
+            XColormapNotifyDispatch(
+                sink = sink,
+                event = XColormapNotifyEvent(
+                    windowId = windowId,
+                    colormapId = colormapId,
+                    new = new,
+                    state = state,
+                ),
+            )
+        }
+
+    @Synchronized
+    fun colormapNotifySinksForInstalledChanges(
+        before: Set<Int>,
+        after: Set<Int>,
+    ): List<XColormapNotifyDispatch> {
+        val uninstalled = before - after
+        val installed = after - before
+        if (uninstalled.isEmpty() && installed.isEmpty()) return emptyList()
+        return buildList {
+            for (colormapId in uninstalled) {
+                addAll(colormapNotifySinksForColormap(colormapId, new = false, state = XColormapState.Uninstalled))
+            }
+            for (colormapId in installed) {
+                addAll(colormapNotifySinksForColormap(colormapId, new = false, state = XColormapState.Installed))
+            }
+        }
+    }
+
+    @Synchronized
+    private fun colormapNotifySinksForColormap(colormapId: Int, new: Boolean, state: Int): List<XColormapNotifyDispatch> =
+        windows.values
+            .filter { it.colormapId == colormapId }
+            .flatMap { window -> colormapNotifySinks(window.id, colormapId, new, state) }
 
     @Synchronized
     fun mapNotifySinks(window: XWindow): List<XMapNotifyDispatch> =
@@ -7326,12 +7369,14 @@ internal class X11State(
     @Synchronized
     fun removeResource(id: Int): XResourceRemoval {
         val previousCursor = displayedCursorIdentity()
+        val beforeInstalledColormaps = installedColormaps.toSet()
         pixmaps.remove(id)
         gcs.remove(id)
         fonts.remove(id)
         cursors.remove(id)
+        val removedColormaps = linkedSetOf<Int>()
         if (id != X11Ids.DefaultColormap) {
-            colormaps.remove(id)
+            if (colormaps.remove(id)) removedColormaps += id
             installedColormaps.remove(id)
         }
         glxContexts.remove(id)
@@ -7342,12 +7387,42 @@ internal class X11State(
         discardRetainedResourceIds(setOf(id))
         val pointerUngrabResult = releaseInputGrabsForResources(setOf(id))
         ensureDefaultColormapInstalled()
+        val colormapNotifyDispatches = removedColormapNotifyDispatches(removedColormaps, beforeInstalledColormaps)
         return XResourceRemoval(
             destroyNotifyDispatches = emptyList(),
             xfixesSelectionNotifyDispatches = emptyList(),
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
+            colormapNotifyDispatches = colormapNotifyDispatches,
         )
+    }
+
+    @Synchronized
+    fun freeColormap(id: Int): XResourceRemoval {
+        if (id == X11Ids.DefaultColormap) {
+            return XResourceRemoval(destroyNotifyDispatches = emptyList(), xfixesSelectionNotifyDispatches = emptyList())
+        }
+        return removeResource(id)
+    }
+
+    private fun removedColormapNotifyDispatches(
+        removedColormaps: Set<Int>,
+        beforeInstalled: Set<Int>,
+    ): List<XColormapNotifyDispatch> {
+        if (removedColormaps.isEmpty()) return emptyList()
+        val notifications = mutableListOf<XColormapNotifyDispatch>()
+        notifications += colormapNotifySinksForInstalledChanges(beforeInstalled, installedColormaps.toSet())
+        for (window in windows.values.toList()) {
+            if (window.colormapId !in removedColormaps) continue
+            window.colormapId = null
+            notifications += colormapNotifySinks(
+                windowId = window.id,
+                colormapId = 0,
+                new = true,
+                state = XColormapState.Uninstalled,
+            )
+        }
+        return notifications
     }
 
     private fun ensureDefaultColormapInstalled() {

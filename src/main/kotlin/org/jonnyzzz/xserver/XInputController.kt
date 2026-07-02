@@ -180,6 +180,7 @@ internal interface XEventSink {
     fun sendCirculateRequestEvent(event: XCirculateRequestEvent)
     fun sendConfigureNotifyEvent(event: XConfigureNotifyEvent)
     fun sendPropertyNotifyEvent(event: XPropertyNotifyEvent)
+    fun sendColormapNotifyEvent(event: XColormapNotifyEvent)
     fun sendSelectionClearEvent(event: XSelectionClearEvent)
     fun sendSelectionRequestEvent(event: XSelectionRequestEvent)
     fun sendXFixesSelectionNotifyEvent(event: XXFixesSelectionNotifyEvent)
@@ -295,6 +296,18 @@ internal data class XPropertyNotifyEvent(
     val atom: Int,
     val state: Int,
     val time: Int = 0,
+)
+
+internal data class XColormapNotifyEvent(
+    val windowId: Int,
+    val colormapId: Int,
+    val new: Boolean,
+    val state: Int,
+)
+
+internal data class XColormapNotifyDispatch(
+    val sink: XEventSink,
+    val event: XColormapNotifyEvent,
 )
 
 internal data class XExposeEvent(
@@ -627,6 +640,7 @@ internal object XEventMasks {
     const val SubstructureRedirect = 1 shl 20
     const val FocusChange = 1 shl 21
     const val PropertyChange = 1 shl 22
+    const val ColormapChange = 1 shl 23
 
     fun forPointerType(type: XPointerEventType): Int =
         when (type) {
@@ -657,4 +671,9 @@ internal object XNotifyMode {
     const val Normal = 0
     const val Grab = 1
     const val Ungrab = 2
+}
+
+internal object XColormapState {
+    const val Uninstalled = 0
+    const val Installed = 1
 }

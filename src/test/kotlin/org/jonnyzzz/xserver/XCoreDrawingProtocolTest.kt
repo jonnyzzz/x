@@ -2911,6 +2911,146 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `InstallColormap and UninstallColormap emit ColormapNotify to selected windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(createWindowRequest(WindowId, colormap = ColormapId, eventMask = XEventMasks.ColormapChange))
+                out.write(installColormapRequest(ColormapId))
+                out.write(uninstallColormapRequest(ColormapId))
+                out.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                out.flush()
+
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 3,
+                    window = WindowId,
+                    colormap = ColormapId,
+                    new = false,
+                    state = XColormapState.Installed,
+                )
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    window = WindowId,
+                    colormap = ColormapId,
+                    new = false,
+                    state = XColormapState.Uninstalled,
+                )
+                assertEquals(listOf(X11Ids.DefaultColormap), installedColormaps(readReply(socket.getInputStream())))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `FreeColormap emits uninstall and None attribute ColormapNotify to selected windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                out.write(createWindowRequest(WindowId, colormap = ColormapId, eventMask = XEventMasks.ColormapChange))
+                out.write(installColormapRequest(ColormapId))
+                out.write(freeColormapRequest(ColormapId))
+                out.write(getWindowAttributesRequest(WindowId))
+                out.flush()
+
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 3,
+                    window = WindowId,
+                    colormap = ColormapId,
+                    new = false,
+                    state = XColormapState.Installed,
+                )
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    window = WindowId,
+                    colormap = ColormapId,
+                    new = false,
+                    state = XColormapState.Uninstalled,
+                )
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 4,
+                    window = WindowId,
+                    colormap = 0,
+                    new = true,
+                    state = XColormapState.Uninstalled,
+                )
+                val attributes = readReply(socket.getInputStream())
+                assertEquals(0, attributes[25].toInt() and 0xff)
+                assertEquals(0, u32le(attributes, 28))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `client close down frees colormap and emits ColormapNotify to surviving windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { ownerSocket ->
+                Socket("127.0.0.1", server.localPort).use { observerSocket ->
+                    ownerSocket.soTimeout = 2_000
+                    observerSocket.soTimeout = 2_000
+                    setup(ownerSocket)
+                    setup(observerSocket)
+
+                    val ownerOut = ownerSocket.getOutputStream()
+                    ownerOut.write(createColormapRequest(ColormapId, window = X11Ids.RootWindow))
+                    ownerOut.write(installColormapRequest(ColormapId))
+                    ownerOut.write(listInstalledColormapsRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+                    assertEquals(listOf(ColormapId), installedColormaps(readReply(ownerSocket.getInputStream())))
+
+                    val observerOut = observerSocket.getOutputStream()
+                    observerOut.write(createWindowRequest(WindowId, colormap = ColormapId, eventMask = XEventMasks.ColormapChange))
+                    observerOut.write(getWindowAttributesRequest(WindowId))
+                    observerOut.flush()
+                    assertEquals(ColormapId, u32le(readReply(observerSocket.getInputStream()), 28))
+
+                    closeClientAndWait(ownerSocket)
+
+                    observerOut.write(getWindowAttributesRequest(WindowId))
+                    observerOut.flush()
+                    assertColormapNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = WindowId,
+                        colormap = ColormapId,
+                        new = false,
+                        state = XColormapState.Uninstalled,
+                    )
+                    assertColormapNotify(
+                        observerSocket.getInputStream().readExactly(32),
+                        sequence = 2,
+                        window = WindowId,
+                        colormap = 0,
+                        new = true,
+                        state = XColormapState.Uninstalled,
+                    )
+                    val attributes = readReply(observerSocket.getInputStream())
+                    assertEquals(0, attributes[25].toInt() and 0xff)
+                    assertEquals(0, u32le(attributes, 28))
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `InstallColormap and ListInstalledColormaps validate resource ids without mutating installed state`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11130,7 +11270,7 @@ class XCoreDrawingProtocolTest {
                 out.write(createColormapRequest(inherited, window = X11Ids.RootWindow))
                 out.write(createColormapRequest(changed, window = X11Ids.RootWindow))
                 out.write(createWindowRequest(parent, colormap = inherited))
-                out.write(createWindowRequest(child, parent = parent, colormap = 0))
+                out.write(createWindowRequest(child, parent = parent, colormap = 0, eventMask = XEventMasks.ColormapChange))
                 out.write(getWindowAttributesRequest(child))
                 out.write(changeWindowAttributesRawRequest(child, 1 shl 13, changed))
                 out.write(getWindowAttributesRequest(parent))
@@ -11140,8 +11280,24 @@ class XCoreDrawingProtocolTest {
                 out.flush()
 
                 val childInheritedAttributes = readReply(socket.getInputStream())
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 6,
+                    window = child,
+                    colormap = changed,
+                    new = true,
+                    state = XColormapState.Uninstalled,
+                )
                 val parentAttributes = readReply(socket.getInputStream())
                 val childAttributes = readReply(socket.getInputStream())
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 9,
+                    window = child,
+                    colormap = changed,
+                    new = false,
+                    state = XColormapState.Installed,
+                )
                 val childInstalledAttributes = readReply(socket.getInputStream())
                 assertEquals(inherited, u32le(childInheritedAttributes, 28))
                 assertEquals(0, childInheritedAttributes[25].toInt() and 0xff)
@@ -11156,6 +11312,43 @@ class XCoreDrawingProtocolTest {
                 val childJson = Regex("""\{"id":"0x${child.toUInt().toString(16)}".*?\}""").find(stateJson)?.value.orEmpty()
                 assertContains(parentJson, """"colormap":"0x${inherited.toUInt().toString(16)}"""")
                 assertContains(childJson, """"colormap":"0x${changed.toUInt().toString(16)}"""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `ChangeWindowAttributes colormap notify sees event mask selected by same request`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val changed = ColormapId + 211
+                val out = socket.getOutputStream()
+                out.write(createColormapRequest(changed, window = X11Ids.RootWindow))
+                out.write(createWindowRequest(WindowId))
+                out.write(
+                    changeWindowAttributesRawRequest(
+                        WindowId,
+                        (1 shl 11) or (1 shl 13),
+                        XEventMasks.ColormapChange,
+                        changed,
+                    ),
+                )
+                out.write(getWindowAttributesRequest(WindowId))
+                out.flush()
+
+                assertColormapNotify(
+                    socket.getInputStream().readExactly(32),
+                    sequence = 3,
+                    window = WindowId,
+                    colormap = changed,
+                    new = true,
+                    state = XColormapState.Uninstalled,
+                )
+                assertEquals(changed, u32le(readReply(socket.getInputStream()), 28))
             }
             server.close()
             serverThread.join(1_000)
@@ -21015,6 +21208,17 @@ class XCoreDrawingProtocolTest {
         assertEquals(0, u32le(event, 12))
         assertEquals(state, event[16].toInt() and 0xff)
         assertZeroBytes(event, 17, 32)
+    }
+
+    private fun assertColormapNotify(event: ByteArray, sequence: Int, window: Int, colormap: Int, new: Boolean, state: Int) {
+        assertEquals(32, event[0].toInt() and 0xff)
+        assertEquals(0, event[1].toInt() and 0xff)
+        assertEquals(sequence, u16le(event, 2))
+        assertEquals(window, u32le(event, 4))
+        assertEquals(colormap, u32le(event, 8))
+        assertEquals(if (new) 1 else 0, event[12].toInt() and 0xff)
+        assertEquals(state, event[13].toInt() and 0xff)
+        assertZeroBytes(event, 14, 32)
     }
 
     private fun assertListPropertiesReply(reply: ByteArray, sequence: Int, vararg atoms: Int) {

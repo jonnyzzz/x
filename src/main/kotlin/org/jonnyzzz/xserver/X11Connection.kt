@@ -304,7 +304,7 @@ internal class X11Connection(
             76 -> imageText(minorOpcode, body, is16Bit = false)
             77 -> imageText(minorOpcode, body, is16Bit = true)
             78 -> createColormap(minorOpcode, body)
-            79 -> closeResource(opcode = 79, body = body, error = 12, exists = state::hasColormap)
+            79 -> freeColormap(body)
             80 -> copyColormapAndFree(body)
             81 -> installColormap(body)
             82 -> uninstallColormap(body)
@@ -4599,9 +4599,23 @@ internal class X11Connection(
         }
         attributes.overrideRedirect?.let { state.updateWindowAttributes(windowId, overrideRedirect = it) }
         attributes.doNotPropagateMask?.let { state.updateWindowAttributes(windowId, doNotPropagateMask = it) }
-        attributes.colormapId?.let { state.updateWindowAttributes(windowId, colormapId = colormapId, colormapIdChanged = true) }
-        attributes.cursorId?.let { sendXFixesCursorNotify(state.updateWindowCursor(windowId, it.takeIf { id -> id != 0 })) }
         attributes.eventMask?.let { state.selectEvents(this, windowId, it) }
+        attributes.colormapId?.let {
+            val effectiveColormapId = colormapId ?: return@let
+            val previousColormapId = state.window(windowId)?.colormapId
+            state.updateWindowAttributes(windowId, colormapId = effectiveColormapId, colormapIdChanged = true)
+            if (previousColormapId != effectiveColormapId) {
+                sendColormapNotify(
+                    state.colormapNotifySinks(
+                        windowId = windowId,
+                        colormapId = effectiveColormapId,
+                        new = true,
+                        state = if (state.isColormapInstalled(effectiveColormapId)) XColormapState.Installed else XColormapState.Uninstalled,
+                    ),
+                )
+            }
+        }
+        attributes.cursorId?.let { sendXFixesCursorNotify(state.updateWindowCursor(windowId, it.takeIf { id -> id != 0 })) }
     }
 
     private fun destroyWindow(body: ByteArray) {
@@ -5602,6 +5616,14 @@ internal class X11Connection(
         if (!exists(id)) return writeError(error = error, opcode = opcode, badValue = id)
         sendResourceRemoval(state.removeResource(id))
         ownedResources.remove(id)
+    }
+
+    private fun freeColormap(body: ByteArray) {
+        if (body.size != 4) return writeError(error = 16, opcode = 79, badValue = 0)
+        val colormap = byteOrder.u32(body, 0)
+        if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 79, badValue = colormap)
+        sendResourceRemoval(state.freeColormap(colormap))
+        if (colormap != X11Ids.DefaultColormap) ownedResources.remove(colormap)
     }
 
     private fun queryFont(body: ByteArray) {
@@ -6632,14 +6654,18 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 81, badValue = 0)
         val colormap = byteOrder.u32(body, 0)
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 81, badValue = colormap)
+        val before = state.installedColormaps().toSet()
         state.installColormap(colormap)
+        sendColormapNotify(state.colormapNotifySinksForInstalledChanges(before, state.installedColormaps().toSet()))
     }
 
     private fun uninstallColormap(body: ByteArray) {
         if (body.size != 4) return writeError(error = 16, opcode = 82, badValue = 0)
         val colormap = byteOrder.u32(body, 0)
         if (!state.hasColormap(colormap)) return writeError(error = 12, opcode = 82, badValue = colormap)
+        val before = state.installedColormaps().toSet()
         state.uninstallColormap(colormap)
+        sendColormapNotify(state.colormapNotifySinksForInstalledChanges(before, state.installedColormaps().toSet()))
     }
 
     private fun listInstalledColormaps(body: ByteArray) {
@@ -9622,6 +9648,17 @@ internal class X11Connection(
         write(bytes)
     }
 
+    override fun sendColormapNotifyEvent(event: XColormapNotifyEvent) {
+        val bytes = ByteArray(32)
+        bytes[0] = 32
+        byteOrder.put16(bytes, 2, sequence)
+        byteOrder.put32(bytes, 4, event.windowId)
+        byteOrder.put32(bytes, 8, event.colormapId)
+        bytes[12] = if (event.new) 1 else 0
+        bytes[13] = event.state.toByte()
+        write(bytes)
+    }
+
     override fun sendExposeEvent(event: XExposeEvent) {
         val bytes = ByteArray(32)
         bytes[0] = 12
@@ -11111,6 +11148,12 @@ internal class X11Connection(
         }
     }
 
+    private fun sendColormapNotify(notifications: List<XColormapNotifyDispatch>) {
+        for (notification in notifications) {
+            runCatching { notification.sink.sendColormapNotifyEvent(notification.event) }
+        }
+    }
+
     private fun sendMapNotify(notifications: List<XMapNotifyDispatch>) {
         for (notification in notifications) {
             runCatching { notification.sink.sendMapNotifyEvent(notification.event) }
@@ -11217,6 +11260,7 @@ internal class X11Connection(
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
         sendSyncAlarmNotifyDispatches(removal.syncAlarmNotifyDispatches)
+        sendColormapNotify(removal.colormapNotifyDispatches)
     }
 
     private fun sendRetainedResourceRemoval(previousPointerPath: List<XWindow>, remove: () -> XResourceRemoval) {
