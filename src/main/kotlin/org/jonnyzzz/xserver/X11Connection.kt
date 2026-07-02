@@ -1058,7 +1058,7 @@ internal class X11Connection(
         }
         val xOffset = byteOrder.i16(body, 8)
         val yOffset = byteOrder.i16(body, 10)
-        sendShapeNotify(
+        applyWindowShapeMutation(kind) {
             state.setWindowShapeRegion(
                 window,
                 kind,
@@ -1066,8 +1066,8 @@ internal class X11Connection(
                     rectangle.copy(x = rectangle.x + xOffset, y = rectangle.y + yOffset)
                 },
                 notifyWhenUnchanged = true,
-            ),
-        )
+            )
+        }
     }
 
     private fun xfixesSetPictureClipRegion(body: ByteArray, majorOpcode: Int) {
@@ -1321,7 +1321,7 @@ internal class X11Connection(
         val bitmapId = byteOrder.u32(body, 12)
         if (bitmapId == 0) {
             if (window == X11Ids.RootWindow) return
-            sendShapeNotify(state.setWindowShapeRegion(window, kind, null))
+            applyWindowShapeMutation(kind) { state.setWindowShapeRegion(window, kind, null) }
             return
         }
         val bitmap = state.pixmap(bitmapId)
@@ -1363,7 +1363,9 @@ internal class X11Connection(
         if (!shapeKindValid(kind, majorOpcode, XShape.Offset)) return
         val window = byteOrder.u32(body, 4)
         shapeWindow(window, kind, majorOpcode, XShape.Offset) ?: return
-        sendShapeNotify(state.offsetWindowShapeRegion(window, kind, dx = byteOrder.i16(body, 8), dy = byteOrder.i16(body, 10)))
+        applyWindowShapeMutation(kind) {
+            state.offsetWindowShapeRegion(window, kind, dx = byteOrder.i16(body, 8), dy = byteOrder.i16(body, 10))
+        }
     }
 
     private fun shapeQueryExtents(body: ByteArray, majorOpcode: Int) {
@@ -1423,7 +1425,7 @@ internal class X11Connection(
             XShape.OpSet -> source
             XShape.OpUnion -> {
                 if (destination == null) {
-                    sendShapeNotify(state.windowShapeNotifyDispatches(window, kind))
+                    applyWindowShapeMutation(kind) { state.windowShapeNotifyDispatches(window, kind) }
                     return
                 }
                 combineRegions(destination, source) { inDestination, inSource -> inDestination || inSource }
@@ -1444,7 +1446,18 @@ internal class X11Connection(
             }
             else -> source
         }
-        sendShapeNotify(state.setWindowShapeRegion(window, kind, result))
+        applyWindowShapeMutation(kind) { state.setWindowShapeRegion(window, kind, result) }
+    }
+
+    private fun applyWindowShapeMutation(kind: Int, mutate: () -> List<XShapeNotifyDispatch>) {
+        val affectsPointerWindow = kind == XFixes.ShapeBounding || kind == XFixes.ShapeInput
+        val previousCursor = if (affectsPointerWindow) state.displayedCursorSnapshot() else null
+        val previousPointerPath = if (affectsPointerWindow) state.pointerCrossingPath() else emptyList()
+        sendShapeNotify(mutate())
+        if (affectsPointerWindow) {
+            sendCrossing(state.hierarchyCrossingEventDeliveries(previousPointerPath))
+            sendXFixesCursorNotify(state.cursorNotifyDispatchesIfDisplayChanged(previousCursor))
+        }
     }
 
     private fun shapeRectanglesOrderingValid(rectangles: List<XRectangleCommand>, ordering: Int): Boolean {

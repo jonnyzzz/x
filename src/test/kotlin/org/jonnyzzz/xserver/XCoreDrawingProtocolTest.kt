@@ -6762,6 +6762,135 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `XFIXES SetWindowShapeRegion emits crossing and cursor notify when input shape excludes pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                val cursor = PixmapId + 90
+                val region = WindowId + 90
+                out.write(createPixmapRequest(PixmapId, width = 1, height = 1, depth = 1, drawable = X11Ids.RootWindow))
+                out.write(createCursorRequest(cursor, source = PixmapId, mask = 0))
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10, cursor = cursor))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.LeaveWindow))
+                out.write(xfixesSelectCursorInputRequest(X11Ids.RootWindow))
+                out.write(xfixesCreateRegionRequest(region, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegionRequest(child, XFixes.ShapeInput, region = region))
+                out.write(queryPointerRequest(parent))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                )
+                assertXFixesCursorNotify(
+                    input.readExactly(32),
+                    sequence = 12,
+                    window = X11Ids.RootWindow,
+                    cursorSerial = 3,
+                    timestamp = 3,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(13, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
+                assertEquals(17, u16le(pointer, 16))
+                assertEquals(18, u16le(pointer, 18))
+                assertEquals(7, u16le(pointer, 20))
+                assertEquals(8, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `SHAPE Rectangles emits crossing when bounding shape excludes pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                val parent = WindowId
+                val child = WindowId + 1
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 40, height = 30))
+                out.write(createWindowRequest(child, parent = parent, x = 5, y = 5, width = 10, height = 10))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.write(warpPointerRequest(destinationWindow = child, destinationX = 2, destinationY = 3))
+                out.write(changeWindowEventMaskRequest(parent, XEventMasks.EnterWindow))
+                out.write(changeWindowEventMaskRequest(child, XEventMasks.LeaveWindow))
+                out.write(shapeRectanglesRequest(child, XFixes.ShapeBounding, XShape.OpSet, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(queryPointerRequest(parent))
+                out.flush()
+
+                assertMapAndExpose(input, parent)
+                assertMapAndExpose(input, child)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = child,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 2,
+                    eventY = 3,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Inferior,
+                    eventWindow = parent,
+                    rootX = 17,
+                    rootY = 18,
+                    eventX = 7,
+                    eventY = 8,
+                )
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(9, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
+                assertEquals(17, u16le(pointer, 16))
+                assertEquals(18, u16le(pointer, 18))
+                assertEquals(7, u16le(pointer, 20))
+                assertEquals(8, u16le(pointer, 22))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `TranslateCoordinates validates windows and request length and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -18164,6 +18293,28 @@ class XCoreDrawingProtocolTest {
         put16le(body, 10, yOffset)
         put32le(body, 12, region)
         return request(XFixes.MajorOpcode, XFixes.SetWindowShapeRegion, body)
+    }
+
+    private fun shapeRectanglesRequest(
+        window: Int,
+        kind: Int,
+        operation: Int,
+        rectangles: List<XRectangleCommand>,
+        ordering: Int = XShape.OrderingYXBanded,
+    ): ByteArray {
+        val body = ByteArray(12 + rectangles.size * 8)
+        body[0] = operation.toByte()
+        body[1] = kind.toByte()
+        body[2] = ordering.toByte()
+        put32le(body, 4, window)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 12 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(XShape.MajorOpcode, XShape.Rectangles, body)
     }
 
     private fun xfixesGetCursorImageRequest(): ByteArray =
