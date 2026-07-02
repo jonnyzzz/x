@@ -3980,7 +3980,7 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        return framebuffer.putImage(x, y, image, effectiveClip, function, planeMask)
+        return framebuffer.putImage(x, y, image, effectiveClip, function, planeMask, wireDepth = drawableDepth(drawableId).wireDepth())
     }
 
     @Synchronized
@@ -4002,6 +4002,7 @@ internal class X11State(
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
+        val destinationDepth = drawableDepth(destinationDrawableId)
         return source.copyAreaTo(
             destination = destination,
             sourceX = sourceX,
@@ -4014,6 +4015,7 @@ internal class X11State(
             sourceClipRectangles = sourceClipRectangles,
             function = function,
             planeMask = planeMask,
+            wireDepth = destinationDepth.wireDepth(),
         )
     }
 
@@ -4039,6 +4041,11 @@ internal class X11State(
         val source = windows[sourceDrawableId]?.framebuffer ?: pixmaps[sourceDrawableId]?.framebuffer ?: return null
         val destination = windows[destinationDrawableId]?.framebuffer ?: pixmaps[destinationDrawableId]?.framebuffer ?: return null
         val effectiveClip = effectiveDrawableClip(destinationDrawableId, clipRectangles, subwindowMode)
+        val sourceDepth = drawableDepth(sourceDrawableId)
+        val destinationDepth = drawableDepth(destinationDrawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, destinationDepth)
+        val sourceForeground = if (preserveSourcePixel) corePixelForDepth(foreground, destinationDepth) else foreground
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, destinationDepth) else background
         return source.copyPlaneTo(
             destination = destination,
             sourceX = sourceX,
@@ -4048,12 +4055,15 @@ internal class X11State(
             width = width,
             height = height,
             bitPlane = bitPlane,
-            foreground = foreground,
-            background = background,
+            foreground = sourceForeground,
+            background = sourceBackground,
             clipRectangles = effectiveClip,
             sourceClipRectangles = sourceClipRectangles,
             function = function,
             planeMask = planeMask,
+            preserveAlpha = preserveSourcePixel,
+            sourceWireDepth = sourceDepth.wireDepth(),
+            wireDepth = destinationDepth.wireDepth(),
         )
     }
 
@@ -4166,7 +4176,7 @@ internal class X11State(
                 gradientSampler(x, y)
             }
         }
-        val solid = source.solidPixel
+        val solid = source.solidPixel?.let { renderPixelForPictureFormat(it, destination.format) }
         if (solid != null) {
             return when (operation) {
                 XRender.OpClear, XRender.OpDisjointClear, XRender.OpConjointClear -> {
@@ -5481,6 +5491,15 @@ internal class X11State(
             0
         }
 
+    private fun renderPixelForPictureFormat(pixel: Int, format: Int): Int {
+        val alpha = (pixel ushr 24) and 0xff
+        return when (format) {
+            XRender.A1Format -> if (alpha >= 0x80) (0xff shl 24) or 1 else 0
+            XRender.A8Format -> (alpha shl 24) or alpha
+            else -> pixel
+        }
+    }
+
     private fun glyphPixelForMaskFormat(pixel: Int, glyphFormat: Int, maskFormat: Int): Int {
         val alpha = (pixel ushr 24) and 0xff
         fun grayAlpha(): Int = (alpha shl 24) or (alpha shl 16) or (alpha shl 8) or alpha
@@ -5804,7 +5823,11 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
         var painted = false
         for (rectangle in rectangles) {
             painted = if (pattern != null) {
@@ -5820,15 +5843,61 @@ internal class X11State(
                     clipRectangles = effectiveClip,
                     function = function,
                     planeMask = planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
                 ) { sourceX, sourceY ->
                     pattern.pixelAt(sourceX, sourceY)
+                        ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
                 }
             } else {
-                framebuffer.fill(rectangle.x, rectangle.y, rectangle.width, rectangle.height, pixel, preserveAlpha, effectiveClip, function, planeMask)
+                framebuffer.fill(
+                    rectangle.x,
+                    rectangle.y,
+                    rectangle.width,
+                    rectangle.height,
+                    sourcePixel,
+                    preserveAlpha || preserveSourcePixel,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    wireDepth = drawableDepth.wireDepth(),
+                )
             } || painted
         }
         return painted
     }
+
+    private fun drawableDepth(drawableId: Int): Int =
+        windows[drawableId]?.depth ?: pixmaps[drawableId]?.depth ?: X11Ids.RootDepth
+
+    private fun preserveCoreSourcePixel(function: Int, planeMask: Int, depth: Int): Boolean =
+        function == XGraphicsContext.GXcopy && planeMask == -1 && depth in setOf(1, 8)
+
+    private fun Int.wireDepth(): Int? =
+        takeIf { it in setOf(1, 8) }
+
+    private fun corePixelForDepth(pixel: Int, depth: Int): Int =
+        when (depth) {
+            1 -> pixel and 1
+            4 -> pixel and 0x0f
+            8 -> (pixel and 0xff) shl 24
+            else -> pixel
+        }
+
+    private fun patternSourcePixelForDepth(pixel: Int, depth: Int, preserveAlpha: Boolean): Int =
+        when (depth) {
+            1 -> {
+                val wirePixel = if ((pixel and 1) != 0 || ((pixel ushr 24) and 0xff) >= 0x80) 1 else 0
+                if (preserveAlpha) corePixelForDepth(wirePixel, depth) else wirePixel
+            }
+            8 -> {
+                val lowByte = pixel and 0xff
+                val alphaByte = (pixel ushr 24) and 0xff
+                val wirePixel = if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
+                if (preserveAlpha) corePixelForDepth(wirePixel, depth) else wirePixel
+            }
+            else -> pixel
+        }
 
     private fun fillPattern(
         fillStyle: Int,
@@ -5954,9 +6023,22 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
         var painted = false
         for (point in points) {
-            painted = framebuffer.drawPoint(point.x, point.y, pixel, lineWidth, effectiveClip, function, planeMask) || painted
+            painted = framebuffer.drawPoint(
+                point.x,
+                point.y,
+                sourcePixel,
+                lineWidth,
+                effectiveClip,
+                function,
+                planeMask,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
+            ) || painted
         }
         return painted
     }
@@ -5983,9 +6065,13 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
         var painted = false
-        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
+        val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
         for (index in 0 until points.lastIndex) {
             val start = points[index]
             val end = points[index + 1]
@@ -5994,7 +6080,7 @@ internal class X11State(
                 start.y,
                 end.x,
                 end.y,
-                pixel,
+                sourcePixel,
                 lineWidth,
                 effectiveClip,
                 function,
@@ -6002,6 +6088,8 @@ internal class X11State(
                 dashPattern,
                 includeFirstPoint = index == 0,
                 strokeSource = strokeSource,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
             ) || painted
         }
         return painted
@@ -6029,25 +6117,31 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
         var painted = false
         var index = 0
         while (index + 1 < points.size) {
             val start = points[index]
             val end = points[index + 1]
-            val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = pixel, background = background)
+            val dashPattern = XDashPattern.create(lineStyle, dashOffset, dashes, foreground = sourcePixel, background = sourceBackground)
             painted = framebuffer.drawLine(
                 start.x,
                 start.y,
                 end.x,
                 end.y,
-                pixel,
+                sourcePixel,
                 lineWidth,
                 effectiveClip,
                 function,
                 planeMask,
                 dashPattern,
                 strokeSource = strokeSource,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
             ) || painted
             index += 2
         }
@@ -6076,7 +6170,11 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
         var painted = false
         for (rectangle in rectangles) {
             painted = framebuffer.drawRectangleOutline(
@@ -6084,8 +6182,8 @@ internal class X11State(
                 rectangle.y,
                 rectangle.width,
                 rectangle.height,
-                pixel,
-                background,
+                sourcePixel,
+                sourceBackground,
                 lineWidth,
                 lineStyle,
                 dashOffset,
@@ -6094,6 +6192,8 @@ internal class X11State(
                 function,
                 planeMask,
                 strokeSource,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
             ) || painted
         }
         return painted
@@ -6107,6 +6207,8 @@ internal class X11State(
         stipplePixmap: XImagePixels?,
         tileStippleXOrigin: Int,
         tileStippleYOrigin: Int,
+        drawableDepth: Int,
+        preserveAlpha: Boolean,
     ): XStrokeSource? {
         val pattern = fillPattern(fillStyle, foreground, background, tilePixmap, stipplePixmap) ?: return null
         return { x, y, dashPixel ->
@@ -6116,7 +6218,7 @@ internal class X11State(
                 pattern.pixelAt(
                     (x - tileStippleXOrigin).floorMod(pattern.width),
                     (y - tileStippleYOrigin).floorMod(pattern.height),
-                )
+                )?.let { patternSourcePixelForDepth(it, drawableDepth, preserveAlpha) }
             }
         }
     }
@@ -6143,13 +6245,17 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val strokeSource = strokeSource(fillStyle, pixel, background, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val strokeSource = strokeSource(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap, tileStippleXOrigin, tileStippleYOrigin, drawableDepth, preserveSourcePixel)
         var painted = false
         for (arc in arcs) {
             painted = framebuffer.drawArc(
                 arc,
-                pixel,
-                background,
+                sourcePixel,
+                sourceBackground,
                 lineWidth,
                 lineStyle,
                 dashOffset,
@@ -6158,6 +6264,8 @@ internal class X11State(
                 function,
                 planeMask,
                 strokeSource,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
             ) || painted
         }
         return painted
@@ -6182,7 +6290,11 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
         var painted = false
         for (arc in arcs) {
             painted = if (pattern != null) {
@@ -6196,11 +6308,23 @@ internal class X11State(
                     clipRectangles = effectiveClip,
                     function = function,
                     planeMask = planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
                 ) { sourceX, sourceY ->
                     pattern.pixelAt(sourceX, sourceY)
+                        ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
                 }
             } else {
-                framebuffer.fillArc(arc, pixel, arcMode, effectiveClip, function, planeMask)
+                framebuffer.fillArc(
+                    arc,
+                    sourcePixel,
+                    arcMode,
+                    effectiveClip,
+                    function,
+                    planeMask,
+                    preserveAlpha = preserveSourcePixel,
+                    wireDepth = drawableDepth.wireDepth(),
+                )
             } || painted
         }
         return painted
@@ -6225,7 +6349,11 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
-        val pattern = fillPattern(fillStyle, pixel, background, tilePixmap, stipplePixmap)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourcePixel = if (preserveSourcePixel) corePixelForDepth(pixel, drawableDepth) else pixel
+        val sourceBackground = if (preserveSourcePixel) corePixelForDepth(background, drawableDepth) else background
+        val pattern = fillPattern(fillStyle, sourcePixel, sourceBackground, tilePixmap, stipplePixmap)
         return if (pattern != null) {
             framebuffer.fillPolygonPattern(
                 points = points,
@@ -6237,11 +6365,23 @@ internal class X11State(
                 clipRectangles = effectiveClip,
                 function = function,
                 planeMask = planeMask,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
             ) { sourceX, sourceY ->
                 pattern.pixelAt(sourceX, sourceY)
+                    ?.let { patternSourcePixelForDepth(it, drawableDepth, preserveSourcePixel) }
             }
         } else {
-            framebuffer.fillPolygon(points, pixel, fillRule, effectiveClip, function, planeMask)
+            framebuffer.fillPolygon(
+                points,
+                sourcePixel,
+                fillRule,
+                effectiveClip,
+                function,
+                planeMask,
+                preserveAlpha = preserveSourcePixel,
+                wireDepth = drawableDepth.wireDepth(),
+            )
         }
     }
 
@@ -6260,15 +6400,21 @@ internal class X11State(
     ): Boolean {
         val framebuffer = windows[drawableId]?.framebuffer ?: pixmaps[drawableId]?.framebuffer ?: return false
         val effectiveClip = effectiveDrawableClip(drawableId, clipRectangles, subwindowMode)
+        val drawableDepth = drawableDepth(drawableId)
+        val preserveSourcePixel = preserveCoreSourcePixel(function, planeMask, drawableDepth)
+        val sourceForeground = if (preserveSourcePixel) corePixelForDepth(foreground, drawableDepth) else foreground
+        val sourceBackground = background?.let { if (preserveSourcePixel) corePixelForDepth(it, drawableDepth) else it }
         return framebuffer.drawText(
             x = x,
             baselineY = baselineY,
             text = text,
-            foreground = foreground,
-            background = background,
+            foreground = sourceForeground,
+            background = sourceBackground,
             clipRectangles = effectiveClip,
             function = function,
             planeMask = planeMask,
+            preserveAlpha = preserveSourcePixel,
+            wireDepth = drawableDepth.wireDepth(),
         )
     }
 
@@ -6281,6 +6427,7 @@ internal class X11State(
     ): Boolean {
         val framebuffer = destination.drawableFramebuffer() ?: return false
         val destinationClipMask = destination.clipMaskPredicate()
+        val destinationPixel = renderPixelForPictureFormat(pixel, destination.format)
         var painted = false
         for (rectangle in rectangles) {
             painted = when (operation) {
@@ -6300,13 +6447,13 @@ internal class X11State(
                     rectangle.y,
                     rectangle.width,
                     rectangle.height,
-                    pixel,
+                    destinationPixel,
                     preserveAlpha = true,
                     clipRectangles = effectivePictureClip(destination),
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOver -> framebuffer.blendSolidOver(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6315,7 +6462,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAdd -> framebuffer.blendSolidAdd(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6324,7 +6471,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendMultiply -> framebuffer.blendSolidMultiply(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6333,7 +6480,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendScreen -> framebuffer.blendSolidScreen(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6342,7 +6489,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendOverlay -> framebuffer.blendSolidOverlay(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6351,7 +6498,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendDarken -> framebuffer.blendSolidDarken(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6360,7 +6507,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendLighten -> framebuffer.blendSolidLighten(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6369,7 +6516,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendColorDodge -> framebuffer.blendSolidColorDodge(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6378,7 +6525,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendColorBurn -> framebuffer.blendSolidColorBurn(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6387,7 +6534,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHardLight -> framebuffer.blendSolidHardLight(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6396,7 +6543,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendSoftLight -> framebuffer.blendSolidSoftLight(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6405,7 +6552,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendDifference -> framebuffer.blendSolidDifference(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6414,7 +6561,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendExclusion -> framebuffer.blendSolidExclusion(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6423,7 +6570,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLHue -> framebuffer.blendSolidHslHue(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6432,7 +6579,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLSaturation -> framebuffer.blendSolidHslSaturation(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6441,7 +6588,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLColor -> framebuffer.blendSolidHslColor(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6450,7 +6597,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpBlendHSLLuminosity -> framebuffer.blendSolidHslLuminosity(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6459,7 +6606,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpSaturate, XRender.OpDisjointOverReverse -> framebuffer.blendSolidSaturate(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6468,7 +6615,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOverReverse -> framebuffer.blendSolidOverReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6477,7 +6624,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOver -> framebuffer.blendSolidDisjointOver(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6486,7 +6633,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOver -> framebuffer.blendSolidConjointOver(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6495,7 +6642,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOverReverse -> framebuffer.blendSolidConjointOverReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6504,7 +6651,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointIn -> framebuffer.blendSolidDisjointIn(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6513,7 +6660,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointIn -> framebuffer.blendSolidConjointIn(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6522,7 +6669,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpIn -> framebuffer.blendSolidIn(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6531,7 +6678,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOut -> framebuffer.blendSolidOut(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6540,7 +6687,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOut -> framebuffer.blendSolidDisjointOut(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6549,7 +6696,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOut -> framebuffer.blendSolidConjointOut(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6558,7 +6705,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpInReverse -> framebuffer.blendSolidInReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6567,7 +6714,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointInReverse -> framebuffer.blendSolidDisjointInReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6576,7 +6723,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointInReverse -> framebuffer.blendSolidConjointInReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6585,7 +6732,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpOutReverse -> framebuffer.blendSolidOutReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6594,7 +6741,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointOutReverse -> framebuffer.blendSolidDisjointOutReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6603,7 +6750,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointOutReverse -> framebuffer.blendSolidConjointOutReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6612,7 +6759,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointAtop -> framebuffer.blendSolidConjointAtop(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6621,7 +6768,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointAtopReverse -> framebuffer.blendSolidConjointAtopReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6630,7 +6777,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAtop -> framebuffer.blendSolidAtop(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6639,7 +6786,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointAtop -> framebuffer.blendSolidDisjointAtop(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6648,7 +6795,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpAtopReverse -> framebuffer.blendSolidAtopReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6657,7 +6804,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointAtopReverse -> framebuffer.blendSolidDisjointAtopReverse(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6666,7 +6813,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpDisjointXor -> framebuffer.blendSolidDisjointXor(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6675,7 +6822,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpConjointXor -> framebuffer.blendSolidConjointXor(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6684,7 +6831,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 XRender.OpXor -> framebuffer.blendSolidXor(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -6693,7 +6840,7 @@ internal class X11State(
                     clipMask = destinationClipMask,
                 )
                 else -> framebuffer.blendSolidOver(
-                    pixel = pixel,
+                    pixel = destinationPixel,
                     destinationX = rectangle.x,
                     destinationY = rectangle.y,
                     width = rectangle.width,
@@ -8973,7 +9120,7 @@ internal data class XPixmap(
     val height: Int,
     val depth: Int,
     val rootId: Int = X11Ids.RootWindow,
-    val framebuffer: XFramebuffer = XFramebuffer(width, height),
+    val framebuffer: XFramebuffer = XFramebuffer(width, height, preserveBackgroundAlpha = depth in setOf(1, 8)),
 )
 
 private sealed interface XResolvedWindowBackground {

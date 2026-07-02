@@ -111,6 +111,77 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER A1 FillRectangles remains readable through core GetImage`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(MaskPixmapId, depth = 1, width = 2, height = 1))
+                out.write(renderCreatePicture(MaskPictureId, MaskPixmapId, XRender.A1Format))
+                out.write(renderFillRectangles(MaskPictureId, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(getImageRequest(MaskPixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[1].toInt() and 0xff)
+                assertEquals(1, u32le(image, 4))
+                assertEquals(0x01, image[32].toInt() and 0xff)
+                assertEquals(0, image[33].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER A1 and A8 FillRectangles expose only alpha through core GetImage`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 5_000
+                setup(socket)
+                val a1Pixmap = MaskPixmapId
+                val a1Picture = MaskPictureId
+                val a8Pixmap = PixmapId
+                val a8Picture = PixmapPictureId
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(a1Pixmap, depth = 1, width = 2, height = 1))
+                out.write(createPixmapRequest(a8Pixmap, depth = 8, width = 3, height = 1))
+                out.write(renderCreatePicture(a1Picture, a1Pixmap, XRender.A1Format))
+                out.write(renderCreatePicture(a8Picture, a8Pixmap, XRender.A8Format))
+                out.write(renderFillRectangles(a1Picture, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0x0000, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(a1Picture, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(a8Picture, x = 0, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0x0000, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(a8Picture, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0x8000, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(a8Picture, x = 2, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff, operation = XRender.OpSrc))
+                out.write(getImageRequest(a1Pixmap, x = 0, y = 0, width = 2, height = 1))
+                out.write(getImageRequest(a8Pixmap, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val a1Image = readReply(socket.getInputStream())
+                assertEquals(1, a1Image[1].toInt() and 0xff)
+                assertEquals(1, u32le(a1Image, 4))
+                assertEquals(0x02, a1Image[32].toInt() and 0xff)
+                assertEquals(0, a1Image[33].toInt() and 0xff)
+
+                val a8Image = readReply(socket.getInputStream())
+                assertEquals(8, a8Image[1].toInt() and 0xff)
+                assertEquals(1, u32le(a8Image, 4))
+                assertEquals(0x00, a8Image[32].toInt() and 0xff)
+                assertEquals(0x80, a8Image[33].toInt() and 0xff)
+                assertEquals(0xff, a8Image[34].toInt() and 0xff)
+                assertEquals(0, a8Image[35].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES SetPictureClipRegion clips and clears RENDER picture drawing`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

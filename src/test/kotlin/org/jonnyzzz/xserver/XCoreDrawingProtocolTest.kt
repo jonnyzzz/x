@@ -5113,6 +5113,40 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `GetImage encodes depth one core drawn pixels from low bit`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 1))
+                out.write(createGcRequest(GcId, foreground = 1, drawable = PixmapId))
+                out.write(createGcRequest(GcId + 1, foreground = 0, drawable = PixmapId))
+                out.write(polyFillRectangleRequest(PixmapId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 2, 1))))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 1, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1, planeMask = 1, format = 2))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1, planeMask = 1, format = 1))
+                out.flush()
+
+                val zPixmap = readReply(socket.getInputStream())
+                assertEquals(1, zPixmap[1].toInt() and 0xff)
+                assertEquals(1, u32le(zPixmap, 4))
+                assertEquals(0x01, zPixmap[32].toInt() and 0xff)
+                assertZeroBytes(zPixmap, 33, 36)
+
+                val xyPixmap = readReply(socket.getInputStream())
+                assertEquals(1, xyPixmap[1].toInt() and 0xff)
+                assertEquals(1, u32le(xyPixmap, 4))
+                assertEquals(0x01, xyPixmap[32].toInt() and 0xff)
+                assertZeroBytes(xyPixmap, 33, 36)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `PutImage and GetImage ZPixmap honor depth four packing`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -5870,6 +5904,213 @@ class XCoreDrawingProtocolTest {
                 assertZeroBytes(image, 33, 36)
                 assertEquals(2, image[36].toInt() and 0xff)
                 assertZeroBytes(image, 37, 40)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage XYPixmap encodes depth eight pixmap wire bits`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(
+                    putImageRawRequest(
+                        PixmapId,
+                        GcId,
+                        format = 2,
+                        width = 2,
+                        height = 1,
+                        depth = 8,
+                        data = byteArrayOf(0x80.toByte(), 0x01, 0, 0),
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1, planeMask = 0x81, format = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(2, u32le(image, 4))
+                assertEquals(0, u32le(image, 8))
+                assertEquals(0x01, image[32].toInt() and 0xff)
+                assertZeroBytes(image, 33, 36)
+                assertEquals(0x02, image[36].toInt() and 0xff)
+                assertZeroBytes(image, 37, 40)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage XYPixmap encodes core drawn depth eight pixmap wire bits`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0x80, drawable = PixmapId))
+                out.write(createGcRequest(GcId + 1, foreground = 0x01, drawable = PixmapId))
+                out.write(polyFillRectangleRequest(PixmapId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 1, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1, planeMask = 0x81, format = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(2, u32le(image, 4))
+                assertEquals(0, u32le(image, 8))
+                assertEquals(0x01, image[32].toInt() and 0xff)
+                assertZeroBytes(image, 33, 36)
+                assertEquals(0x02, image[36].toInt() and 0xff)
+                assertZeroBytes(image, 37, 40)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage encodes depth eight raster fill and points from wire pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0x80, drawable = PixmapId))
+                out.write(changeGcRasterRequest(GcId, planeMask = 0x80))
+                out.write(polyFillRectangleRequest(PixmapId, GcId, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(createGcRequest(GcId + 1, foreground = 0x80, drawable = PixmapId))
+                out.write(polyPointRequest(PixmapId, GcId + 1, coordMode = 0, points = listOf(1 to 0)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(1, u32le(image, 4))
+                assertEquals(0x80, image[32].toInt() and 0xff)
+                assertEquals(0x80, image[33].toInt() and 0xff)
+                assertZeroBytes(image, 34, 36)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage encodes depth eight patterned fills from wire pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val tilePixmap = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 2, height = 1, depth = 8))
+                out.write(createPixmapRequest(tilePixmap, width = 1, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = tilePixmap))
+                out.write(
+                    putImageRawRequest(
+                        tilePixmap,
+                        GcId,
+                        format = 2,
+                        width = 1,
+                        height = 1,
+                        depth = 8,
+                        data = byteArrayOf(0x80.toByte(), 0, 0, 0),
+                    ),
+                )
+                out.write(createGcRequest(GcId + 1, foreground = 0x01, drawable = PixmapId))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 1, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(createGcRequest(GcId + 2, foreground = 0, drawable = PixmapId))
+                out.write(changeGcTiledFillRequest(GcId + 2, tilePixmap = tilePixmap, xOrigin = 0, yOrigin = 0))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 2, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(changeGcRasterRequest(GcId + 2, planeMask = 0x80))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 2, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 2, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(1, u32le(image, 4))
+                assertEquals(0x80, image[32].toInt() and 0xff)
+                assertEquals(0x81, image[33].toInt() and 0xff)
+                assertZeroBytes(image, 34, 36)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `GetImage encodes depth eight masked clears from alpha backed pixels`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val tilePixmap = PixmapId + 1
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, width = 3, height = 1, depth = 8))
+                out.write(createPixmapRequest(tilePixmap, width = 1, height = 1, depth = 8))
+                out.write(createGcRequest(GcId, foreground = 0, drawable = PixmapId))
+                out.write(
+                    putImageRawRequest(
+                        PixmapId,
+                        GcId,
+                        format = 2,
+                        width = 3,
+                        height = 1,
+                        depth = 8,
+                        data = byteArrayOf(0x81.toByte(), 0x81.toByte(), 0x81.toByte(), 0),
+                    ),
+                )
+                out.write(createGcRequest(GcId + 1, foreground = 0x00, drawable = PixmapId))
+                out.write(changeGcRasterRequest(GcId + 1, planeMask = 0x80))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 1, rectangles = listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(createGcRequest(GcId + 2, foreground = 0, drawable = tilePixmap))
+                out.write(
+                    putImageRawRequest(
+                        tilePixmap,
+                        GcId + 2,
+                        format = 2,
+                        width = 1,
+                        height = 1,
+                        depth = 8,
+                        data = byteArrayOf(0x00, 0, 0, 0),
+                    ),
+                )
+                out.write(createGcRequest(GcId + 3, foreground = 0, drawable = PixmapId))
+                out.write(changeGcTiledFillRequest(GcId + 3, tilePixmap = tilePixmap, xOrigin = 0, yOrigin = 0))
+                out.write(changeGcRasterRequest(GcId + 3, planeMask = 0x80))
+                out.write(polyFillRectangleRequest(PixmapId, GcId + 3, rectangles = listOf(XRectangleCommand(1, 0, 1, 1))))
+                out.write(createGcRequest(GcId + 4, foreground = 0x01, drawable = PixmapId))
+                out.write(polyLineRequest(PixmapId, GcId + 4, points = listOf(2 to 0, 2 to 0)))
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(1, image[0].toInt())
+                assertEquals(8, image[1].toInt() and 0xff)
+                assertEquals(1, u32le(image, 4))
+                assertEquals(0x01, image[32].toInt() and 0xff)
+                assertEquals(0x01, image[33].toInt() and 0xff)
+                assertEquals(0x01, image[34].toInt() and 0xff)
+                assertEquals(0, image[35].toInt() and 0xff)
             }
             server.close()
             serverThread.join(1_000)

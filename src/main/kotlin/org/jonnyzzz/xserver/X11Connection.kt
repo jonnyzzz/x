@@ -6602,7 +6602,11 @@ internal class X11Connection(
         when (depth) {
             1 -> if ((pixel and 1) != 0 || ((pixel ushr 24) and 0xff) >= 0x80) 1 else 0
             4 -> pixel and 0x0f
-            8 -> (pixel ushr 24) and 0xff
+            8 -> {
+                val lowByte = pixel and 0xff
+                val alphaByte = (pixel ushr 24) and 0xff
+                if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
+            }
             else -> pixel
         }
 
@@ -6618,7 +6622,8 @@ internal class X11Connection(
                 val rowOffset = planeOffset + y * stride
                 for (x in 0 until image.width) {
                     val pixel = image.pixels[y * image.width + x]
-                    if ((pixel and (1 shl bit)) == 0) continue
+                    val value = imageWirePixelForDepth(pixel, depth)
+                    if ((value and (1 shl bit)) == 0) continue
                     bytes[rowOffset + x / 8] = (bytes[rowOffset + x / 8].toInt() or (1 shl (x % 8))).toByte()
                 }
             }

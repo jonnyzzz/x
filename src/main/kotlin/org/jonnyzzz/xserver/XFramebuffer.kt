@@ -30,6 +30,7 @@ internal class XFramebuffer(
     height: Int,
     backgroundPixel: Int = 0,
     painted: Boolean = false,
+    preserveBackgroundAlpha: Boolean = false,
 ) {
     private val initialSize = framebufferSize(width, height)
 
@@ -38,7 +39,9 @@ internal class XFramebuffer(
     var height: Int = initialSize.second
         private set
 
-    private var pixels: IntArray = IntArray(this.width * this.height) { opaque(backgroundPixel) }
+    private var pixels: IntArray = IntArray(this.width * this.height) {
+        if (preserveBackgroundAlpha) backgroundPixel else opaque(backgroundPixel)
+    }
     private var painted: Boolean = painted
     private var cachedDataUri: String? = null
 
@@ -91,19 +94,23 @@ internal class XFramebuffer(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         clipMask: XClipMask? = null,
+        wireDepth: Int? = null,
     ): Boolean {
         val bounds = clippedBounds(x, y, width, height) ?: return false
-        val color = if (preserveAlpha) pixel else opaque(pixel)
+        val color = if (preserveAlpha || wireDepth != null) pixel else opaque(pixel)
         var painted = false
         for (row in bounds.destinationY until bounds.destinationY + bounds.height) {
             val offset = row * this.width
             for (column in bounds.destinationX until bounds.destinationX + bounds.width) {
                 if (!insideClip(column, row, clipRectangles, clipMask)) continue
-                pixels[offset + column] = if (preserveAlpha && function == XGraphicsContext.GXcopy && planeMask == -1) {
-                    color
-                } else {
-                    corePixel(source = color, destination = pixels[offset + column], function = function, planeMask = planeMask)
-                }
+                pixels[offset + column] = corePixel(
+                    source = color,
+                    destination = pixels[offset + column],
+                    function = function,
+                    planeMask = planeMask,
+                    preserveAlpha = preserveAlpha,
+                    wireDepth = wireDepth,
+                )
                 painted = true
             }
         }
@@ -123,6 +130,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
         pixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (patternWidth <= 0 || patternHeight <= 0) return false
@@ -134,12 +143,14 @@ internal class XFramebuffer(
                 if (!insideClip(column, row, clipRectangles)) continue
                 val sourceX = (column - patternXOrigin).floorMod(patternWidth)
                 val sourceY = (row - patternYOrigin).floorMod(patternHeight)
-                val source = pixelAt(sourceX, sourceY)?.let { opaque(it) } ?: continue
+                val source = pixelAt(sourceX, sourceY)?.let { if (preserveAlpha || wireDepth != null) it else opaque(it) } ?: continue
                 pixels[offset + column] = corePixel(
                     source = source,
                     destination = pixels[offset + column],
                     function = function,
                     planeMask = planeMask,
+                    preserveAlpha = preserveAlpha,
+                    wireDepth = wireDepth,
                 )
                 painted = true
             }
@@ -156,6 +167,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
         val size = lineWidth.coerceAtLeast(1)
         val radiusBefore = (size - 1) / 2
@@ -165,9 +178,11 @@ internal class XFramebuffer(
             width = size,
             height = size,
             pixel = pixel,
+            preserveAlpha = preserveAlpha,
             clipRectangles = clipRectangles,
             function = function,
             planeMask = planeMask,
+            wireDepth = wireDepth,
         )
     }
 
@@ -185,6 +200,8 @@ internal class XFramebuffer(
         includeFirstPoint: Boolean = true,
         includeLastPoint: Boolean = true,
         strokeSource: XStrokeSource? = null,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
         var x = x1
         var y = y1
@@ -202,7 +219,17 @@ internal class XFramebuffer(
             if ((includeFirstPoint || !isFirstPoint) && (includeLastPoint || !isLastPoint) && dashPixel != null) {
                 val sourcePixel = if (strokeSource == null) dashPixel else strokeSource(x, y, dashPixel)
                 if (sourcePixel != null) {
-                    painted = drawPoint(x, y, sourcePixel, lineWidth, clipRectangles, function, planeMask) || painted
+                    painted = drawPoint(
+                        x,
+                        y,
+                        sourcePixel,
+                        lineWidth,
+                        clipRectangles,
+                        function,
+                        planeMask,
+                        preserveAlpha = preserveAlpha,
+                        wireDepth = wireDepth,
+                    ) || painted
                 }
             }
             if (isLastPoint) break
@@ -235,6 +262,8 @@ internal class XFramebuffer(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         strokeSource: XStrokeSource? = null,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
         if (width < 0 || height < 0) return false
         val right = x + width
@@ -243,17 +272,61 @@ internal class XFramebuffer(
         if (width == 0 && height == 0) {
             val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
             val sourcePixel = dashPixel?.let { if (strokeSource == null) it else strokeSource(x, y, it) }
-            return sourcePixel?.let { drawPoint(x, y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
+            return sourcePixel?.let {
+                drawPoint(x, y, it, lineWidth, clipRectangles, function, planeMask, preserveAlpha = preserveAlpha, wireDepth = wireDepth)
+            } ?: false
         }
         if (width == 0) {
-            return drawLine(x, y, x, bottom, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource)
+            return drawLine(
+                x,
+                y,
+                x,
+                bottom,
+                pixel,
+                lineWidth,
+                clipRectangles,
+                function,
+                planeMask,
+                dashPattern,
+                strokeSource = strokeSource,
+                preserveAlpha = preserveAlpha,
+                wireDepth = wireDepth,
+            )
         }
         if (height == 0) {
-            return drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource)
+            return drawLine(
+                x,
+                y,
+                right,
+                y,
+                pixel,
+                lineWidth,
+                clipRectangles,
+                function,
+                planeMask,
+                dashPattern,
+                strokeSource = strokeSource,
+                preserveAlpha = preserveAlpha,
+                wireDepth = wireDepth,
+            )
         }
 
         var painted = false
-        painted = drawLine(x, y, right, y, pixel, lineWidth, clipRectangles, function, planeMask, dashPattern, strokeSource = strokeSource) || painted
+        painted = drawLine(
+            x,
+            y,
+            right,
+            y,
+            pixel,
+            lineWidth,
+            clipRectangles,
+            function,
+            planeMask,
+            dashPattern,
+            strokeSource = strokeSource,
+            preserveAlpha = preserveAlpha,
+            wireDepth = wireDepth,
+        ) || painted
         painted = drawLine(
             right,
             y,
@@ -267,6 +340,8 @@ internal class XFramebuffer(
             dashPattern,
             includeFirstPoint = false,
             strokeSource = strokeSource,
+            preserveAlpha = preserveAlpha,
+            wireDepth = wireDepth,
         ) || painted
         painted = drawLine(
             right,
@@ -281,6 +356,8 @@ internal class XFramebuffer(
             dashPattern,
             includeFirstPoint = false,
             strokeSource = strokeSource,
+            preserveAlpha = preserveAlpha,
+            wireDepth = wireDepth,
         ) || painted
         painted = drawLine(
             x,
@@ -296,6 +373,8 @@ internal class XFramebuffer(
             includeFirstPoint = false,
             includeLastPoint = false,
             strokeSource = strokeSource,
+            preserveAlpha = preserveAlpha,
+            wireDepth = wireDepth,
         ) || painted
         return painted
     }
@@ -307,8 +386,12 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean =
-        fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask) { _, _ -> opaque(pixel) }
+        fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask, preserveAlpha, wireDepth) { _, _ ->
+            if (preserveAlpha || wireDepth != null) pixel else opaque(pixel)
+        }
 
     fun fillPolygonPattern(
         points: List<XPoint>,
@@ -320,13 +403,15 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
         pixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (patternWidth <= 0 || patternHeight <= 0) return false
-        return fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask) { x, y ->
+        return fillPolygonWithSource(points, fillRule, clipRectangles, function, planeMask, preserveAlpha, wireDepth) { x, y ->
             val sourceX = (x - patternXOrigin).floorMod(patternWidth)
             val sourceY = (y - patternYOrigin).floorMod(patternHeight)
-            pixelAt(sourceX, sourceY)?.let { opaque(it) }
+            pixelAt(sourceX, sourceY)?.let { if (preserveAlpha || wireDepth != null) it else opaque(it) }
         }
     }
 
@@ -336,6 +421,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        preserveAlpha: Boolean,
+        wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (points.size < 3) return false
@@ -357,11 +444,11 @@ internal class XFramebuffer(
             }
             intersections.sort()
             if (fillRule == XGraphicsContext.WindingRule) {
-                painted = fillWindingScanline(y, points, scanY, clipRectangles, function, planeMask, sourceAt) || painted
+                painted = fillWindingScanline(y, points, scanY, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
             } else {
                 var index = 0
                 while (index + 1 < intersections.size) {
-                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], clipRectangles, function, planeMask, sourceAt) || painted
+                    painted = fillScanlineSpan(y, intersections[index], intersections[index + 1], clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
                     index += 2
                 }
             }
@@ -382,6 +469,8 @@ internal class XFramebuffer(
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
         strokeSource: XStrokeSource? = null,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
         val points = sampledArcPoints(arc)
         if (points.isEmpty()) return false
@@ -390,7 +479,19 @@ internal class XFramebuffer(
         if (points.size == 1) {
             val dashPixel = if (dashPattern == null) pixel else dashPattern.pixel()
             val sourcePixel = dashPixel?.let { if (strokeSource == null) it else strokeSource(points[0].x, points[0].y, it) }
-            return sourcePixel?.let { drawPoint(points[0].x, points[0].y, it, lineWidth, clipRectangles, function, planeMask) } ?: false
+            return sourcePixel?.let {
+                drawPoint(
+                    points[0].x,
+                    points[0].y,
+                    it,
+                    lineWidth,
+                    clipRectangles,
+                    function,
+                    planeMask,
+                    preserveAlpha = preserveAlpha,
+                    wireDepth = wireDepth,
+                )
+            } ?: false
         }
         for (index in 0 until points.lastIndex) {
             val start = points[index]
@@ -408,6 +509,8 @@ internal class XFramebuffer(
                 dashPattern,
                 includeFirstPoint = index == 0,
                 strokeSource = strokeSource,
+                preserveAlpha = preserveAlpha,
+                wireDepth = wireDepth,
             ) || painted
         }
         return painted
@@ -420,8 +523,12 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
-        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask) { _, _ -> opaque(pixel) }
+        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask, preserveAlpha, wireDepth) { _, _ ->
+            if (preserveAlpha || wireDepth != null) pixel else opaque(pixel)
+        }
     }
 
     fun fillArcPattern(
@@ -434,13 +541,15 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
         pixelAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (patternWidth <= 0 || patternHeight <= 0) return false
-        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask) { x, y ->
+        return fillArcWithSource(arc, arcMode, clipRectangles, function, planeMask, preserveAlpha, wireDepth) { x, y ->
             val sourceX = (x - patternXOrigin).floorMod(patternWidth)
             val sourceY = (y - patternYOrigin).floorMod(patternHeight)
-            pixelAt(sourceX, sourceY)?.let { opaque(it) }
+            pixelAt(sourceX, sourceY)?.let { if (preserveAlpha || wireDepth != null) it else opaque(it) }
         }
     }
 
@@ -450,11 +559,13 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        preserveAlpha: Boolean,
+        wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         if (arc.width <= 0 || arc.height <= 0 || arc.angle2 == 0) return false
         if (abs(arc.angle2) >= FullCircleAngle) {
-            return fillEllipse(arc, clipRectangles, function, planeMask, sourceAt)
+            return fillEllipse(arc, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt)
         }
 
         val arcPoints = sampledArcPoints(arc)
@@ -464,7 +575,7 @@ internal class XFramebuffer(
         } else {
             listOf(XPoint(arc.centerX().roundToInt(), arc.centerY().roundToInt())) + arcPoints
         }
-        return fillPolygonWithSource(polygon, XGraphicsContext.EvenOddRule, clipRectangles, function, planeMask, sourceAt)
+        return fillPolygonWithSource(polygon, XGraphicsContext.EvenOddRule, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt)
     }
 
     fun drawText(
@@ -476,6 +587,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
     ): Boolean {
         if (text.isEmpty()) return false
         val textWidth = (text.length * TextCellWidth).coerceAtLeast(1)
@@ -488,13 +601,15 @@ internal class XFramebuffer(
                 width = textWidth,
                 height = TextCellHeight,
                 pixel = background,
+                preserveAlpha = preserveAlpha,
                 clipRectangles = clipRectangles,
                 function = function,
                 planeMask = planeMask,
+                wireDepth = wireDepth,
             ) || painted
         }
 
-        val color = opaque(foreground)
+        val color = if (preserveAlpha || wireDepth != null) foreground else opaque(foreground)
         for (row in 0 until TextCellHeight) {
             val dy = top + row
             if (dy !in 0 until height) continue
@@ -504,7 +619,14 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 if (!textPixel(text, column, row)) continue
                 val index = dy * width + dx
-                pixels[index] = corePixel(source = color, destination = pixels[index], function = function, planeMask = planeMask)
+                pixels[index] = corePixel(
+                    source = color,
+                    destination = pixels[index],
+                    function = function,
+                    planeMask = planeMask,
+                    preserveAlpha = preserveAlpha,
+                    wireDepth = wireDepth,
+                )
                 painted = true
             }
         }
@@ -1605,6 +1727,7 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        wireDepth: Int? = null,
     ): Boolean {
         val bounds = clippedCopyBounds(
             sourceWidth = image.width,
@@ -1629,7 +1752,7 @@ internal class XFramebuffer(
                 val index = dy * this.width + dx
                 val sourcePixel = image.pixels[(bounds.sourceY + row) * image.width + bounds.sourceX + column]
                 pixels[index] = if (usesCoreRaster(function, planeMask)) {
-                    corePixel(source = sourcePixel, destination = pixels[index], function = function, planeMask = planeMask)
+                    corePixel(source = sourcePixel, destination = pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
                 } else {
                     sourcePixel
                 }
@@ -1652,6 +1775,7 @@ internal class XFramebuffer(
         sourceClipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        wireDepth: Int? = null,
     ): XCopyResult? {
         val bounds = destination.clippedCopyBounds(
             sourceWidth = this.width,
@@ -1686,7 +1810,7 @@ internal class XFramebuffer(
                 val index = dy * destination.width + dx
                 val sourcePixel = copied[row * bounds.width + column]
                 destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
-                    corePixel(source = sourcePixel, destination = destination.pixels[index], function = function, planeMask = planeMask)
+                    corePixel(source = sourcePixel, destination = destination.pixels[index], function = function, planeMask = planeMask, wireDepth = wireDepth)
                 } else {
                     sourcePixel
                 }
@@ -1716,6 +1840,9 @@ internal class XFramebuffer(
         sourceClipRectangles: List<XRectangleCommand>? = null,
         function: Int = XGraphicsContext.GXcopy,
         planeMask: Int = -1,
+        preserveAlpha: Boolean = false,
+        sourceWireDepth: Int? = null,
+        wireDepth: Int? = null,
     ): XCopyResult? {
         if (bitPlane == 0 || bitPlane.countOneBits() != 1) return null
         val bounds = destination.clippedCopyBounds(
@@ -1730,12 +1857,13 @@ internal class XFramebuffer(
         ) ?: return null
 
         val copied = IntArray(bounds.width * bounds.height)
-        val foregroundPixel = opaque(foreground)
-        val backgroundPixel = opaque(background)
+        val foregroundPixel = if (preserveAlpha || wireDepth != null) foreground else opaque(foreground)
+        val backgroundPixel = if (preserveAlpha || wireDepth != null) background else opaque(background)
         for (row in 0 until bounds.height) {
             for (column in 0 until bounds.width) {
                 val sourcePixel = pixels[(bounds.sourceY + row) * this.width + bounds.sourceX + column]
-                val targetPixel = if ((sourcePixel and bitPlane) != 0) foregroundPixel else backgroundPixel
+                val sourceWirePixel = sourceWireDepth?.let { wirePixelForDepth(sourcePixel, it) } ?: sourcePixel
+                val targetPixel = if ((sourceWirePixel and bitPlane) != 0) foregroundPixel else backgroundPixel
                 copied[row * bounds.width + column] = targetPixel
             }
         }
@@ -1753,7 +1881,14 @@ internal class XFramebuffer(
                 if (!insideClip(dx, dy, clipRectangles)) continue
                 val index = dy * destination.width + dx
                 destination.pixels[index] = if (usesCoreRaster(function, planeMask)) {
-                    corePixel(source = targetPixel, destination = destination.pixels[index], function = function, planeMask = planeMask)
+                    corePixel(
+                        source = targetPixel,
+                        destination = destination.pixels[index],
+                        function = function,
+                        planeMask = planeMask,
+                        preserveAlpha = preserveAlpha,
+                        wireDepth = wireDepth,
+                    )
                 } else {
                     targetPixel
                 }
@@ -2088,6 +2223,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        preserveAlpha: Boolean,
+        wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val bounds = clippedBounds(arc.x, arc.y, arc.width, arc.height) ?: return false
@@ -2105,7 +2242,14 @@ internal class XFramebuffer(
                 if (normalizedX * normalizedX + normalizedY * normalizedY > 1.0) continue
                 val index = row * width + column
                 val source = sourceAt(column, row) ?: continue
-                pixels[index] = corePixel(source = source, destination = pixels[index], function = function, planeMask = planeMask)
+                pixels[index] = corePixel(
+                    source = source,
+                    destination = pixels[index],
+                    function = function,
+                    planeMask = planeMask,
+                    preserveAlpha = preserveAlpha,
+                    wireDepth = wireDepth,
+                )
                 painted = true
             }
         }
@@ -4873,6 +5017,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        preserveAlpha: Boolean,
+        wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val events = mutableListOf<Pair<Double, Int>>()
@@ -4897,7 +5043,7 @@ internal class XFramebuffer(
             val x = events[index].first
             previousX?.let { previous ->
                 if (winding != 0) {
-                    painted = fillScanlineSpan(y, previous, x, clipRectangles, function, planeMask, sourceAt) || painted
+                    painted = fillScanlineSpan(y, previous, x, clipRectangles, function, planeMask, preserveAlpha, wireDepth, sourceAt) || painted
                 }
             }
             while (index < events.size && events[index].first == x) {
@@ -4916,6 +5062,8 @@ internal class XFramebuffer(
         clipRectangles: List<XRectangleCommand>?,
         function: Int,
         planeMask: Int,
+        preserveAlpha: Boolean,
+        wireDepth: Int?,
         sourceAt: (x: Int, y: Int) -> Int?,
     ): Boolean {
         val left = ceil(leftIntersection).toInt()
@@ -4926,7 +5074,14 @@ internal class XFramebuffer(
             if (!insideClip(x, y, clipRectangles)) continue
             val index = y * width + x
             val source = sourceAt(x, y) ?: continue
-            pixels[index] = corePixel(source = source, destination = pixels[index], function = function, planeMask = planeMask)
+            pixels[index] = corePixel(
+                source = source,
+                destination = pixels[index],
+                function = function,
+                planeMask = planeMask,
+                preserveAlpha = preserveAlpha,
+                wireDepth = wireDepth,
+            )
             painted = true
         }
         return painted
@@ -4977,10 +5132,20 @@ internal class XFramebuffer(
         return x1 + (y - y1) * (x2 - x1) / (y2 - y1)
     }
 
-    private fun corePixel(source: Int, destination: Int, function: Int, planeMask: Int): Int {
+    private fun corePixel(
+        source: Int,
+        destination: Int,
+        function: Int,
+        planeMask: Int,
+        preserveAlpha: Boolean = false,
+        wireDepth: Int? = null,
+    ): Int {
+        if (preserveAlpha && function == XGraphicsContext.GXcopy && planeMask == -1) return source
+        val effectiveSource = wireDepth?.let { wirePixelForDepth(source, it) } ?: source
+        val effectiveDestination = wireDepth?.let { wirePixelForDepth(destination, it) } ?: destination
         val mask = planeMask and CorePixelMask
-        val sourcePixel = source and CorePixelMask
-        val destinationPixel = destination and CorePixelMask
+        val sourcePixel = effectiveSource and CorePixelMask
+        val destinationPixel = effectiveDestination and CorePixelMask
         val functionPixel = when (function) {
             XGraphicsContext.GXclear -> 0
             XGraphicsContext.GXand -> sourcePixel and destinationPixel
@@ -5000,8 +5165,19 @@ internal class XFramebuffer(
             XGraphicsContext.GXset -> CorePixelMask
             else -> sourcePixel
         } and CorePixelMask
-        return (destination and 0xff00_0000.toInt()) or ((destinationPixel and mask.inv()) or (functionPixel and mask))
+        return (effectiveDestination and 0xff00_0000.toInt()) or ((destinationPixel and mask.inv()) or (functionPixel and mask))
     }
+
+    private fun wirePixelForDepth(pixel: Int, depth: Int): Int =
+        when (depth) {
+            1 -> if ((pixel and 1) != 0 || ((pixel ushr 24) and 0xff) >= 0x80) 1 else 0
+            8 -> {
+                val lowByte = pixel and 0xff
+                val alphaByte = (pixel ushr 24) and 0xff
+                if (alphaByte == 0xff && lowByte != 0) lowByte else alphaByte or lowByte
+            }
+            else -> pixel
+        }
 
     private data class CopyBounds(
         val sourceX: Int,
