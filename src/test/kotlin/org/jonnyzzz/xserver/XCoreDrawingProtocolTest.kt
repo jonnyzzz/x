@@ -8049,7 +8049,7 @@ class XCoreDrawingProtocolTest {
                 assertEquals(1, pointer[0].toInt())
                 assertEquals(3, u16le(pointer, 2))
                 val stateJson = httpGet(server.localPort, "/state.json")
-                assertContains(stateJson, """"passiveButtonGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":0,"buttonName":"AnyButton","modifiers":32768,"modifiersName":"AnyModifier","releasedCombinations":[]}]""")
+                assertContains(stateJson, """"passiveButtonGrabs":[{"window":"0x${WindowId.toString(16)}","ownerEvents":true,"eventMask":"0xc","pointerMode":1,"keyboardMode":0,"confineTo":null,"cursor":null,"button":0,"buttonName":"AnyButton","modifiers":32768,"modifiersName":"AnyModifier","releasedCombinations":[]}]""")
             }
             server.close()
             serverThread.join(1_000)
@@ -8080,6 +8080,57 @@ class XCoreDrawingProtocolTest {
                 val up = server.input.pointerUp(10, 10, button = 1)
                 assertEquals(1, up.deliveredEvents)
                 assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `AllowEvents AsyncPointer thaws queued release from sync passive GrabButton`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(
+                    grabButtonRequest(
+                        WindowId,
+                        eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease,
+                        pointerMode = 0,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+
+                val down = server.input.pointerDown(10, 10, button = 1)
+                assertEquals(1, down.deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0""")
+
+                val up = server.input.pointerUp(10, 10, button = 1)
+                assertEquals(0, up.deliveredEvents)
+                socket.soTimeout = 250
+                assertFailsWith<SocketTimeoutException> {
+                    input.readExactly(32)
+                }
+                assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[{"kind":"pointer","window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0""")
+
+                socket.soTimeout = 2_000
+                out.write(allowEventsRequest(mode = 0))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(5, u16le(pointer, 2))
                 assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
             }
             server.close()
@@ -8535,7 +8586,7 @@ class XCoreDrawingProtocolTest {
                     val stateJson = httpGet(server.localPort, "/state.json")
                     assertContains(stateJson, """"button":0,"buttonName":"AnyButton","modifiers":32768""")
                     assertContains(stateJson, """"releasedCombinations":[{"button":1,"buttonName":"1","modifiers":0,"modifiersName":"0x0"}]""")
-                    assertContains(stateJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":0""")
+                    assertContains(stateJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":1,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":0""")
                     assertFalse(stateJson.contains(""""button":2,"buttonName":"2","modifiers":0"""))
                 }
             }
@@ -8585,7 +8636,7 @@ class XCoreDrawingProtocolTest {
                     assertEquals(1, recoveredPointer[0].toInt())
                     assertEquals(4, u16le(recoveredPointer, 2))
                     val updatedJson = httpGet(server.localPort, "/state.json")
-                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":5""")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":1,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":5""")
                     assertFalse(updatedJson.contains(""""button":2,"buttonName":"2","modifiers":5"""))
                 }
             }
@@ -8633,7 +8684,7 @@ class XCoreDrawingProtocolTest {
                     assertEquals(1, recoveredPointer[0].toInt())
                     assertEquals(4, u16le(recoveredPointer, 2))
                     val updatedJson = httpGet(server.localPort, "/state.json")
-                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":0,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":2""")
+                    assertContains(updatedJson, """},{"window":"0x${WindowId.toString(16)}","ownerEvents":false,"eventMask":"0xc","pointerMode":1,"keyboardMode":0,"confineTo":null,"cursor":null,"button":1,"buttonName":"1","modifiers":2""")
                     assertFalse(updatedJson.contains(""""button":1,"buttonName":"1","modifiers":3"""))
                 }
             }
@@ -18971,7 +19022,7 @@ class XCoreDrawingProtocolTest {
         window: Int,
         ownerEvents: Int = 0,
         eventMask: Int = 0x000c,
-        pointerMode: Int = 0,
+        pointerMode: Int = 1,
         keyboardMode: Int = 0,
         confineTo: Int = 0,
         cursor: Int = 0,

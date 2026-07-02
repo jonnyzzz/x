@@ -239,6 +239,13 @@ internal data class XPointerDispatch(
     val rootY: Int,
 )
 
+internal data class XQueuedPointerButton(
+    val x: Int,
+    val y: Int,
+    val button: Int,
+    val pressed: Boolean,
+)
+
 internal data class XKeyEvent(
     val type: XKeyEventType,
     val keycode: Int,

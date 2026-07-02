@@ -149,6 +149,8 @@ internal class X11State(
     private var keyboardMapping = XKeyboardMapping.Default
     private var keyboardControl = XKeyboardControlSettings.Default
     private var activePointerGrab: XInputGrab? = null
+    private var frozenPointerOwner: XEventSink? = null
+    private val frozenPointerButtons = mutableListOf<XQueuedPointerButton>()
     private var activeKeyboardGrab: XInputGrab? = null
     private val passiveButtonGrabs = mutableListOf<XPassiveButtonGrab>()
     private val passiveKeyGrabs = mutableListOf<XPassiveKeyGrab>()
@@ -1345,6 +1347,7 @@ internal class X11State(
         val previousCursor = displayedCursorIdentity()
         val effectiveTime = if (grab.time == 0) serverTime else grab.time
         lastPointerGrabTime = effectiveTime
+        clearFrozenPointer(grab.owner)
         activePointerGrab = grab.copy(time = effectiveTime)
         return XPointerGrabResult(
             status = XGrabStatus.Success,
@@ -1371,6 +1374,7 @@ internal class X11State(
                 activating = false,
             )
             activePointerGrab = null
+            clearFrozenPointer(grab.owner)
             return XPointerUngrabResult(
                 released = true,
                 crossingDispatches = crossingDispatches,
@@ -1499,7 +1503,7 @@ internal class X11State(
     }
 
     @Synchronized
-    fun allowEvents(owner: XEventSink, mode: Int, time: Int) {
+    fun allowEvents(owner: XEventSink, mode: Int, time: Int): List<XQueuedPointerButton> {
         var lastGrabTime = 0
         val pointerGrab = activePointerGrab
         if (pointerGrab?.owner == owner) lastGrabTime = pointerGrab.time
@@ -1514,13 +1518,19 @@ internal class X11State(
                     Integer.compareUnsigned(time, serverTime) > 0
                 )
         ) {
-            return
+            return emptyList()
         }
         recordInputControlOperation(
             operation = "AllowEvents",
             mode = mode,
             time = if (time == 0) serverTime else time,
         )
+        return if ((mode == 0 || mode == 6) && frozenPointerOwner == owner) {
+            frozenPointerOwner = null
+            frozenPointerButtons.toList().also { frozenPointerButtons.clear() }
+        } else {
+            emptyList()
+        }
     }
 
     @Synchronized
@@ -1537,7 +1547,10 @@ internal class X11State(
         } else {
             emptyList()
         }
-        if (pointerGrab?.owner == owner) activePointerGrab = null
+        if (pointerGrab?.owner == owner) {
+            activePointerGrab = null
+            clearFrozenPointer(owner)
+        }
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
         passiveButtonGrabs.removeIf { it.owner == owner }
         passiveKeyGrabs.removeIf { it.owner == owner }
@@ -1565,6 +1578,7 @@ internal class X11State(
                 activating = false,
             )
             activePointerGrab = null
+            clearFrozenPointer(pointerGrab.owner)
             pointerUngrabResult = XPointerUngrabResult(released = true, crossingDispatches = crossingDispatches)
         }
         val keyboardGrab = activeKeyboardGrab
@@ -1591,6 +1605,7 @@ internal class X11State(
                 )
         ) {
             activePointerGrab = null
+            clearFrozenPointer(pointerGrab.owner)
         }
         val keyboardGrab = activeKeyboardGrab
         if (keyboardGrab != null && keyboardGrab.windowId in unmappedIds) {
@@ -1614,6 +1629,7 @@ internal class X11State(
                 activating = false,
             )
             activePointerGrab = null
+            clearFrozenPointer(pointerGrab.owner)
             XPointerUngrabResult(released = true, crossingDispatches = crossingDispatches)
         } else {
             XPointerUngrabResult()
@@ -2032,6 +2048,13 @@ internal class X11State(
             val previousCursor = displayedCursorIdentity()
             val previousX = pointerX
             val previousY = pointerY
+            val frozenOwner = frozenPointerOwner
+            val frozenGrab = activePointerGrab
+            if (frozenOwner != null && frozenGrab?.owner == frozenOwner) {
+                frozenPointerButtons += XQueuedPointerButton(x = x, y = y, button = button, pressed = pressed)
+                val currentTarget = windowAt(pointerX, pointerY)?.id
+                return XPointerDispatch(targetWindowId = currentTarget, deliveredEvents = 0, rootX = pointerX, rootY = pointerY)
+            }
             val previousWindowId = windowAt(pointerX, pointerY)?.id
             val previousPath = previousWindowId?.let { windowPathToRoot(it) }.orEmpty()
             val confinedPosition = confinedPointerPosition(x, y)
@@ -2087,6 +2110,7 @@ internal class X11State(
                         time = time,
                         activating = true,
                     )
+                    if (grab.pointerMode == 0) frozenPointerOwner = grab.owner
                 }
             }
 
@@ -2157,6 +2181,7 @@ internal class X11State(
                     )
                 }
                 activePointerGrab = null
+                clearFrozenPointer(grab?.owner)
             }
             xfixesCursorNotifyDispatches += xfixesCursorNotifyDispatchesIfChanged(previousCursor, timestamp = time)
             if (targetId != null) focusWindowId = targetId
@@ -2178,6 +2203,13 @@ internal class X11State(
             rootX = finalRootX,
             rootY = finalRootY,
         )
+    }
+
+    private fun clearFrozenPointer(owner: XEventSink?) {
+        if (owner != null && frozenPointerOwner == owner) {
+            frozenPointerOwner = null
+            frozenPointerButtons.clear()
+        }
     }
 
     fun keyboardKey(keycode: Int, modifiers: Int, pressed: Boolean): XKeyDispatch {
