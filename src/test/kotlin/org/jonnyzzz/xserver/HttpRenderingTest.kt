@@ -818,6 +818,95 @@ class HttpRenderingTest {
     }
 
     @Test
+    fun `window preview svg clips child windows to ancestor geometry and shape`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val parent = 0x0020_0010
+                val child = 0x0020_0011
+                out.write(createWindowRequest(parent, x = 10, y = 10, width = 80, height = 70))
+                out.write(changePropertyRequest(parent, "parent clipped preview"))
+                out.write(
+                    shapeRectanglesRequest(
+                        window = parent,
+                        kind = XFixes.ShapeBounding,
+                        rectangles = listOf(XRectangleCommand(0, 0, 65, 70)),
+                    ),
+                )
+                out.write(createWindowRequest(child, parent = parent, x = 55, y = 8, width = 50, height = 20))
+                out.write(changePropertyRequest(child, "child clipped by parent preview"))
+                out.write(mapWindowRequest(parent))
+                out.write(mapWindowRequest(child))
+                out.flush()
+                Thread.sleep(100)
+
+                val html = httpGet(server.localPort, "/").body
+                val labelIndex = html.indexOf("""aria-label="parent clipped preview"""")
+                assertEquals(true, labelIndex >= 0, "Parent window preview SVG must be present")
+                val previewStart = html.lastIndexOf("<svg", labelIndex)
+                val previewEnd = html.indexOf("</svg>", labelIndex)
+                assertEquals(true, previewStart >= 0 && previewEnd > previewStart, "Parent preview SVG must be extractable")
+                val preview = html.substring(previewStart, previewEnd)
+                val childClip = Regex("""<clipPath\b(?=[^>]*\bid="clip-preview-200010-200011")[\s\S]*?</clipPath>""")
+                    .find(preview)
+                    ?.value
+                    .orEmpty()
+                assertContains(childClip, """x="55"""")
+                assertContains(childClip, """y="8"""")
+                assertContains(childClip, """width="10"""")
+                assertContains(childClip, """height="20"""")
+                assertFalse(
+                    Regex("""<rect\b(?=[^>]*\bwidth="25")(?=[^>]*\bheight="20")""").containsMatchIn(childClip),
+                    "Parent preview clip path must include ancestor SHAPE clipping, not only ancestor geometry",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `window preview svg omits zero visible top level windows`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val offscreen = 0x0020_0010
+                out.write(createWindowRequest(offscreen, x = 130, y = 10, width = 80, height = 70))
+                out.write(changePropertyRequest(offscreen, "offscreen preview"))
+                out.write(mapWindowRequest(offscreen))
+                out.flush()
+                Thread.sleep(100)
+
+                val state = httpGet(server.localPort, "/state.json").body
+                assertContains(state, """"id":"0x200010"""")
+                assertContains(state, """"visibleWidth":0,"visibleHeight":0,"mapped":true""")
+
+                val html = httpGet(server.localPort, "/").body
+                assertFalse(
+                    html.contains("""aria-label="offscreen preview""""),
+                    "Zero-visible top-level windows must stay in state but not emit preview SVGs",
+                )
+                assertFalse(
+                    html.contains("""clip-preview-200010"""),
+                    "Zero-visible top-level windows must not leave unresolved preview clip references",
+                )
+            }
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `window preview svg paints each child window layer in stacking order`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }

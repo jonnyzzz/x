@@ -419,6 +419,7 @@ internal object SvgScreenRenderer {
                 it.visibleWidth > 0 &&
                 it.visibleHeight > 0
         }
+        val windowsById = snapshot.windows.associateBy { it.id }
         with(builder) {
             comment(RenderCredit.Text)
             svgElement("defs") {
@@ -427,6 +428,7 @@ internal object SvgScreenRenderer {
                         renderClipRectangles(
                             builder = this,
                             window = window,
+                            windowsById = windowsById,
                             originX = 0,
                             originY = 0,
                             base = XRectangleCommand(window.visibleX, window.visibleY, window.visibleWidth, window.visibleHeight),
@@ -505,7 +507,9 @@ internal object SvgScreenRenderer {
                     it.parentId == X11Ids.RootWindow &&
                     it.id != X11Ids.RootWindow &&
                     it.width >= 64 &&
-                    it.height >= 64
+                    it.height >= 64 &&
+                    it.visibleWidth > 0 &&
+                    it.visibleHeight > 0
             }
             .sortedWith(compareByDescending<XWindowSnapshot> { it.focused }.thenBy { it.stackingIndex })
         builder.element("div", "class" to "preview-grid") {
@@ -667,7 +671,15 @@ internal object SvgScreenRenderer {
 
     private fun renderWindowSvg(builder: XmlDom, snapshot: XScreenSnapshot, rootWindow: XWindowSnapshot) {
         val subtree = subtreeWindows(snapshot, rootWindow)
-            .filter { it.windowClass == XWindowClass.InputOutput && it.mapped && it.width > 0 && it.height > 0 }
+            .filter {
+                it.windowClass == XWindowClass.InputOutput &&
+                    it.mapped &&
+                    it.width > 0 &&
+                    it.height > 0 &&
+                    it.visibleWidth > 0 &&
+                    it.visibleHeight > 0
+            }
+        val windowsById = snapshot.windows.associateBy { it.id }
         val clipPrefix = "preview-${rootWindow.idHex.drop(2)}"
         builder.svgElement(
             "svg",
@@ -686,9 +698,15 @@ internal object SvgScreenRenderer {
                         renderClipRectangles(
                             builder = this,
                             window = window,
+                            windowsById = windowsById,
                             originX = rootWindow.x,
                             originY = rootWindow.y,
-                            base = XRectangleCommand(window.x - rootWindow.x, window.y - rootWindow.y, window.width, window.height),
+                            base = XRectangleCommand(
+                                window.visibleX - rootWindow.x,
+                                window.visibleY - rootWindow.y,
+                                window.visibleWidth,
+                                window.visibleHeight,
+                            ),
                         )
                     }
                 }
@@ -1097,11 +1115,12 @@ internal object SvgScreenRenderer {
     private fun renderClipRectangles(
         builder: XmlDom,
         window: XWindowSnapshot,
+        windowsById: Map<Int, XWindowSnapshot>,
         originX: Int,
         originY: Int,
         base: XRectangleCommand,
     ) {
-        val rectangles = window.renderShape?.mapNotNull { rectangle ->
+        var rectangles = window.renderShape?.mapNotNull { rectangle ->
             intersectRectangles(
                 XRectangleCommand(
                     x = window.x - originX + rectangle.x,
@@ -1112,6 +1131,32 @@ internal object SvgScreenRenderer {
                 base,
             )
         } ?: listOf(base)
+        var parentId = window.parentId
+        while (parentId != X11Ids.RootWindow) {
+            val ancestor = windowsById[parentId] ?: break
+            val ancestorShape = ancestor.renderShape
+            if (ancestorShape != null) {
+                val ancestorVisible = XRectangleCommand(
+                    ancestor.visibleX - originX,
+                    ancestor.visibleY - originY,
+                    ancestor.visibleWidth,
+                    ancestor.visibleHeight,
+                )
+                val ancestorRectangles = ancestorShape.mapNotNull { rectangle ->
+                    intersectRectangles(
+                        XRectangleCommand(
+                            x = ancestor.x - originX + rectangle.x,
+                            y = ancestor.y - originY + rectangle.y,
+                            width = rectangle.width,
+                            height = rectangle.height,
+                        ),
+                        ancestorVisible,
+                    )
+                }
+                rectangles = intersectRectangleSets(rectangles, ancestorRectangles)
+            }
+            parentId = ancestor.parentId
+        }
         for (rectangle in rectangles) {
             builder.svgElement(
                 "rect",
@@ -1122,6 +1167,11 @@ internal object SvgScreenRenderer {
             )
         }
     }
+
+    private fun intersectRectangleSets(first: List<XRectangleCommand>, second: List<XRectangleCommand>): List<XRectangleCommand> =
+        first.flatMap { left ->
+            second.mapNotNull { right -> intersectRectangles(left, right) }
+        }
 
     private fun intersectRectangles(first: XRectangleCommand, second: XRectangleCommand): XRectangleCommand? {
         val left = maxOf(first.x, second.x)
