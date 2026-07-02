@@ -34,12 +34,16 @@ The same TCP port also serves HTTP for agent observation:
 - `/text` returns an HTML text report.
 - `/text.txt` returns the plain text report.
 - `/state.json` returns a compact JSON snapshot.
+- `/input/move` accepts pointer movement requests and injects X11 `MotionNotify` events.
 - `/input/click` accepts pointer click requests and injects X11 `ButtonPress`/`ButtonRelease` events.
+- `/input/key` accepts keyboard requests and injects X11 key events.
 
 The SVG and text renderers both use the maintained X server state model: windows, labels, mapping state, focus, stacking order, overlap rectangles, Render pictures, and painted offscreen pixmaps.
-The HTML/SVG view is also an input surface: clicking the window map or a large window preview posts to the same `/input/click` API that agents can call directly.
+The HTML/SVG view is also an input surface: moving or clicking over the window map or a large window preview posts to the same `/input/move` and `/input/click` APIs that agents can call directly.
 
 ![IntelliJ IDEA Community rendered through the X server HTTP/SVG view](docs/images/intellij-demo-renderer.png)
+
+Refresh this screenshot after visible renderer changes so the README tracks the current IntelliJ parity state.
 
 The test suite starts with:
 
@@ -118,9 +122,17 @@ IntelliJ debug/trace categories, and verbose JCEF/Chromium logs under
 Send input through the HTTP API:
 
 ```bash
+curl -fsS -X POST http://127.0.0.1:16000/input/move \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data 'x=1920&y=1080'
+
 curl -fsS -X POST http://127.0.0.1:16000/input/click \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data 'x=1920&y=1080&button=left'
+
+curl -fsS -X POST http://127.0.0.1:16000/input/key \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data 'keycode=65'
 ```
 
 `button` accepts `left`, `middle`, `right`, `wheel-up`, `wheel-down`, or the raw X11 button number `1..255`.

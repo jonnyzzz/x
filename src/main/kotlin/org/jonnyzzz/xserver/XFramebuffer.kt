@@ -2041,12 +2041,6 @@ internal class XFramebuffer(
     ): Boolean {
         val destination = destinationQuad.toDoubleQuad()
         val source = sourceQuad.toDoubleQuad()
-        val ux = destination.p2.x - destination.p1.x
-        val uy = destination.p2.y - destination.p1.y
-        val vx = destination.p4.x - destination.p1.x
-        val vy = destination.p4.y - destination.p1.y
-        val determinant = ux * vy - uy * vx
-        if (determinant == 0.0) return false
         val startX = maxOf(0, floor(destination.points.minOf { it.x }).toInt())
         val endX = minOf(width, ceil(destination.points.maxOf { it.x }).toInt())
         val startY = maxOf(0, floor(destination.points.minOf { it.y }).toInt())
@@ -2057,13 +2051,13 @@ internal class XFramebuffer(
             for (x in startX until endX) {
                 if (!insideClip(x, y, clipRectangles, clipMask)) continue
                 val sampleX = x + 0.5
-                val dx = sampleX - destination.p1.x
-                val dy = sampleY - destination.p1.y
-                val u = (dx * vy - dy * vx) / determinant
-                val v = (ux * dy - uy * dx) / determinant
-                if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0) continue
-                val sourceX = bilinearCoordinate(source.p1.x, source.p2.x, source.p3.x, source.p4.x, u, v)
-                val sourceY = bilinearCoordinate(source.p1.y, source.p2.y, source.p3.y, source.p4.y, u, v)
+                val coordinates = inverseBilinearCoordinates(destination, sampleX, sampleY) ?: continue
+                val (u, v) = coordinates
+                if (u < -TransformEpsilon || u >= 1.0 + TransformEpsilon || v < -TransformEpsilon || v >= 1.0 + TransformEpsilon) continue
+                val clampedU = u.coerceIn(0.0, 1.0 - TransformEpsilon)
+                val clampedV = v.coerceIn(0.0, 1.0 - TransformEpsilon)
+                val sourceX = bilinearCoordinate(source.p1.x, source.p2.x, source.p3.x, source.p4.x, clampedU, clampedV)
+                val sourceY = bilinearCoordinate(source.p1.y, source.p2.y, source.p3.y, source.p4.y, clampedU, clampedV)
                 val pixel = sourcePixelAt(sourceX, sourceY) ?: continue
                 val index = y * width + x
                 pixels[index] = renderPixel(pixel, pixels[index], operation, maskAlpha = 255)
@@ -2435,6 +2429,94 @@ internal class XFramebuffer(
             p2 * u * (1.0 - v) +
             p3 * u * v +
             p4 * (1.0 - u) * v
+
+    private fun inverseBilinearCoordinates(quad: DoubleQuad, x: Double, y: Double): Pair<Double, Double>? {
+        val ax = quad.p1.x
+        val ay = quad.p1.y
+        val bx = quad.p2.x - quad.p1.x
+        val by = quad.p2.y - quad.p1.y
+        val cx = quad.p4.x - quad.p1.x
+        val cy = quad.p4.y - quad.p1.y
+        val dx = quad.p1.x - quad.p2.x + quad.p3.x - quad.p4.x
+        val dy = quad.p1.y - quad.p2.y + quad.p3.y - quad.p4.y
+        val targetX = x - ax
+        val targetY = y - ay
+        val candidates = mutableListOf<Pair<Double, Double>>()
+        val uCandidates = solveBilinearQuadratic(
+            a = -cross(bx, by, dx, dy),
+            b = cross(targetX, targetY, dx, dy) - cross(bx, by, cx, cy),
+            c = cross(targetX, targetY, cx, cy),
+        )
+        for (u in uCandidates) {
+            val vx = cx + dx * u
+            val vy = cy + dy * u
+            val remainderX = targetX - bx * u
+            val remainderY = targetY - by * u
+            coordinateFromVector(remainderX, remainderY, vx, vy)?.let { v -> candidates += u to v }
+        }
+        val vCandidates = solveBilinearQuadratic(
+            a = -cross(cx, cy, dx, dy),
+            b = cross(targetX, targetY, dx, dy) - cross(cx, cy, bx, by),
+            c = cross(targetX, targetY, bx, by),
+        )
+        for (v in vCandidates) {
+            val ux = bx + dx * v
+            val uy = by + dy * v
+            val remainderX = targetX - cx * v
+            val remainderY = targetY - cy * v
+            coordinateFromVector(remainderX, remainderY, ux, uy)?.let { u -> candidates += u to v }
+        }
+        return candidates
+            .asSequence()
+            .mapNotNull { (u, v) -> bilinearInverseCandidate(quad, x, y, u, v) }
+            .sortedWith(
+                compareBy<BilinearInverseCandidate> { if (it.inUnitSquare) 0 else 1 }
+                    .thenBy { it.residualSquared },
+            )
+            .firstOrNull()
+            ?.let { it.u to it.v }
+    }
+
+    private fun solveBilinearQuadratic(a: Double, b: Double, c: Double): List<Double> {
+        if (abs(a) <= TransformEpsilon) {
+            return if (abs(b) <= TransformEpsilon) emptyList() else listOf(-c / b)
+        }
+        val discriminant = b * b - 4.0 * a * c
+        if (discriminant < -TransformResidualEpsilon) return emptyList()
+        val root = sqrt(maxOf(0.0, discriminant))
+        val q = -0.5 * (b + if (b >= 0.0) root else -root)
+        if (abs(q) <= TransformEpsilon) return listOf(-b / (2.0 * a))
+        return listOf(q / a, c / q)
+    }
+
+    private fun cross(ax: Double, ay: Double, bx: Double, by: Double): Double =
+        ax * by - ay * bx
+
+    private fun coordinateFromVector(x: Double, y: Double, vectorX: Double, vectorY: Double): Double? =
+        if (abs(vectorX) >= abs(vectorY)) {
+            if (abs(vectorX) <= TransformEpsilon) null else x / vectorX
+        } else {
+            if (abs(vectorY) <= TransformEpsilon) null else y / vectorY
+        }
+
+    private fun bilinearInverseCandidate(quad: DoubleQuad, x: Double, y: Double, u: Double, v: Double): BilinearInverseCandidate? {
+        if (!u.isFinite() || !v.isFinite()) return null
+        val mappedX = bilinearCoordinate(quad.p1.x, quad.p2.x, quad.p3.x, quad.p4.x, u, v)
+        val mappedY = bilinearCoordinate(quad.p1.y, quad.p2.y, quad.p3.y, quad.p4.y, u, v)
+        val residualX = mappedX - x
+        val residualY = mappedY - y
+        val residualSquared = residualX * residualX + residualY * residualY
+        if (residualSquared > TransformResidualEpsilon * TransformResidualEpsilon) return null
+        return BilinearInverseCandidate(
+            u = u,
+            v = v,
+            residualSquared = residualSquared,
+            inUnitSquare = u >= -TransformEpsilon &&
+                u <= 1.0 + TransformEpsilon &&
+                v >= -TransformEpsilon &&
+                v <= 1.0 + TransformEpsilon,
+        )
+    }
 
     private fun compositeTriangle(
         operation: Int,
@@ -5202,6 +5284,13 @@ internal class XFramebuffer(
         val points: List<DoublePoint> get() = listOf(p1, p2, p3, p4)
     }
 
+    private data class BilinearInverseCandidate(
+        val u: Double,
+        val v: Double,
+        val residualSquared: Double,
+        val inUnitSquare: Boolean,
+    )
+
     companion object {
         private const val MaxPixels = 16_777_216
         private const val FullCircleAngle = 360 * 64
@@ -5210,6 +5299,8 @@ internal class XFramebuffer(
         private const val FixedOne = 65_536.0
         private const val TrapezoidSampleGrid = 4
         private const val TrapezoidSamples = TrapezoidSampleGrid * TrapezoidSampleGrid
+        private const val TransformEpsilon = 1.0e-9
+        private const val TransformResidualEpsilon = 1.0e-6
         const val TextCellWidth = 8
         const val TextAscent = 12
         const val TextDescent = 4

@@ -11250,6 +11250,125 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Transform maps source quad into non parallelogram destination quad`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 8, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(2 to 2, 5 to 2, 4 to 5, 2 to 5),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 8))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 8, x = 2, y = 2))
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 2))
+                assertEquals(0xffffff00.toInt(), pixelAt(image, imageWidth = 8, x = 2, y = 4))
+                assertEquals(0xffffffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 4))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 5, y = 4))
+                assertContains(httpGet(server.localPort, "/text.txt"), "Transform")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Transform paints valid narrow convex quad with multiple inverse roots`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 8, height = 10, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                out.write(
+                    renderTransform(
+                        PixmapPictureId,
+                        PictureId,
+                        sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                        destinationQuad = listOf(2 to 2, 3 to 2, 4 to 3, 2 to 8),
+                    ),
+                )
+                out.write(getImageRequest(WindowId, x = 0, y = 0, width = 8, height = 10))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffffffff.toInt(), pixelAt(image, imageWidth = 8, x = 3, y = 3))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 8, x = 4, y = 3))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `RENDER Transform paints large near parallelogram convex quad without cancellation holes`() {
+        XServer(ServerOptions(port = 0, width = 2200, height = 2200)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 0, y = 0, width = 2100, height = 2100, borderWidth = 0))
+                out.write(createPixmapRequest(PixmapId, depth = 24, width = 2, height = 2))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Rgb24Format))
+                out.write(renderCreatePicture(PictureId, WindowId, XRender.Rgb24Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0x0000, alpha = 0xffff))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 1, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff))
+                out.write(renderFillRectangles(PictureId, x = 0, y = 0, width = 2100, height = 2100, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff))
+                val body = renderTransformBody(
+                    PixmapPictureId,
+                    PictureId,
+                    sourceQuad = listOf(0 to 0, 2 to 0, 2 to 2, 0 to 2),
+                )
+                putFixedQuadRaw(
+                    body,
+                    44,
+                    listOf(
+                        0 to 0,
+                        (2000 shl 16) to 0,
+                        (2000 shl 16) + 3 to (2000 shl 16) + 5,
+                        0 to (2000 shl 16),
+                    ),
+                )
+                out.write(renderTransformRaw(body))
+                out.write(getImageRequest(WindowId, x = 1799, y = 199, width = 4, height = 4))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xff00_ff00.toInt(), pixelAt(image, imageWidth = 4, x = 1, y = 1))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER Transform samples linear gradient at fractional source coordinates`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -11515,7 +11634,7 @@ class XRenderProtocolTest {
                         renderTransformBody(
                             SolidPictureId,
                             PictureId,
-                            destinationQuad = listOf(2 to 2, 5 to 2, 4 to 5, 2 to 5),
+                            destinationQuad = listOf(2 to 2, 5 to 5, 5 to 2, 2 to 5),
                         ),
                     ),
                 )
@@ -14531,6 +14650,12 @@ class XRenderProtocolTest {
     private fun putFixedQuad(bytes: ByteArray, offset: Int, quad: List<Pair<Int, Int>>) {
         quad.forEachIndexed { index, point ->
             putFixedPoint(bytes, offset + index * 8, point.first, point.second)
+        }
+    }
+
+    private fun putFixedQuadRaw(bytes: ByteArray, offset: Int, quad: List<Pair<Int, Int>>) {
+        quad.forEachIndexed { index, point ->
+            putFixedPointRaw(bytes, offset + index * 8, point.first, point.second)
         }
     }
 

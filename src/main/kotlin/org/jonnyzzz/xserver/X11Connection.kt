@@ -3455,14 +3455,29 @@ internal class X11Connection(
     }
 
     private fun isSupportedTransformQuad(quad: XFixedQuad): Boolean {
-        val parallelogram = quad.p1.x.toLong() + quad.p3.x.toLong() == quad.p2.x.toLong() + quad.p4.x.toLong() &&
-            quad.p1.y.toLong() + quad.p3.y.toLong() == quad.p2.y.toLong() + quad.p4.y.toLong()
-        if (!parallelogram) return false
-        val ux = quad.p2.x.toLong() - quad.p1.x.toLong()
-        val uy = quad.p2.y.toLong() - quad.p1.y.toLong()
-        val vx = quad.p4.x.toLong() - quad.p1.x.toLong()
-        val vy = quad.p4.y.toLong() - quad.p1.y.toLong()
-        return ux * vy - uy * vx != 0L
+        var winding = 0
+        val points = quad.points
+        for (index in points.indices) {
+            val p1 = points[index]
+            val p2 = points[(index + 1) % points.size]
+            val p3 = points[(index + 2) % points.size]
+            val sign = edgeCrossSign(p1, p2, p3)
+            if (sign == 0) return false
+            if (winding == 0) {
+                winding = sign
+            } else if (winding != sign) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun edgeCrossSign(p1: XFixedPoint, p2: XFixedPoint, p3: XFixedPoint): Int {
+        val ux = BigInteger.valueOf(p2.x.toLong() - p1.x.toLong())
+        val uy = BigInteger.valueOf(p2.y.toLong() - p1.y.toLong())
+        val vx = BigInteger.valueOf(p3.x.toLong() - p2.x.toLong())
+        val vy = BigInteger.valueOf(p3.y.toLong() - p2.y.toLong())
+        return (ux * vy - uy * vx).signum()
     }
 
     private fun renderQueryFilters(body: ByteArray) {
