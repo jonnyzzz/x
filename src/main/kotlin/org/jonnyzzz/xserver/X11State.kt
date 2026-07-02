@@ -27,6 +27,7 @@ internal data class XResourceRemoval(
 
 internal data class XEventSinkRemoval(
     val xfixesSelectionNotifyDispatches: List<XXFixesSelectionNotifyDispatch>,
+    val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
 )
 
@@ -366,10 +367,11 @@ internal class X11State(
         val saveSetProcessing = processSaveSet(owner, currentResourceIds)
         val removal = removeClientResources(currentResourceIds, excludedSink = owner)
         saveSets.remove(owner)
-        val cursorNotifyDispatches = releaseInputGrabs(owner)
+        val inputGrabRelease = releaseInputGrabs(owner)
         return removal.copy(
             focusDispatches = saveSetProcessing.focusDispatches + removal.focusDispatches,
-            xfixesCursorNotifyDispatches = saveSetProcessing.xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches + cursorNotifyDispatches,
+            pointerUngrabResult = removal.pointerUngrabResult + inputGrabRelease,
+            xfixesCursorNotifyDispatches = saveSetProcessing.xfixesCursorNotifyDispatches + removal.xfixesCursorNotifyDispatches + inputGrabRelease.cursorNotifyDispatches,
         )
     }
 
@@ -1516,13 +1518,28 @@ internal class X11State(
     }
 
     @Synchronized
-    fun releaseInputGrabs(owner: XEventSink): List<XXFixesCursorNotifyDispatch> {
+    fun releaseInputGrabs(owner: XEventSink): XPointerUngrabResult {
         val previousCursor = displayedCursorIdentity()
-        if (activePointerGrab?.owner == owner) activePointerGrab = null
+        val pointerGrab = activePointerGrab
+        val crossingDispatches = if (pointerGrab?.owner == owner) {
+            pointerGrabCrossingEventDeliveries(
+                grabWindowId = pointerGrab.windowId,
+                mode = XNotifyMode.Ungrab,
+                time = currentServerTime(pointerGrab.time),
+                activating = false,
+            )
+        } else {
+            emptyList()
+        }
+        if (pointerGrab?.owner == owner) activePointerGrab = null
         if (activeKeyboardGrab?.owner == owner) activeKeyboardGrab = null
         passiveButtonGrabs.removeIf { it.owner == owner }
         passiveKeyGrabs.removeIf { it.owner == owner }
-        return xfixesCursorNotifyDispatchesIfChanged(previousCursor)
+        return XPointerUngrabResult(
+            released = pointerGrab?.owner == owner,
+            crossingDispatches = crossingDispatches,
+            cursorNotifyDispatches = xfixesCursorNotifyDispatchesIfChanged(previousCursor),
+        )
     }
 
     private fun releaseInputGrabsForResources(resourceIds: Set<Int>): XPointerUngrabResult {
@@ -1967,11 +1984,12 @@ internal class X11State(
         syncPriorities.remove(sink)
         windowOwners.entries.removeIf { it.value == sink }
         saveSets.remove(sink)
-        val xfixesCursorNotifyDispatches = releaseInputGrabs(sink)
+        val inputGrabRelease = releaseInputGrabs(sink)
         releaseServerGrab(sink)
         return XEventSinkRemoval(
             xfixesSelectionNotifyDispatches = xfixesSelectionNotifyDispatches,
-            xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
+            pointerUngrabResult = inputGrabRelease,
+            xfixesCursorNotifyDispatches = inputGrabRelease.cursorNotifyDispatches,
         )
     }
 

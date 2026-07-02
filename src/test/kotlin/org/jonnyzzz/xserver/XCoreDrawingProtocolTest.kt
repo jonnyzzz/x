@@ -1203,6 +1203,83 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `client disconnect emits ungrab mode crossings when releasing active pointer grab`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                Socket("127.0.0.1", server.localPort).use { owner ->
+                    observer.soTimeout = 2_000
+                    owner.soTimeout = 2_000
+                    setup(observer)
+                    setup(owner)
+
+                    val child = WindowId + 42
+                    val observerInput = observer.getInputStream()
+                    val observerOut = observer.getOutputStream()
+                    observerOut.write(createWindowRequest(child, x = 10, y = 10, width = 20, height = 20))
+                    observerOut.write(mapWindowRequest(child))
+                    observerOut.write(warpPointerRequest(destinationWindow = child, destinationX = 5, destinationY = 5))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+
+                    assertMapAndExpose(observerInput, child)
+                    val initialPointer = readReply(observerInput)
+                    assertEquals(1, initialPointer[0].toInt())
+                    assertEquals(child, u32le(initialPointer, 12))
+
+                    val ownerOut = owner.getOutputStream()
+                    ownerOut.write(grabPointerRequest(X11Ids.RootWindow))
+                    ownerOut.flush()
+                    val grab = readReply(owner.getInputStream())
+                    assertEquals(1, grab[0].toInt())
+                    assertEquals(0, grab[1].toInt() and 0xff)
+
+                    observerOut.write(changeWindowEventMaskRequest(X11Ids.RootWindow, XEventMasks.LeaveWindow))
+                    observerOut.write(changeWindowEventMaskRequest(child, XEventMasks.EnterWindow))
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    assertEquals(1, readReply(observerInput)[0].toInt())
+
+                    owner.close()
+
+                    val leaveRoot = observerInput.readExactly(32)
+                    assertCrossingEvent(
+                        leaveRoot,
+                        type = 8,
+                        detail = XNotifyDetail.Inferior,
+                        eventWindow = X11Ids.RootWindow,
+                        rootX = 15,
+                        rootY = 15,
+                        eventX = 15,
+                        eventY = 15,
+                        mode = XNotifyMode.Ungrab,
+                    )
+                    val enterChild = observerInput.readExactly(32)
+                    assertCrossingEvent(
+                        enterChild,
+                        type = 7,
+                        detail = XNotifyDetail.Ancestor,
+                        eventWindow = child,
+                        rootX = 15,
+                        rootY = 15,
+                        eventX = 5,
+                        eventY = 5,
+                        mode = XNotifyMode.Ungrab,
+                    )
+
+                    observerOut.write(queryPointerRequest())
+                    observerOut.flush()
+                    val finalPointer = readReply(observerInput)
+                    assertEquals(1, finalPointer[0].toInt())
+                    assertContains(httpGet(server.localPort, "/state.json"), """"inputGrabs":[]""")
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `XFIXES cursor notify tracks window cursor changes recolor and GetCursorImage serial`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7149,6 +7226,44 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `WarpPointer emits crossing event from root into selected window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(WindowId))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.EnterWindow))
+                out.write(warpPointerRequest(destinationWindow = WindowId, destinationX = 5, destinationY = 5))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+
+                val enter = input.readExactly(32)
+                assertCrossingEvent(
+                    enter,
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = WindowId,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val queryPointer = input.readExactly(32)
+                assertEquals(1, queryPointer[0].toInt() and 0xff)
+                assertEquals(5, u16le(queryPointer, 2))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `WarpPointer emits crossing events on selected ancestor path windows`() {
         XServer(ServerOptions(port = 0, width = 140, height = 100)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -7275,6 +7390,54 @@ class XCoreDrawingProtocolTest {
                 out.flush()
                 val pointer = readReply(input)
                 assertEquals(1, pointer[0].toInt() and 0xff)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `pointer button input emits crossing event from root before button press`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val input = socket.getInputStream()
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(WindowId))
+                out.write(changeWindowEventMaskRequest(WindowId, XEventMasks.EnterWindow or XEventMasks.ButtonPress))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, WindowId)
+                assertEquals(1, readReply(input)[0].toInt() and 0xff)
+
+                val down = server.input.pointerDown(15, 15, button = 1)
+                assertEquals(WindowId, down.targetWindowId)
+                assertEquals(2, down.deliveredEvents)
+
+                val enter = input.readExactly(32)
+                assertCrossingEvent(
+                    enter,
+                    type = 7,
+                    detail = XNotifyDetail.Ancestor,
+                    eventWindow = WindowId,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val button = input.readExactly(32)
+                assertButtonEvent(button, type = 4, detail = 1)
+                assertEquals(X11Ids.RootWindow, u32le(button, 8))
+                assertEquals(WindowId, u32le(button, 12))
+                assertEquals(0, u32le(button, 16))
+                assertEquals(15, u16le(button, 20))
+                assertEquals(15, u16le(button, 22))
+                assertEquals(5, u16le(button, 24))
+                assertEquals(5, u16le(button, 26))
             }
             server.close()
             serverThread.join(1_000)

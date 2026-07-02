@@ -11309,6 +11309,7 @@ internal class X11Connection(
         }
         sendResourceRemoval(resourceRemoval)
         val sinkRemoval = state.unregisterEventSink(this)
+        sendCrossing(sinkRemoval.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(sinkRemoval.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(sinkRemoval.xfixesCursorNotifyDispatches)
     }
