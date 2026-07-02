@@ -9256,12 +9256,15 @@ internal class X11Connection(
         if (body.size != 4) return writeError(error = 16, opcode = 113, badValue = 0)
         val resource = byteOrder.u32(body, 0)
         if (resource == AllTemporary) {
-            sendResourceRemoval(state.destroyTemporaryRetainedClients())
+            sendRetainedResourceRemoval(state.pointerCrossingPath()) {
+                state.destroyTemporaryRetainedClients()
+            }
             return
         }
         if (!state.hasResource(resource)) return writeError(error = 2, opcode = 113, badValue = resource)
+        val previousPointerPath = state.pointerCrossingPath()
         state.destroyRetainedClientByResource(resource)?.let { removal ->
-            sendResourceRemoval(removal)
+            sendRetainedResourceRemoval(previousPointerPath) { removal }
             return
         }
         val client = state.liveClientOwningResource(resource)
@@ -11210,6 +11213,14 @@ internal class X11Connection(
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
+    }
+
+    private fun sendRetainedResourceRemoval(previousPointerPath: List<XWindow>, remove: () -> XResourceRemoval) {
+        val removal = remove()
+        sendResourceRemoval(removal)
+        if (!removal.pointerUngrabResult.released) {
+            sendCrossing(state.hierarchyCrossingEventDeliveries(previousPointerPath))
+        }
     }
 
     private fun sendUnmapNotify(notifications: List<XUnmapNotifyDispatch>) {

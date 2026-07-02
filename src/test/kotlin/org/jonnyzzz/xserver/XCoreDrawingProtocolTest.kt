@@ -16455,6 +16455,134 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `KillClient retained resource emits hierarchy crossing when destroyed window reveals sibling under pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                observer.soTimeout = 2_000
+                setup(observer)
+                val lower = WindowId + 423
+                val top = WindowId + 424
+                val observerInput = observer.getInputStream()
+                val observerOut = observer.getOutputStream()
+                observerOut.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30))
+                observerOut.write(mapWindowRequest(lower))
+                observerOut.write(changeWindowEventMaskRequest(lower, XEventMasks.EnterWindow))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+
+                assertMapAndExpose(observerInput, lower)
+                assertEquals(4, u16le(readReply(observerInput), 2))
+
+                Socket("127.0.0.1", server.localPort).use { retained ->
+                    retained.soTimeout = 2_000
+                    setup(retained)
+                    val retainedInput = retained.getInputStream()
+                    val retainedOut = retained.getOutputStream()
+                    retainedOut.write(createWindowRequest(top, x = 10, y = 10, width = 30, height = 30))
+                    retainedOut.write(mapWindowRequest(top))
+                    retainedOut.write(warpPointerRequest(destinationWindow = top, destinationX = 5, destinationY = 5))
+                    retainedOut.write(setCloseDownModeRequest(XCloseDownMode.RetainPermanent))
+                    retainedOut.write(queryPointerRequest())
+                    retainedOut.flush()
+
+                    assertMapAndExpose(retainedInput, top)
+                    val retainedPointer = readReply(retainedInput)
+                    assertEquals(1, retainedPointer[0].toInt())
+                    assertEquals(top, u32le(retainedPointer, 12))
+                    closeClientAndWait(retained)
+                }
+
+                waitForRootChildren(server.localPort) { top in it }
+
+                observerOut.write(killClientRequest(top))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+
+                assertCrossingEvent(
+                    observerInput.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = lower,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val finalPointer = readReply(observerInput)
+                assertEquals(1, finalPointer[0].toInt())
+                assertEquals(lower, u32le(finalPointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `KillClient AllTemporary emits hierarchy crossing when destroyed window reveals sibling under pointer`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { observer ->
+                observer.soTimeout = 2_000
+                setup(observer)
+                val lower = WindowId + 425
+                val top = WindowId + 426
+                val observerInput = observer.getInputStream()
+                val observerOut = observer.getOutputStream()
+                observerOut.write(createWindowRequest(lower, x = 10, y = 10, width = 30, height = 30))
+                observerOut.write(mapWindowRequest(lower))
+                observerOut.write(changeWindowEventMaskRequest(lower, XEventMasks.EnterWindow))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+
+                assertMapAndExpose(observerInput, lower)
+                assertEquals(4, u16le(readReply(observerInput), 2))
+
+                Socket("127.0.0.1", server.localPort).use { retained ->
+                    retained.soTimeout = 2_000
+                    setup(retained)
+                    val retainedInput = retained.getInputStream()
+                    val retainedOut = retained.getOutputStream()
+                    retainedOut.write(createWindowRequest(top, x = 10, y = 10, width = 30, height = 30))
+                    retainedOut.write(mapWindowRequest(top))
+                    retainedOut.write(warpPointerRequest(destinationWindow = top, destinationX = 5, destinationY = 5))
+                    retainedOut.write(setCloseDownModeRequest(XCloseDownMode.RetainTemporary))
+                    retainedOut.write(queryPointerRequest())
+                    retainedOut.flush()
+
+                    assertMapAndExpose(retainedInput, top)
+                    val retainedPointer = readReply(retainedInput)
+                    assertEquals(1, retainedPointer[0].toInt())
+                    assertEquals(top, u32le(retainedPointer, 12))
+                    closeClientAndWait(retained)
+                }
+
+                waitForRootChildren(server.localPort) { top in it }
+
+                observerOut.write(killClientRequest(0))
+                observerOut.write(queryPointerRequest())
+                observerOut.flush()
+
+                assertCrossingEvent(
+                    observerInput.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = lower,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                val finalPointer = readReply(observerInput)
+                assertEquals(1, finalPointer[0].toInt())
+                assertEquals(lower, u32le(finalPointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `KillClient closes live destroy-mode client before later requests observe resources`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
