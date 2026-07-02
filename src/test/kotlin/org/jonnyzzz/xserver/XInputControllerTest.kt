@@ -54,6 +54,84 @@ class XInputControllerTest {
     }
 
     @Test
+    fun `HTTP key input delivers X11 key events to focused window`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                out.write(createWindowRequest(window, x = 100, y = 120, width = 300, height = 200))
+                out.write(selectEventsRequest(window, XEventMasks.KeyPress or XEventMasks.KeyRelease))
+                out.write(mapWindowRequest(window))
+                out.write(setInputFocusRequest(window, revertTo = 2))
+                out.flush()
+                readUntilEvent(input, 12)
+
+                val down = httpPost(server.localPort, "/input/key", "keycode=10&modifiers=0x4&action=down")
+                assertContains(down.headers, "HTTP/1.1 200 OK")
+                assertContains(down.body, """"targetWindow":"0x200001"""")
+                assertContains(down.body, """"deliveredEvents":1""")
+                assertKeyEvent(input, type = 2, detail = 10, eventWindow = window, state = 4)
+
+                val up = httpPost(server.localPort, "/input/key", "keycode=10&modifiers=4&action=up")
+                assertContains(up.headers, "HTTP/1.1 200 OK")
+                assertContains(up.body, """"targetWindow":"0x200001"""")
+                assertContains(up.body, """"deliveredEvents":1""")
+                assertKeyEvent(input, type = 3, detail = 10, eventWindow = window, state = 4)
+
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state.body, """"kind":"key-down"""")
+                assertContains(state.body, """"kind":"key-up"""")
+                assertContains(state.body, """"button":"10"""")
+                assertContains(state.body, """"targetWindow":"0x200001"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text.body, "key-down 10 at 0,0 target=0x200001 delivered=1")
+                assertContains(text.body, "key-up 10 at 0,0 target=0x200001 delivered=1")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `HTTP key input validates keycode modifiers and action`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val missingKeycode = httpPost(server.localPort, "/input/key", "action=down")
+            assertContains(missingKeycode.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(missingKeycode.body, """"error":"keycode is required"""")
+
+            val invalidKeycode = httpPost(server.localPort, "/input/key", "keycode=1&action=down")
+            assertContains(invalidKeycode.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(invalidKeycode.body, "X11 keycode must be in")
+
+            val malformedKeycode = httpPost(server.localPort, "/input/key", "keycode=nope&action=down")
+            assertContains(malformedKeycode.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(malformedKeycode.body, """"error":"invalid keycode"""")
+
+            val invalidModifiers = httpPost(server.localPort, "/input/key", "keycode=10&modifiers=0x100&action=down")
+            assertContains(invalidModifiers.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(invalidModifiers.body, "X11 key modifiers must fit the core modifier mask")
+
+            val malformedModifiers = httpPost(server.localPort, "/input/key", "keycode=10&modifiers=nope&action=down")
+            assertContains(malformedModifiers.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(malformedModifiers.body, """"error":"invalid modifiers"""")
+
+            val invalidAction = httpPost(server.localPort, "/input/key", "keycode=10&action=tap")
+            assertContains(invalidAction.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(invalidAction.body, """"error":"unsupported key action: tap"""")
+
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `input click does not propagate button events through do-not-propagate mask`() {
         XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -182,6 +260,21 @@ class XInputControllerTest {
         assertEquals(eventY, u16le(event, 26))
     }
 
+    private fun assertKeyEvent(
+        input: java.io.InputStream,
+        type: Int,
+        detail: Int,
+        eventWindow: Int,
+        state: Int,
+    ) {
+        val event = readUntilEvent(input, type)
+        assertEquals(detail, event[1].toInt() and 0xff)
+        assertEquals(X11Ids.RootWindow, u32le(event, 8))
+        assertEquals(eventWindow, u32le(event, 12))
+        assertEquals(state, u16le(event, 28))
+        assertEquals(1, event[30].toInt() and 0xff)
+    }
+
     private fun readUntilEvent(input: java.io.InputStream, type: Int): ByteArray {
         repeat(20) {
             val event = input.readExactly(32)
@@ -266,6 +359,16 @@ class XInputControllerTest {
         bytes[0] = 8
         put16le(bytes, 2, 2)
         put32le(bytes, 4, id)
+        return bytes
+    }
+
+    private fun setInputFocusRequest(window: Int, revertTo: Int): ByteArray {
+        val bytes = ByteArray(12)
+        bytes[0] = 42
+        bytes[1] = revertTo.toByte()
+        put16le(bytes, 2, 3)
+        put32le(bytes, 4, window)
+        put32le(bytes, 8, 0)
         return bytes
     }
 

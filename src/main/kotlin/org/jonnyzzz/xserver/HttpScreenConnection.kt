@@ -36,6 +36,12 @@ internal class HttpScreenConnection(
             }
             return click(path, requestBody, method == "HEAD")
         }
+        if (route == "/input/key") {
+            if (method != "POST" && method != "GET") {
+                return respond(405, "text/plain; charset=utf-8", "Method not allowed\n", method == "HEAD")
+            }
+            return key(path, requestBody, method == "HEAD")
+        }
         if (method != "GET" && method != "HEAD") {
             return respond(405, "text/plain; charset=utf-8", "Method not allowed\n", method == "HEAD")
         }
@@ -69,6 +75,40 @@ internal class HttpScreenConnection(
             .getOrElse {
                 return respond(400, "application/json; charset=utf-8", """{"error":"${escapeJson(it.message ?: "invalid click")}"}""" + "\n", headOnly)
             }
+        val target = result.targetWindowIdHex
+        val body = buildString {
+            append("""{"targetWindow":""")
+            if (target == null) append("null") else append('"').append(target).append('"')
+            append(""","deliveredEvents":""").append(result.deliveredEvents).append("}\n")
+        }
+        respond(200, "application/json; charset=utf-8", body, headOnly)
+    }
+
+    private fun key(path: String, requestBody: String, headOnly: Boolean) {
+        val params = parameters(path.substringAfter('?', missingDelimiterValue = "")) + parameters(requestBody)
+        val keycodeParam = params["keycode"]
+        val keycode = keycodeParam?.let(::parseInt)
+        if (keycode == null) {
+            val message = if (keycodeParam == null) "keycode is required" else "invalid keycode"
+            return respond(400, "application/json; charset=utf-8", """{"error":"$message"}""" + "\n", headOnly)
+        }
+        val modifiersParam = params["modifiers"]
+        val modifiers = if (modifiersParam == null) {
+            0
+        } else {
+            parseInt(modifiersParam)
+                ?: return respond(400, "application/json; charset=utf-8", """{"error":"invalid modifiers"}""" + "\n", headOnly)
+        }
+        val action = params["action"].orEmpty().ifEmpty { "down" }.lowercase()
+        val result = runCatching {
+            when (action) {
+                "down", "key-down", "press" -> inputController.keyDown(keycode, modifiers)
+                "up", "key-up", "release" -> inputController.keyUp(keycode, modifiers)
+                else -> throw IllegalArgumentException("unsupported key action: $action")
+            }
+        }.getOrElse {
+            return respond(400, "application/json; charset=utf-8", """{"error":"${escapeJson(it.message ?: "invalid key")}"}""" + "\n", headOnly)
+        }
         val target = result.targetWindowIdHex
         val body = buildString {
             append("""{"targetWindow":""")
@@ -129,6 +169,9 @@ internal class HttpScreenConnection(
 
     private fun decode(value: String): String =
         URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8)
+
+    private fun parseInt(value: String): Int? =
+        value.toIntOrNull() ?: value.takeIf { it.startsWith("0x", ignoreCase = true) }?.drop(2)?.toIntOrNull(16)
 
     private fun escapeJson(value: String): String =
         buildString(value.length) {
