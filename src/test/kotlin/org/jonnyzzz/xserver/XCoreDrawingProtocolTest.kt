@@ -6713,6 +6713,55 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `TranslateCoordinates ignores mapped child when input shape excludes point`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val out = socket.getOutputStream()
+                val child = WindowId + 1
+                val region = WindowId + 90
+                out.write(createWindowRequest(WindowId, x = 5, y = 4, width = 50, height = 40))
+                out.write(createWindowRequest(child, x = 18, y = 8, width = 10, height = 10, parent = WindowId))
+                out.write(mapWindowRequest(WindowId))
+                out.write(mapWindowRequest(child))
+                out.write(xfixesCreateRegionRequest(region, listOf(XRectangleCommand(0, 0, 1, 1))))
+                out.write(xfixesSetWindowShapeRegionRequest(child, XFixes.ShapeInput, region = region))
+                out.write(
+                    translateCoordinatesRequest(
+                        sourceWindow = X11Ids.RootWindow,
+                        destinationWindow = WindowId,
+                        sourceX = 27,
+                        sourceY = 15,
+                    ),
+                )
+                out.flush()
+
+                assertMapAndExpose(socket.getInputStream(), WindowId)
+                assertMapAndExpose(socket.getInputStream(), child)
+                val reply = readReply(socket.getInputStream())
+                assertEquals(1, reply[0].toInt())
+                assertEquals(1, reply[1].toInt() and 0xff)
+                assertEquals(7, u16le(reply, 2))
+                assertEquals(0, u32le(reply, 8))
+                assertEquals(22, u16le(reply, 12))
+                assertEquals(11, u16le(reply, 14))
+
+                server.input.click(27, 15)
+                out.write(queryPointerRequest(WindowId))
+                out.flush()
+                val pointer = readReply(socket.getInputStream())
+                assertEquals(1, pointer[0].toInt())
+                assertEquals(8, u16le(pointer, 2))
+                assertEquals(0, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `TranslateCoordinates validates windows and request length and preserves stream recovery`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -18062,6 +18111,29 @@ class XCoreDrawingProtocolTest {
         return request(XFixes.MajorOpcode, XFixes.SelectCursorInput, body)
     }
 
+    private fun xfixesCreateRegionRequest(region: Int, rectangles: List<XRectangleCommand>): ByteArray {
+        val body = ByteArray(4 + rectangles.size * 8)
+        put32le(body, 0, region)
+        rectangles.forEachIndexed { index, rectangle ->
+            val offset = 4 + index * 8
+            put16le(body, offset, rectangle.x)
+            put16le(body, offset + 2, rectangle.y)
+            put16le(body, offset + 4, rectangle.width)
+            put16le(body, offset + 6, rectangle.height)
+        }
+        return request(XFixes.MajorOpcode, XFixes.CreateRegion, body)
+    }
+
+    private fun xfixesSetWindowShapeRegionRequest(window: Int, kind: Int, region: Int, xOffset: Int = 0, yOffset: Int = 0): ByteArray {
+        val body = ByteArray(16)
+        put32le(body, 0, window)
+        body[4] = kind.toByte()
+        put16le(body, 8, xOffset)
+        put16le(body, 10, yOffset)
+        put32le(body, 12, region)
+        return request(XFixes.MajorOpcode, XFixes.SetWindowShapeRegion, body)
+    }
+
     private fun xfixesGetCursorImageRequest(): ByteArray =
         request(XFixes.MajorOpcode, XFixes.GetCursorImage, ByteArray(0))
 
@@ -18832,8 +18904,8 @@ class XCoreDrawingProtocolTest {
         return event
     }
 
-    private fun queryPointerRequest(): ByteArray =
-        request(38, 0, ByteArray(4).also { put32le(it, 0, X11Ids.RootWindow) })
+    private fun queryPointerRequest(window: Int = X11Ids.RootWindow): ByteArray =
+        request(38, 0, ByteArray(4).also { put32le(it, 0, window) })
 
     private fun getWindowAttributesRequest(window: Int): ByteArray =
         request(3, 0, ByteArray(4).also { put32le(it, 0, window) })
