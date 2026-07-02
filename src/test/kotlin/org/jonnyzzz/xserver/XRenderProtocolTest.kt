@@ -2638,6 +2638,47 @@ class XRenderProtocolTest {
     }
 
     @Test
+    fun `RENDER Composite snapshots same drawable mask before destination writes`() {
+        XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                setup(socket)
+                val out = socket.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(createPixmapRequest(PixmapId, depth = 32, width = 3, height = 1))
+                out.write(renderCreatePicture(PixmapPictureId, PixmapId, XRender.Argb32Format))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 3, height = 1, red = 0x0000, green = 0x0000, blue = 0xffff, alpha = 0xffff, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(PixmapPictureId, x = 0, y = 0, width = 1, height = 1, red = 0xffff, green = 0xffff, blue = 0xffff, alpha = 0xffff, operation = XRender.OpSrc))
+                out.write(renderFillRectangles(PixmapPictureId, x = 1, y = 0, width = 1, height = 1, red = 0x0000, green = 0x0000, blue = 0x0000, alpha = 0x0000, operation = XRender.OpSrc))
+                out.write(renderCreateSolidFill(SolidPictureId, red = 0xffff, green = 0x0000, blue = 0x0000, alpha = 0xffff))
+                out.write(
+                    renderComposite(
+                        SolidPictureId,
+                        PixmapPictureId,
+                        mask = PixmapPictureId,
+                        width = 2,
+                        height = 1,
+                        operation = XRender.OpOver,
+                        maskX = 0,
+                        maskY = 0,
+                        destinationX = 1,
+                        destinationY = 0,
+                    ),
+                )
+                out.write(getImageRequest(PixmapId, x = 0, y = 0, width = 3, height = 1))
+                out.flush()
+
+                val image = readReply(socket.getInputStream())
+                assertEquals(0xffff_ffff.toInt(), pixelAt(image, imageWidth = 3, x = 0, y = 0))
+                assertEquals(0xffff_0000.toInt(), pixelAt(image, imageWidth = 3, x = 1, y = 0))
+                assertEquals(0xff00_00ff.toInt(), pixelAt(image, imageWidth = 3, x = 2, y = 0))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `RENDER composite applies source alpha map pixels`() {
         XServer(ServerOptions(port = 0, width = 640, height = 480)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
