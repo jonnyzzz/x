@@ -54,6 +54,53 @@ class XInputControllerTest {
     }
 
     @Test
+    fun `input API and HTTP move deliver X11 motion events to selected window`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                out.write(createWindowRequest(window, x = 100, y = 120, width = 300, height = 200))
+                out.write(selectEventsRequest(window, XEventMasks.PointerMotion))
+                out.write(mapWindowRequest(window))
+                out.flush()
+                readUntilEvent(input, 12)
+                drainPendingEvents(socket, input)
+
+                val first = server.input.move(130, 150)
+                assertEquals("0x200001", first.targetWindowIdHex)
+                assertEquals(0, first.deliveredEvents)
+                assertNoEvent(socket, input)
+
+                val direct = server.input.move(140, 155)
+                assertEquals("0x200001", direct.targetWindowIdHex)
+                assertEquals(1, direct.deliveredEvents)
+                assertPointerEvent(input, type = 6, rootX = 140, rootY = 155, eventX = 40, eventY = 35, eventWindow = window)
+
+                val http = httpPost(server.localPort, "/input/move", "x=150&y=160")
+                assertContains(http.headers, "HTTP/1.1 200 OK")
+                assertContains(http.body, """"targetWindow":"0x200001"""")
+                assertContains(http.body, """"deliveredEvents":1""")
+                assertPointerEvent(input, type = 6, rootX = 150, rootY = 160, eventX = 50, eventY = 40, eventWindow = window)
+
+                val state = httpGet(server.localPort, "/state.json")
+                assertContains(state.body, """"kind":"move"""")
+                assertContains(state.body, """"button":"pointer"""")
+                assertContains(state.body, """"targetWindow":"0x200001"""")
+
+                val text = httpGet(server.localPort, "/text.txt")
+                assertContains(text.body, "move pointer at 150,160 target=0x200001 delivered=1")
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `HTTP key input delivers X11 key events to focused window`() {
         XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -93,6 +140,23 @@ class XInputControllerTest {
                 assertContains(text.body, "key-down 10 at 0,0 target=0x200001 delivered=1")
                 assertContains(text.body, "key-up 10 at 0,0 target=0x200001 delivered=1")
             }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
+    fun `HTTP move input validates coordinates`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            val missing = httpPost(server.localPort, "/input/move", "x=10")
+            assertContains(missing.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(missing.body, """"error":"x and y are required"""")
+
+            val malformed = httpPost(server.localPort, "/input/move", "x=nope&y=10")
+            assertContains(malformed.headers, "HTTP/1.1 400 Bad Request")
+            assertContains(malformed.body, """"error":"x and y are required"""")
+
             server.close()
             serverThread.join(1_000)
         }
@@ -253,6 +317,24 @@ class XInputControllerTest {
     ) {
         val event = readUntilEvent(input, type)
         assertEquals(1, event[1].toInt() and 0xff)
+        eventWindow?.let { assertEquals(it, u32le(event, 12)) }
+        assertEquals(rootX, u16le(event, 20))
+        assertEquals(rootY, u16le(event, 22))
+        assertEquals(eventX, u16le(event, 24))
+        assertEquals(eventY, u16le(event, 26))
+    }
+
+    private fun assertPointerEvent(
+        input: java.io.InputStream,
+        type: Int,
+        rootX: Int,
+        rootY: Int,
+        eventX: Int,
+        eventY: Int,
+        eventWindow: Int? = null,
+    ) {
+        val event = readUntilEvent(input, type)
+        assertEquals(0, event[1].toInt() and 0xff)
         eventWindow?.let { assertEquals(it, u32le(event, 12)) }
         assertEquals(rootX, u16le(event, 20))
         assertEquals(rootY, u16le(event, 22))

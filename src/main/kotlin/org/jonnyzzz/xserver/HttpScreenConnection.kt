@@ -36,6 +36,12 @@ internal class HttpScreenConnection(
             }
             return click(path, requestBody, method == "HEAD")
         }
+        if (route == "/input/move") {
+            if (method != "POST" && method != "GET") {
+                return respond(405, "text/plain; charset=utf-8", "Method not allowed\n", method == "HEAD")
+            }
+            return move(path, requestBody, method == "HEAD")
+        }
         if (route == "/input/key") {
             if (method != "POST" && method != "GET") {
                 return respond(405, "text/plain; charset=utf-8", "Method not allowed\n", method == "HEAD")
@@ -75,6 +81,23 @@ internal class HttpScreenConnection(
             .getOrElse {
                 return respond(400, "application/json; charset=utf-8", """{"error":"${escapeJson(it.message ?: "invalid click")}"}""" + "\n", headOnly)
             }
+        val target = result.targetWindowIdHex
+        val body = buildString {
+            append("""{"targetWindow":""")
+            if (target == null) append("null") else append('"').append(target).append('"')
+            append(""","deliveredEvents":""").append(result.deliveredEvents).append("}\n")
+        }
+        respond(200, "application/json; charset=utf-8", body, headOnly)
+    }
+
+    private fun move(path: String, requestBody: String, headOnly: Boolean) {
+        val params = parameters(path.substringAfter('?', missingDelimiterValue = "")) + parameters(requestBody)
+        val x = params["x"]?.toIntOrNull()
+        val y = params["y"]?.toIntOrNull()
+        if (x == null || y == null) {
+            return respond(400, "application/json; charset=utf-8", """{"error":"x and y are required"}""" + "\n", headOnly)
+        }
+        val result = inputController.move(x, y)
         val target = result.targetWindowIdHex
         val body = buildString {
             append("""{"targetWindow":""")

@@ -377,21 +377,68 @@ internal object SvgScreenRenderer {
     private fun inputScript(): String =
         """
         document.addEventListener('DOMContentLoaded', () => {
+          let inputQueue = Promise.resolve();
+          let pendingMove = null;
+          let queuedMove = null;
+          let moveScheduled = false;
+          let moveInFlight = false;
+          const postInput = (path, data) => {
+            return fetch(path, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams(data).toString(),
+            }).catch(() => {});
+          };
+          const enqueueInput = (task) => {
+            inputQueue = inputQueue.catch(() => {}).then(task);
+            return inputQueue;
+          };
+          const flushQueuedMove = () => {
+            if (moveInFlight || !queuedMove) return;
+            const move = queuedMove;
+            queuedMove = null;
+            moveInFlight = true;
+            enqueueInput(() => postInput('/input/move', move)).finally(() => {
+              moveInFlight = false;
+              flushQueuedMove();
+            });
+          };
+          const flushMove = () => {
+            moveScheduled = false;
+            if (!pendingMove) return;
+            const move = pendingMove;
+            pendingMove = null;
+            queuedMove = move;
+            flushQueuedMove();
+          };
           document.querySelectorAll('svg[data-input-surface="true"]').forEach((svg) => {
-            svg.addEventListener('click', (event) => {
+            const surfacePoint = (event) => {
               const point = svg.createSVGPoint();
               point.x = event.clientX;
               point.y = event.clientY;
               const ctm = svg.getScreenCTM();
-              if (!ctm) return;
+              if (!ctm) return null;
               const local = point.matrixTransform(ctm.inverse());
-              const x = Math.round(local.x + Number(svg.dataset.originX || 0));
-              const y = Math.round(local.y + Number(svg.dataset.originY || 0));
-              fetch('/input/click', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ x, y, button: 'left' }).toString(),
-              }).catch(() => {});
+              return {
+                x: Math.round(local.x + Number(svg.dataset.originX || 0)),
+                y: Math.round(local.y + Number(svg.dataset.originY || 0)),
+              };
+            };
+            svg.addEventListener('pointermove', (event) => {
+              pendingMove = surfacePoint(event);
+              if (!pendingMove || moveScheduled) return;
+              moveScheduled = true;
+              requestAnimationFrame(flushMove);
+            });
+            svg.addEventListener('click', (event) => {
+              const position = surfacePoint(event);
+              if (!position) return;
+              pendingMove = null;
+              queuedMove = null;
+              enqueueInput(() =>
+                postInput('/input/move', position)
+                  .then(() => postInput('/input/click', { x: position.x, y: position.y, button: 'left' }))
+              );
             });
           });
         });

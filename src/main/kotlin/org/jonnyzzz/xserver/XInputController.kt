@@ -24,6 +24,34 @@ class XInputController internal constructor(
         return pointerResolved(x = x, y = y, button = button, buttonName = buttonName(button), pressed = false)
     }
 
+    fun move(x: Int, y: Int): XInputResult {
+        val dispatch = state.warpPointer(
+            sourceWindowId = 0,
+            destinationWindowId = X11Ids.RootWindow,
+            sourceX = 0,
+            sourceY = 0,
+            sourceWidth = 0,
+            sourceHeight = 0,
+            destinationX = x,
+            destinationY = y,
+        )
+        val result = XInputResult(
+            targetWindowId = dispatch.targetWindowId,
+            deliveredEvents = dispatch.deliveredEvents,
+            rootX = dispatch.rootX,
+            rootY = dispatch.rootY,
+        )
+        state.recordInputOperation(
+            kind = "move",
+            x = result.rootX,
+            y = result.rootY,
+            button = "pointer",
+            targetWindowId = result.targetWindowId,
+            deliveredEvents = result.deliveredEvents,
+        )
+        return result
+    }
+
     fun keyDown(keycode: Int, modifiers: Int = 0): XInputResult {
         requireValidKeycode(keycode)
         requireValidModifiers(modifiers)
