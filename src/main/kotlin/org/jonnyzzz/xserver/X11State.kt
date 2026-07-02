@@ -23,6 +23,7 @@ internal data class XResourceRemoval(
     val focusDispatches: List<XFocusDispatch> = emptyList(),
     val pointerUngrabResult: XPointerUngrabResult = XPointerUngrabResult(),
     val xfixesCursorNotifyDispatches: List<XXFixesCursorNotifyDispatch> = emptyList(),
+    val syncAlarmNotifyDispatches: List<XSyncAlarmNotifyDispatch> = emptyList(),
 )
 
 internal data class XEventSinkRemoval(
@@ -387,6 +388,7 @@ internal class X11State(
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
+        val syncAlarmNotifyDispatches = mutableListOf<XSyncAlarmNotifyDispatch>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
         var pointerUngrabResult = XPointerUngrabResult()
         for (id in resourceIds) {
@@ -420,7 +422,7 @@ internal class X11State(
             pictures.remove(id)
             glyphSets.remove(id)
             xfixesRegions.remove(id)
-            removeSyncCounter(id)
+            removeSyncCounter(id)?.let { syncAlarmNotifyDispatches += it }
             removeSyncAlarm(id)
             removeSyncFence(id)
         }
@@ -434,6 +436,7 @@ internal class X11State(
             focusDispatches = focusDispatches,
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
+            syncAlarmNotifyDispatches = syncAlarmNotifyDispatches,
         )
     }
 
@@ -481,6 +484,7 @@ internal class X11State(
         val destroyNotifyDispatches = mutableListOf<XDestroyNotifyDispatch>()
         val xfixesSelectionNotifyDispatches = mutableListOf<XXFixesSelectionNotifyDispatch>()
         val xfixesCursorNotifyDispatches = mutableListOf<XXFixesCursorNotifyDispatch>()
+        val syncAlarmNotifyDispatches = mutableListOf<XSyncAlarmNotifyDispatch>()
         val focusDispatches = mutableListOf<XFocusDispatch>()
         var pointerUngrabResult = XPointerUngrabResult()
         for (id in temporaryIds) {
@@ -494,6 +498,7 @@ internal class X11State(
             pointerUngrabResult = pointerUngrabResult + removal.pointerUngrabResult
             xfixesSelectionNotifyDispatches += removal.xfixesSelectionNotifyDispatches
             xfixesCursorNotifyDispatches += removal.xfixesCursorNotifyDispatches
+            syncAlarmNotifyDispatches += removal.syncAlarmNotifyDispatches
         }
         return XResourceRemoval(
             destroyNotifyDispatches = destroyNotifyDispatches,
@@ -501,6 +506,7 @@ internal class X11State(
             focusDispatches = focusDispatches,
             pointerUngrabResult = pointerUngrabResult,
             xfixesCursorNotifyDispatches = xfixesCursorNotifyDispatches,
+            syncAlarmNotifyDispatches = syncAlarmNotifyDispatches,
         )
     }
 

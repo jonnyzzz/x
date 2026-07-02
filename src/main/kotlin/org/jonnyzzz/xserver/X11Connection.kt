@@ -11213,6 +11213,7 @@ internal class X11Connection(
         sendCrossing(removal.pointerUngrabResult.crossingDispatches)
         sendXFixesSelectionNotify(removal.xfixesSelectionNotifyDispatches)
         sendXFixesCursorNotify(removal.xfixesCursorNotifyDispatches)
+        sendSyncAlarmNotifyDispatches(removal.syncAlarmNotifyDispatches)
     }
 
     private fun sendRetainedResourceRemoval(previousPointerPath: List<XWindow>, remove: () -> XResourceRemoval) {

@@ -513,6 +513,63 @@ class XSyncProtocolTest {
     }
 
     @Test
+    fun `SYNC implicit counter cleanup emits AlarmNotify when alarm owner survives`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { counterOwner ->
+                Socket("127.0.0.1", server.localPort).use { alarmOwner ->
+                    counterOwner.soTimeout = 2_000
+                    alarmOwner.soTimeout = 2_000
+                    setup(counterOwner)
+                    setup(alarmOwner)
+                    val counter = X11Ids.ResourceIdBase + 0x40a
+                    val alarm = X11Ids.ResourceIdBase + 0x40b
+
+                    counterOwner.getOutputStream().apply {
+                        write(syncCounterRequest(XSync.CreateCounter, counter, 10))
+                        write(request(XSync.MajorOpcode, XSync.QueryCounter, u32leBytes(counter)))
+                        flush()
+                    }
+                    val counterReply = readReply(counterOwner.getInputStream())
+                    assertEquals(2, u16le(counterReply, 2))
+                    assertEquals(10, syncValue(counterReply, 8))
+
+                    alarmOwner.getOutputStream().apply {
+                        write(createAlarmRequest(alarm, counter, XSync.Absolute, 20, XSync.PositiveComparison, 2, events = true))
+                        write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                        flush()
+                    }
+                    val initialAlarm = readReply(alarmOwner.getInputStream())
+                    assertEquals(2, u16le(initialAlarm, 2))
+                    assertEquals(counter, u32le(initialAlarm, 8))
+                    assertEquals(XSync.AlarmActive, initialAlarm[37].toInt() and 0xff)
+
+                    counterOwner.close()
+                    val inactiveEvent = alarmOwner.getInputStream().readExactly(32)
+                    assertEquals(XSync.FirstEvent + 1, inactiveEvent[0].toInt() and 0xff)
+                    assertEquals(1, inactiveEvent[1].toInt() and 0xff)
+                    assertEquals(2, u16le(inactiveEvent, 2))
+                    assertEquals(alarm, u32le(inactiveEvent, 4))
+                    assertEquals(0, syncValue(inactiveEvent, 8))
+                    assertEquals(20, syncValue(inactiveEvent, 16))
+                    assertEquals(XSync.AlarmInactive, inactiveEvent[28].toInt() and 0xff)
+
+                    alarmOwner.getOutputStream().apply {
+                        write(request(XSync.MajorOpcode, XSync.QueryAlarm, u32leBytes(alarm)))
+                        flush()
+                    }
+                    val inactiveAlarm = readReply(alarmOwner.getInputStream())
+                    assertEquals(3, u16le(inactiveAlarm, 2))
+                    assertEquals(0, u32le(inactiveAlarm, 8))
+                    assertEquals(XSync.AlarmInactive, inactiveAlarm[37].toInt() and 0xff)
+                }
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `SYNC alarm delta advances past large counter jumps without deactivating`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
