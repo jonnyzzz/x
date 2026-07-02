@@ -661,6 +661,12 @@ internal object XEventMasks {
     const val EnterWindow = 1 shl 4
     const val LeaveWindow = 1 shl 5
     const val PointerMotion = 1 shl 6
+    const val Button1Motion = 1 shl 8
+    const val Button2Motion = 1 shl 9
+    const val Button3Motion = 1 shl 10
+    const val Button4Motion = 1 shl 11
+    const val Button5Motion = 1 shl 12
+    const val ButtonMotion = 1 shl 13
     const val Exposure = 1 shl 15
     const val StructureNotify = 1 shl 17
     const val ResizeRedirect = 1 shl 18

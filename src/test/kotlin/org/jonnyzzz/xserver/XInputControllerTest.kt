@@ -101,6 +101,52 @@ class XInputControllerTest {
     }
 
     @Test
+    fun `input API move delivers button motion while pointer button is down`() {
+        XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                setup(out, input)
+
+                val window = 0x0020_0001
+                out.write(createWindowRequest(window, x = 100, y = 120, width = 300, height = 200))
+                out.write(selectEventsRequest(window, XEventMasks.Button1Motion))
+                out.write(mapWindowRequest(window))
+                out.flush()
+                readUntilEvent(input, 12)
+                drainPendingEvents(socket, input)
+
+                assertEquals(0, server.input.move(140, 155).deliveredEvents)
+                assertNoEvent(socket, input)
+
+                assertEquals(0, server.input.pointerDown(140, 155, button = 1).deliveredEvents)
+                assertNoEvent(socket, input)
+
+                val drag = server.input.move(150, 160)
+                assertEquals("0x200001", drag.targetWindowIdHex)
+                assertEquals(1, drag.deliveredEvents)
+                assertPointerEvent(
+                    input,
+                    type = 6,
+                    rootX = 150,
+                    rootY = 160,
+                    eventX = 50,
+                    eventY = 40,
+                    eventWindow = window,
+                    state = 1 shl 8,
+                )
+
+                assertEquals(0, server.input.pointerUp(150, 160, button = 1).deliveredEvents)
+                assertNoEvent(socket, input)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `HTTP key input delivers X11 key events to focused window`() {
         XServer(ServerOptions(port = 0, width = 800, height = 600)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
@@ -332,6 +378,7 @@ class XInputControllerTest {
         eventX: Int,
         eventY: Int,
         eventWindow: Int? = null,
+        state: Int = 0,
     ) {
         val event = readUntilEvent(input, type)
         assertEquals(0, event[1].toInt() and 0xff)
@@ -340,6 +387,7 @@ class XInputControllerTest {
         assertEquals(rootY, u16le(event, 22))
         assertEquals(eventX, u16le(event, 24))
         assertEquals(eventY, u16le(event, 26))
+        assertEquals(state, u16le(event, 28))
     }
 
     private fun assertKeyEvent(

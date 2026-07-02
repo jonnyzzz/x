@@ -2495,14 +2495,15 @@ internal class X11State(
                     time = time,
                 )
             }
-            val normalSelection = firstPointerEventSelection(path, XEventMasks.PointerMotion)
+            val motionMask = motionEventMask()
+            val normalSelection = firstPointerEventSelection(path, motionMask)
             if (grab != null) {
                 val ownerSelection = if (grab.ownerEvents) {
                     normalSelection?.takeIf { (_, sinks) -> grab.owner in sinks }
                 } else {
                     null
                 }
-                if (ownerSelection != null || (grab.eventMask and XEventMasks.PointerMotion) != 0) {
+                if (ownerSelection != null || (grab.eventMask and motionMask) != 0) {
                     val eventWindowId = ownerSelection?.first?.id ?: grab.windowId
                     val absolute = windows[eventWindowId]?.let { absoluteById[it.id] } ?: (0 to 0)
                     deliveries += grab.owner to XPointerEvent(
@@ -8699,6 +8700,15 @@ internal class X11State(
 
     private fun buttonMask(button: Int): Int =
         if (button in 1..5) 1 shl (7 + button) else 0
+
+    private fun motionEventMask(): Int {
+        var mask = XEventMasks.PointerMotion
+        if (pressedLogicalButtons.isNotEmpty()) mask = mask or XEventMasks.ButtonMotion
+        for (button in pressedLogicalButtons) {
+            if (button in 1..5) mask = mask or (1 shl (7 + button))
+        }
+        return mask
+    }
 
     private val drawings = mutableListOf<XDrawingCommand>()
 

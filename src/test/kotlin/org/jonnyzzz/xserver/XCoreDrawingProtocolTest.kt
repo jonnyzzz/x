@@ -8858,6 +8858,51 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `passive GrabButton active grab routes button motion to grab owner`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { owner ->
+                owner.soTimeout = 2_000
+                setup(owner)
+                val input = owner.getInputStream()
+                val out = owner.getOutputStream()
+                out.write(createWindowRequest(WindowId))
+                out.write(
+                    grabButtonRequest(
+                        WindowId,
+                        eventMask = XEventMasks.ButtonPress or XEventMasks.ButtonRelease or XEventMasks.Button1Motion,
+                    ),
+                )
+                out.write(mapWindowRequest(WindowId))
+                out.flush()
+                assertMapAndExpose(input, WindowId)
+
+                assertEquals(1, server.input.pointerDown(10, 10, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 4, detail = 1)
+
+                out.write(warpPointerRequest(destinationX = 1, destinationY = 1))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                val motion = input.readExactly(32)
+                assertEquals(6, motion[0].toInt() and 0xff)
+                assertEquals(WindowId, u32le(motion, 12))
+                assertEquals(11, u16le(motion, 20))
+                assertEquals(11, u16le(motion, 22))
+                assertEquals(11, u16le(motion, 24))
+                assertEquals(11, u16le(motion, 26))
+                assertEquals(1 shl 8, u16le(motion, 28))
+                assertEquals(1, readReply(input)[0].toInt())
+
+                assertEquals(1, server.input.pointerUp(11, 11, button = 1).deliveredEvents)
+                assertButtonEvent(input.readExactly(32), type = 5, detail = 1)
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `passive GrabButton does not activate with nonviewable confine window`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
