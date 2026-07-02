@@ -15520,6 +15520,62 @@ class XCoreDrawingProtocolTest {
     }
 
     @Test
+    fun `CirculateWindow emits hierarchy crossing events when RaiseLowest covers pointer window`() {
+        XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
+            val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
+            Socket("127.0.0.1", server.localPort).use { socket ->
+                socket.soTimeout = 2_000
+                setup(socket)
+                val first = WindowId + 117
+                val second = WindowId + 118
+                val out = socket.getOutputStream()
+                val input = socket.getInputStream()
+                out.write(createWindowRequest(first, x = 10, y = 10, width = 20, height = 20))
+                out.write(createWindowRequest(second, x = 10, y = 10, width = 20, height = 20))
+                out.write(mapWindowRequest(first))
+                out.write(mapWindowRequest(second))
+                out.write(warpPointerRequest(destinationWindow = second, destinationX = 5, destinationY = 5))
+                out.write(changeWindowEventMaskRequest(first, XEventMasks.StructureNotify or XEventMasks.EnterWindow or XEventMasks.Exposure))
+                out.write(changeWindowEventMaskRequest(second, XEventMasks.LeaveWindow))
+                out.write(circulateWindowRequest(XCirculateResult.RaiseLowest, X11Ids.RootWindow))
+                out.write(queryPointerRequest())
+                out.flush()
+
+                assertMapAndExpose(input, first)
+                assertMapAndExpose(input, second)
+                assertCirculateNotify(input.readExactly(32), sequence = 8, eventWindow = first, window = first, place = XCirculateResult.Top)
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 8,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = second,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertCrossingEvent(
+                    input.readExactly(32),
+                    type = 7,
+                    detail = XNotifyDetail.Nonlinear,
+                    eventWindow = first,
+                    rootX = 15,
+                    rootY = 15,
+                    eventX = 5,
+                    eventY = 5,
+                )
+                assertExpose(input.readExactly(32), first, sequence = 8, width = 20, height = 20)
+                val pointer = readReply(input)
+                assertEquals(1, pointer[0].toInt() and 0xff)
+                assertEquals(9, u16le(pointer, 2))
+                assertEquals(first, u32le(pointer, 12))
+            }
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test
     fun `CirculateWindow exposes descendants uncovered by lowered highest child`() {
         XServer(ServerOptions(port = 0, width = 120, height = 90)).use { server ->
             val serverThread = thread(start = true, isDaemon = true) { server.serveForever() }
